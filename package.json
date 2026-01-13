@@ -1,8 +1,8 @@
 {
-  "name": "@kb-labs/plugin-template",
+  "name": "@kb-labs/agents",
   "version": "0.1.0",
   "private": true,
-  "description": "Reference plugin template for the KB Labs ecosystem with devkit-powered tooling.",
+  "description": "Autonomous AI agents for KB Labs. Execute natural language tasks using filesystem tools, shell commands, and plugin APIs. Agent configs in .kb/agents/",
   "type": "module",
   "author": {
     "name": "Kirill Baranov",
@@ -11,12 +11,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kirill-baranov/kb-labs-plugin-template.git"
+    "url": "https://github.com/kirill-baranov/kb-labs-agents.git"
   },
   "bugs": {
-    "url": "https://github.com/kirill-baranov/kb-labs-plugin-template/issues"
+    "url": "https://github.com/kirill-baranov/kb-labs-agents/issues"
   },
-  "homepage": "https://github.com/kirill-baranov/kb-labs-plugin-template#readme",
+  "homepage": "https://github.com/kirill-baranov/kb-labs-agents#readme",
   "workspaces": [
     "apps/*",
     "packages/*"
