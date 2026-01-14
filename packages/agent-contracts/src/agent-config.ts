@@ -27,6 +27,8 @@ export interface AgentLLMConfig {
  * Custom prompt configuration
  */
 export interface AgentPromptConfig {
+  /** Inline system prompt (directly in YAML) */
+  system?: string;
   /** Path to system prompt file (relative to agent directory, e.g., "./system-prompt.md") */
   systemPrompt?: string;
   /** Path to examples file (relative to agent directory, e.g., "./examples.json") */
