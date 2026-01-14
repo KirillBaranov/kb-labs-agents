@@ -66,6 +66,33 @@ export {
   validateAgentConfig,
 } from './agent-schemas.js';
 
+// REST API Schemas and Types
+export type {
+  RunAgentRequest,
+  RunAgentResponse,
+  RunAgentErrorResponse,
+  AgentResponse,
+  ToolCallInfo,
+  ExecutionStep,
+  AgentStats,
+  ListAgentsRequest,
+  ListAgentsResponse,
+  AgentMetadata as AgentMetadataREST,
+} from './rest-schemas.js';
+
+export {
+  RunAgentRequestSchema,
+  RunAgentResponseSchema,
+  RunAgentErrorResponseSchema,
+  AgentResponseSchema,
+  ToolCallInfoSchema,
+  ExecutionStepSchema,
+  AgentStatsSchema,
+  ListAgentsRequestSchema,
+  ListAgentsResponseSchema,
+  AgentMetadataSchema,
+} from './rest-schemas.js';
+
 // ============================================
 // Legacy Plugin Template Exports (kept for compatibility)
 // ============================================

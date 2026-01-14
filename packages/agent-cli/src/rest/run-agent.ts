@@ -1,0 +1,140 @@
+/**
+ * POST /v1/agents/run handler
+ *
+ * Executes an agent with a given task and returns the result
+ */
+
+import { defineHandler, type PluginContextV3, type RestInput } from '@kb-labs/sdk';
+import type {
+  RunAgentRequest,
+  RunAgentResponse,
+  RunAgentErrorResponse,
+  AgentStats,
+  ExecutionStep,
+} from '@kb-labs/agent-contracts';
+import { AgentExecutor } from '@kb-labs/agent-core';
+import { AgentDiscoverer } from '../core/agent-discoverer.js';
+
+/**
+ * Execute an agent via REST API
+ */
+export default defineHandler({
+  async execute(
+    ctx: PluginContextV3,
+    input: RestInput<unknown, RunAgentRequest>
+  ): Promise<RunAgentResponse | RunAgentErrorResponse> {
+    const { agentId, task } = input.body;
+    const startTime = Date.now();
+
+    try {
+      // Discover agent configuration
+      const discoverer = new AgentDiscoverer(ctx);
+      const agentContext = await discoverer.loadAgent(agentId);
+
+      if (!agentContext) {
+        return {
+          success: false,
+          agentId,
+          task,
+          error: {
+            message: `Agent "${agentId}" not found`,
+            code: 'AGENT_NOT_FOUND',
+          },
+        };
+      }
+
+      // Execute agent
+      const executor = new AgentExecutor(ctx.platform);
+      const result = await executor.execute(agentContext, task);
+
+      const durationMs = Date.now() - startTime;
+
+      // Success response
+      if (result.success && result.result) {
+        const stats: AgentStats = {
+          steps: result.steps?.length ?? 0,
+          totalTokens: result.totalTokens ?? 0,
+          durationMs: result.durationMs ?? durationMs,
+          toolCallCount: result.toolCallCount,
+          toolsUsed: extractUniqueTools(result.steps),
+        };
+
+        const steps: ExecutionStep[] | undefined = result.steps?.map((step) => ({
+          step: step.step,
+          toolCalls: step.toolCalls?.map((tc) => ({
+            name: tc.name,
+            input: tc.input,
+            output: tc.output,
+            success: tc.success,
+            error: tc.error,
+            durationMs: 0, // TODO: track individual tool durations
+          })),
+          tokensUsed: step.tokensUsed,
+          durationMs: step.durationMs,
+        }));
+
+        return {
+          success: true,
+          agentId,
+          task,
+          result: result.result,
+          stats,
+          steps,
+        };
+      }
+
+      // Error response
+      return {
+        success: false,
+        agentId,
+        task,
+        error: {
+          message: result.error?.message ?? 'Unknown error',
+          code: result.error?.code ?? 'EXECUTION_ERROR',
+          stack: process.env.NODE_ENV === 'development' ? result.error?.stack : undefined,
+        },
+        stats: result.totalTokens
+          ? {
+              steps: result.steps?.length ?? 0,
+              totalTokens: result.totalTokens,
+              durationMs: result.durationMs ?? durationMs,
+              toolCallCount: result.toolCallCount,
+            }
+          : undefined,
+      };
+    } catch (error) {
+      // Unexpected error
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
+      return {
+        success: false,
+        agentId,
+        task,
+        error: {
+          message: errorMessage,
+          code: 'INTERNAL_ERROR',
+          stack: process.env.NODE_ENV === 'development' ? errorStack : undefined,
+        },
+      };
+    }
+  },
+});
+
+/**
+ * Extract unique tool names from execution steps
+ */
+function extractUniqueTools(steps: Array<{ toolCalls?: Array<{ name: string }> }> | undefined): string[] {
+  if (!steps) {return [];}
+
+  const tools = new Set<string>();
+  for (const step of steps) {
+    if (step.toolCalls) {
+      for (const call of step.toolCalls) {
+        tools.add(call.name);
+      }
+    }
+  }
+
+  return Array.from(tools).sort();
+}

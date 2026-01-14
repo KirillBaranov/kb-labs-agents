@@ -5,6 +5,7 @@
  */
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
+import { useLLM } from '@kb-labs/sdk';
 import type {
   AgentContext,
   AgentResult,
@@ -464,7 +465,11 @@ export class AgentExecutor {
     toolCalls?: ToolCall[];
     tokensUsed?: number;
   }> {
-    const llm = this.ctx.platform.llm;
+    const llm = useLLM();
+
+    if (!llm) {
+      throw new Error('LLM adapter not available');
+    }
 
     // Check if LLM supports native tool calling
     if (llm.chatWithTools && tools.length > 0) {
@@ -488,7 +493,11 @@ export class AgentExecutor {
     toolCalls?: ToolCall[];
     tokensUsed?: number;
   }> {
-    const llm = this.ctx.platform.llm;
+    const llm = useLLM();
+
+    if (!llm) {
+      throw new Error('LLM adapter not available');
+    }
 
     // Convert to LLMMessage format
     const llmMessages = [
@@ -501,11 +510,18 @@ export class AgentExecutor {
     ];
 
     // Convert to LLMTool format
-    const llmTools = tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    }));
+    // OpenAI requires tool names to match ^[a-zA-Z0-9_-]+$ (no colons allowed)
+    // Create mapping: original name -> sanitized name
+    const nameMap = new Map<string, string>();
+    const llmTools = tools.map((tool) => {
+      const sanitizedName = tool.name.replace(/:/g, '_');
+      nameMap.set(sanitizedName, tool.name); // Store mapping for reverse lookup
+      return {
+        name: sanitizedName,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      };
+    });
 
     // Call native tool calling API
     const response = await llm.chatWithTools!(llmMessages, {
@@ -516,9 +532,10 @@ export class AgentExecutor {
     });
 
     // Convert LLMToolCall[] to ToolCall[]
+    // Use mapping to restore original names: fs_read -> fs:read
     const toolCalls = response.toolCalls?.map((tc) => ({
       id: tc.id,
-      name: tc.name,
+      name: nameMap.get(tc.name) || tc.name, // Restore original name
       input: tc.input,
     }));
 
@@ -542,7 +559,11 @@ export class AgentExecutor {
     toolCalls?: ToolCall[];
     tokensUsed?: number;
   }> {
-    const llm = this.ctx.platform.llm;
+    const llm = useLLM();
+
+    if (!llm) {
+      throw new Error('LLM adapter not available');
+    }
 
     // Build complete prompt with system prompt, tools, and messages
     let prompt = systemPrompt + '\n\n';

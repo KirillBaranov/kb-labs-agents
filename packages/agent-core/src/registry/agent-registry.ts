@@ -206,8 +206,12 @@ export class AgentRegistry {
 
     const context: AgentContext = { config };
 
-    // Load system prompt if specified
-    if (config.prompt?.systemPrompt) {
+    // Load system prompt - support both inline and file-based
+    if (config.prompt?.system) {
+      // Inline system prompt (directly in YAML)
+      context.systemPrompt = config.prompt.system;
+    } else if (config.prompt?.systemPrompt) {
+      // File-based system prompt
       const promptPath = join(agentPath, config.prompt.systemPrompt);
       try {
         context.systemPrompt = await fs.readFile(promptPath, 'utf-8');

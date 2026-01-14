@@ -8,18 +8,21 @@ import type { PluginContextV3 } from '@kb-labs/sdk';
 import type { ToolDefinition } from '@kb-labs/agent-contracts';
 import { glob } from 'glob';
 import { join, dirname } from 'path';
+import { readFileSync, existsSync } from 'fs';
 
 /**
- * Discovered plugin manifest
+ * Discovered plugin manifest (KB Labs v3 schema)
  */
 interface DiscoveredManifest {
   id: string;
   name?: string;
-  commands?: Array<{
-    id: string;
-    description?: string;
-    flags?: Record<string, any>;
-  }>;
+  cli?: {
+    commands?: Array<{
+      id: string;
+      description?: string;
+      flags?: Record<string, any>;
+    }>;
+  };
 }
 
 /**
@@ -48,29 +51,22 @@ export class ToolDiscoverer {
     shell?: { enabled: boolean };
     kbLabs?: { mode: 'allowlist' | 'denylist'; allow?: string[]; deny?: string[] };
   }): Promise<ToolDefinition[]> {
-    console.log('[ToolDiscoverer] discover() called, config:', JSON.stringify(config));
     const tools: ToolDefinition[] = [];
 
     // Add filesystem tools if enabled
     if (config.filesystem?.enabled) {
       tools.push(...this.getFilesystemTools());
-      console.log('[ToolDiscoverer] Added', tools.length, 'filesystem tools');
     }
 
     // Add shell tools if enabled
     if (config.shell?.enabled) {
       tools.push(...this.getShellTools());
-      console.log('[ToolDiscoverer] Added shell tools, total:', tools.length);
     }
 
     // Add KB Labs plugin tools if configured
     if (config.kbLabs) {
-      console.log('[ToolDiscoverer] kbLabs config found, discovering KB Labs tools...');
       const kbLabsTools = await this.discoverKBLabsTools(config.kbLabs);
-      console.log('[ToolDiscoverer] Discovered', kbLabsTools.length, 'KB Labs tools');
       tools.push(...kbLabsTools);
-    } else {
-      console.log('[ToolDiscoverer] No kbLabs config');
     }
 
     this.ctx.platform.logger.debug('Discovered tools', {
@@ -219,17 +215,15 @@ export class ToolDiscoverer {
       const manifests = await this.discoverManifests();
 
       for (const manifest of manifests) {
-        // Check if manifest has commands
-        if (!manifest.commands || manifest.commands.length === 0) {
+        // Check if manifest has commands (KB Labs v3: cli.commands)
+        if (!manifest.cli?.commands || manifest.cli.commands.length === 0) {
           continue;
         }
 
-        // Extract plugin name from manifest ID
-        const pluginName = this.extractPluginName(manifest.id);
-
         // Process each command
-        for (const command of manifest.commands) {
-          const toolName = `${pluginName}:${command.id}`;
+        // Note: command.id already contains full format like "mind:rag-query"
+        for (const command of manifest.cli.commands) {
+          const toolName = command.id;
 
           // Check against allowlist/denylist
           if (!this.shouldIncludeTool(toolName, config)) {
@@ -265,9 +259,11 @@ export class ToolDiscoverer {
    * Results are cached for 5 minutes
    */
   private async discoverManifests(): Promise<DiscoveredManifest[]> {
-    console.log('[ToolDiscoverer] discoverManifests() called');
-    // TEMP: Skip cache to test discovery
-    console.log('[ToolDiscoverer] Skipping cache, starting discovery');
+    // Check cache first
+    const cached = await this.ctx.platform.cache.get<DiscoveredManifest[]>(ToolDiscoverer.CACHE_KEY);
+    if (cached) {
+      return cached;
+    }
 
     // Cache miss - perform discovery (same approach as CLI PkgStrategy)
     const manifests: DiscoveredManifest[] = [];
@@ -280,28 +276,18 @@ export class ToolDiscoverer {
     ];
 
     try {
-      let totalProcessed = 0;
       for (const pattern of patterns) {
-        console.log('[ToolDiscoverer] Searching for packages:', pattern, 'in', rootDir);
         const pkgFiles = await glob(pattern, {
           cwd: rootDir,
           absolute: false,
         });
-        console.log('[ToolDiscoverer] Found', pkgFiles.length, 'packages for pattern:', pattern);
 
         for (const pkgFile of pkgFiles) {
           try {
-            totalProcessed++;
             const pkgPath = join(rootDir, pkgFile);
-            if (totalProcessed <= 5) {
-              console.log('[ToolDiscoverer] Processing package:', pkgFile, 'full path:', pkgPath);
-            }
-            const fs = this.ctx.runtime.fs;
-            const pkgContent = await fs.readFile(pkgPath, 'utf-8');
+            // Use Node.js fs to read package.json (not runtime.fs which is sandboxed)
+            const pkgContent = readFileSync(pkgPath, 'utf-8');
             const pkg = JSON.parse(pkgContent);
-            if (totalProcessed <= 5) {
-              console.log('[ToolDiscoverer] Package name:', pkg.name, 'has kb?', !!pkg.kb, 'has kbLabs?', !!pkg.kbLabs);
-            }
 
             // Check for manifest path in kbLabs.manifest or kb.manifest
             const manifestPathRel = pkg.kbLabs?.manifest || pkg.kb?.manifest;
@@ -309,15 +295,11 @@ export class ToolDiscoverer {
               continue;
             }
 
-            console.log('[ToolDiscoverer] Found package with manifest:', pkg.name, 'manifest:', manifestPathRel);
             const pkgDir = dirname(pkgPath);
             const manifestPath = join(pkgDir, manifestPathRel);
-            console.log('[ToolDiscoverer] Manifest full path:', manifestPath);
 
             // Check if manifest exists
-            try {
-              await fs.stat(manifestPath);
-            } catch {
+            if (!existsSync(manifestPath)) {
               continue;
             }
 
@@ -326,12 +308,9 @@ export class ToolDiscoverer {
             const manifestModule = await import(manifestUrl);
             const manifest = (manifestModule.default || manifestModule.manifest || manifestModule) as DiscoveredManifest;
 
-            // Validate manifest has required fields
-            if (manifest.id && manifest.commands) {
-              console.log('[ToolDiscoverer] Loaded manifest:', manifest.id, 'with', manifest.commands?.length, 'commands');
+            // Validate manifest has required fields (KB Labs v3: cli.commands)
+            if (manifest.id && manifest.cli?.commands) {
               manifests.push(manifest);
-            } else {
-              console.log('[ToolDiscoverer] Invalid manifest:', {hasId: !!manifest.id, hasCommands: !!manifest.commands});
             }
           } catch (error) {
             // Skip invalid packages/manifests
@@ -422,7 +401,45 @@ export class ToolDiscoverer {
     const properties: Record<string, any> = {};
     const required: string[] = [];
 
-    // Extract flags from command
+    // Hardcoded schemas for known commands (TODO: parse from Zod schemas in handlers)
+    const knownSchemas: Record<string, ToolDefinition['inputSchema']> = {
+      'mind:rag-query': {
+        type: 'object',
+        properties: {
+          text: {
+            type: 'string',
+            description: 'Semantic question or query to search for in the codebase',
+          },
+          mode: {
+            type: 'string',
+            description: 'Query mode: instant (fast), auto (balanced), or thinking (deep analysis)',
+            enum: ['instant', 'auto', 'thinking'],
+          },
+          scope: {
+            type: 'string',
+            description: 'Scope ID to search within (default: "default")',
+          },
+        },
+        required: ['text'],
+      },
+      'mind:rag-status': {
+        type: 'object',
+        properties: {
+          scope: {
+            type: 'string',
+            description: 'Scope ID to check status for',
+          },
+        },
+      },
+    };
+
+    // Return hardcoded schema if available
+    const knownSchema = knownSchemas[command.id];
+    if (knownSchema) {
+      return knownSchema;
+    }
+
+    // Extract flags from command (legacy support)
     if (command.flags) {
       for (const [flagName, flagConfig] of Object.entries(command.flags as Record<string, any>)) {
         properties[flagName] = {
