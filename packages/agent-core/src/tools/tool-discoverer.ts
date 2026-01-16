@@ -155,7 +155,7 @@ export class ToolDiscoverer {
       },
       {
         name: 'fs:search',
-        description: 'Search for text in files using glob patterns',
+        description: 'Search for text in files using glob patterns. You fully control what to ignore via the ignore parameter.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -170,6 +170,11 @@ export class ToolDiscoverer {
             caseInsensitive: {
               type: 'boolean',
               description: 'Case insensitive search',
+            },
+            ignore: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Glob patterns to ignore (e.g., ["**/node_modules/**", "**/dist/**"]). No defaults - you control what to exclude.',
             },
           },
           required: ['pattern', 'text'],
