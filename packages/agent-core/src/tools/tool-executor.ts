@@ -149,6 +149,7 @@ export class ToolExecutor {
         const pattern = input.pattern as string;
         const text = input.text as string;
         const caseInsensitive = input.caseInsensitive as boolean || false;
+        const ignore = input.ignore as string[] | undefined;
 
         if (!pattern || !text) {
           throw new Error('Missing required parameters: pattern, text');
@@ -158,11 +159,11 @@ export class ToolExecutor {
         const { glob } = await import('glob');
         const files = await glob(pattern, {
           cwd: this.ctx.cwd,
-          ignore: ['**/node_modules/**', '**/.git/**'],
+          ignore: ignore || [], // No default ignores - agent controls everything
         });
 
-        // Search in each file
-        const matches: string[] = [];
+        // Search in each file and group by file
+        const matchesByFile = new Map<string, Array<{ line: number; content: string }>>();
         const searchRegex = new RegExp(
           text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
           caseInsensitive ? 'gi' : 'g'
@@ -176,7 +177,13 @@ export class ToolExecutor {
 
             for (let i = 0; i < lines.length; i++) {
               if (searchRegex.test(lines[i] || '')) {
-                matches.push(`${file}:${i + 1}: ${lines[i]?.trim()}`);
+                if (!matchesByFile.has(file)) {
+                  matchesByFile.set(file, []);
+                }
+                matchesByFile.get(file)!.push({
+                  line: i + 1,
+                  content: lines[i]?.trim() || '',
+                });
               }
             }
           } catch {
@@ -185,9 +192,79 @@ export class ToolExecutor {
           }
         }
 
-        return matches.length > 0
-          ? matches.join('\n')
-          : `No matches found for "${text}" in pattern "${pattern}"`;
+        if (matchesByFile.size === 0) {
+          return `No matches found for "${text}" in pattern "${pattern}"`;
+        }
+
+        const totalMatches = Array.from(matchesByFile.values()).reduce(
+          (sum, m) => sum + m.length,
+          0
+        );
+
+        // Check if too many files found
+        const tooManyFiles = matchesByFile.size > 20;
+        const filesToShow = tooManyFiles
+          ? Array.from(matchesByFile.entries()).slice(0, 20)
+          : Array.from(matchesByFile.entries());
+
+        // Format output - machine-readable format
+        const formatted: string[] = [];
+
+        // Add warning if too many files
+        if (tooManyFiles) {
+          formatted.push('⚠️  WARNING: Too many files found!');
+          formatted.push(`Found ${matchesByFile.size} files with ${totalMatches} matches.`);
+          formatted.push('Showing only first 20 files to avoid context overflow.');
+          formatted.push('');
+          formatted.push('RECOMMENDATION: Use the "ignore" parameter to filter results:');
+          formatted.push('  ignore: ["**/node_modules/**", "**/dist/**", "**/.git/**"]');
+          formatted.push('');
+          formatted.push('Example:');
+          formatted.push(`  fs:search with pattern="${pattern}", text="${text}", ignore=["**/node_modules/**", "**/dist/**"]`);
+          formatted.push('');
+          formatted.push('---');
+          formatted.push('');
+        }
+
+        // Show files (limited to 20 if too many)
+        for (const [file, matches] of filesToShow) {
+          formatted.push(`FILE: ${file}`);
+          for (const match of matches.slice(0, 3)) {
+            // Only first 3 matches per file
+            formatted.push(`  ${match.line}: ${match.content}`);
+          }
+          if (matches.length > 3) {
+            formatted.push(`  ... ${matches.length - 3} more matches in this file`);
+          }
+          formatted.push(''); // Empty line between files
+        }
+
+        // Summary
+        if (tooManyFiles) {
+          formatted.push(`Showing 20 of ${matchesByFile.size} files. ${matchesByFile.size - 20} files omitted.`);
+          formatted.push(`Total in ALL files: ${totalMatches} matches in ${matchesByFile.size} files`);
+        } else {
+          formatted.push(`Total: ${totalMatches} matches in ${matchesByFile.size} files`);
+        }
+        formatted.push('');
+
+        // Path usage instruction
+        formatted.push('INSTRUCTION: When using fs:read, use the FULL path shown after "FILE:" above.');
+        formatted.push(
+          'Example: If you see "FILE: kb-labs-mind/packages/mind-engine/src/indexing/stages/storage.ts"'
+        );
+        formatted.push(
+          'Then use: fs:read with path "kb-labs-mind/packages/mind-engine/src/indexing/stages/storage.ts"'
+        );
+
+        const result = formatted.join('\n');
+
+        // Debug logging - show actual output sent to LLM
+        console.log('\n========== fs:search OUTPUT ==========');
+        console.log(result);
+        console.log('======================================\n');
+
+        return result;
       }
 
       default:
