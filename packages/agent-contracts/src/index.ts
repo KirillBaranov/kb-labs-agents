@@ -93,6 +93,9 @@ export {
   AgentMetadataSchema,
 } from './rest-schemas.js';
 
+// REST API Routes
+export { AGENTS_BASE_PATH, AGENTS_ROUTES } from './routes.js';
+
 // ============================================
 // Legacy Plugin Template Exports (kept for compatibility)
 // ============================================
