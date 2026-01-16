@@ -6,6 +6,7 @@
 
 import { defineManifest, defineCommandFlags, generateExamples } from '@kb-labs/sdk';
 import type { PermissionSpec } from '@kb-labs/sdk';
+import { AGENTS_BASE_PATH, AGENTS_ROUTES } from '@kb-labs/agent-contracts';
 
 /**
  * Plugin permissions - needs full filesystem and shell access for agents
@@ -168,6 +169,36 @@ export const manifest = defineManifest({
       }
     ]
   },
+
+  // REST API routes for Studio integration
+  rest: {
+    basePath: AGENTS_BASE_PATH,
+    routes: [
+      // GET / - List all available agents
+      {
+        method: 'GET',
+        path: AGENTS_ROUTES.LIST,
+        handler: './rest/list-agents.js#default',
+        output: {
+          zod: '@kb-labs/agent-contracts#ListAgentsResponseSchema',
+        },
+      },
+      // POST /run - Execute an agent
+      {
+        method: 'POST',
+        path: AGENTS_ROUTES.RUN,
+        handler: './rest/run-agent.js#default',
+        input: {
+          zod: '@kb-labs/agent-contracts#RunAgentRequestSchema',
+        },
+        output: {
+          zod: '@kb-labs/agent-contracts#AgentResponseSchema',
+        },
+        timeoutMs: 300000, // 5 minutes for agent execution
+      },
+    ],
+  },
+
   permissions: pluginPermissions
 });
 
