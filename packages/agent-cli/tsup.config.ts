@@ -17,6 +17,8 @@ export default defineConfig({
     'src/cli/commands/hello-v3.ts',
     'src/rest/handlers/hello-handler.ts',
     'src/rest/schemas/hello-schema.ts',
+    'src/rest/run-agent.ts',      // REST API handlers
+    'src/rest/list-agents.ts',
     'src/studio/widgets/hello-widget.tsx',
     // 'src/jobs/hello.ts' // TODO: Jobs not supported in V3 SDK yet
   ],
