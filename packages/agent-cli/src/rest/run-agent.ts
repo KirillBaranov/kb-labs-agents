@@ -12,8 +12,7 @@ import type {
   AgentStats,
   ExecutionStep,
 } from '@kb-labs/agent-contracts';
-import { AgentExecutor } from '@kb-labs/agent-core';
-import { AgentDiscoverer } from '../core/agent-discoverer.js';
+import { AgentExecutor, AgentRegistry, ToolDiscoverer } from '@kb-labs/agent-core';
 
 /**
  * Execute an agent via REST API
@@ -23,15 +22,28 @@ export default defineHandler({
     ctx: PluginContextV3,
     input: RestInput<unknown, RunAgentRequest>
   ): Promise<RunAgentResponse | RunAgentErrorResponse> {
+    // Validate request body
+    if (!input.body) {
+      return {
+        success: false,
+        agentId: 'unknown',
+        task: '',
+        error: {
+          message: 'Request body is required',
+          code: 'INVALID_REQUEST',
+        },
+      };
+    }
+
     const { agentId, task } = input.body;
     const startTime = Date.now();
 
     try {
       // Discover agent configuration
-      const discoverer = new AgentDiscoverer(ctx);
-      const agentContext = await discoverer.loadAgent(agentId);
+      const registry = new AgentRegistry(ctx);
+      const config = await registry.loadConfig(agentId);
 
-      if (!agentContext) {
+      if (!config) {
         return {
           success: false,
           agentId,
@@ -43,9 +55,19 @@ export default defineHandler({
         };
       }
 
+      // Load agent context
+      const agentContext = await registry.loadContext(agentId, config);
+
+      // Discover tools
+      const toolDiscoverer = new ToolDiscoverer(ctx);
+      const tools = await toolDiscoverer.discover(config.tools || {});
+
+      // Build full context with tools
+      const fullContext = { ...agentContext, tools };
+
       // Execute agent
-      const executor = new AgentExecutor(ctx.platform);
-      const result = await executor.execute(agentContext, task);
+      const executor = new AgentExecutor(ctx);
+      const result = await executor.execute(fullContext, task);
 
       const durationMs = Date.now() - startTime;
 
