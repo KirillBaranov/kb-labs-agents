@@ -5,8 +5,12 @@
  */
 
 import { defineHandler, type PluginContextV3, type RestInput } from '@kb-labs/sdk';
-import type { ListAgentsRequest, ListAgentsResponse, AgentMetadata } from '@kb-labs/agent-contracts';
-import { AgentDiscoverer } from '../core/agent-discoverer.js';
+import type {
+  ListAgentsRequest,
+  ListAgentsResponse,
+  AgentMetadataREST as AgentMetadata,
+} from '@kb-labs/agent-contracts';
+import { AgentRegistry } from '@kb-labs/agent-core';
 
 /**
  * List all available agents
@@ -17,22 +21,49 @@ export default defineHandler({
     input: RestInput<ListAgentsRequest, unknown>
   ): Promise<ListAgentsResponse> {
     try {
-      const discoverer = new AgentDiscoverer(ctx);
-      const agentContexts = await discoverer.discoverAll();
+      const registry = new AgentRegistry(ctx);
+      const agentMetas = await registry.discover();
 
-      const agents: AgentMetadata[] = agentContexts.map((agentCtx) => ({
-        id: agentCtx.config.id,
-        name: agentCtx.config.name,
-        description: agentCtx.config.description,
-        tools: agentCtx.tools?.map((t) => t.name) ?? [],
-      }));
+      // Load config for each valid agent
+      const agents: AgentMetadata[] = await Promise.all(
+        agentMetas
+          .filter((a) => a.valid)
+          .map(async (agent) => {
+            try {
+              const config = await registry.loadConfig(agent.id);
+              // Extract tool names from config
+              const toolNames: string[] = [];
+              if (config.tools?.kbLabs) {
+                if (Array.isArray(config.tools.kbLabs)) {
+                  toolNames.push(...config.tools.kbLabs);
+                } else if (typeof config.tools.kbLabs === 'object') {
+                  toolNames.push(...Object.keys(config.tools.kbLabs));
+                }
+              }
+              return {
+                id: agent.id,
+                name: agent.name,
+                description: config.description,
+                tools: toolNames,
+              };
+            } catch {
+              return {
+                id: agent.id,
+                name: agent.name,
+                description: undefined,
+                tools: [],
+              };
+            }
+          })
+      );
 
       return {
         agents,
         total: agents.length,
       };
     } catch (error) {
-      ctx.logger.error('Failed to list agents', { error });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      ctx.platform.logger.error(`Failed to list agents: ${errorMessage}`);
       return {
         agents: [],
         total: 0,
