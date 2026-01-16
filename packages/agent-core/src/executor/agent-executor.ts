@@ -17,6 +17,13 @@ import type {
 } from '@kb-labs/agent-contracts';
 import { LoopDetector } from './loop-detector.js';
 import { ToolExecutor } from '../tools/tool-executor.js';
+import { TaskClassifier, type TaskClassification } from '../planning/task-classifier.js';
+import { ReActPromptBuilder } from '../planning/react-prompt-builder.js';
+import { ReActParser } from './react-parser.js';
+import { ContextCompressor, type Message } from './context-compressor.js';
+import { ExecutionMemory } from './execution-memory.js';
+import { ProgressTracker, type ProgressEstimate } from './progress-tracker.js';
+import { ErrorRecovery } from './error-recovery.js';
 
 /**
  * Agent Executor
@@ -32,10 +39,29 @@ import { ToolExecutor } from '../tools/tool-executor.js';
 export class AgentExecutor {
   private loopDetector: LoopDetector;
   private toolExecutor: ToolExecutor;
+  private taskClassifier: TaskClassifier;
+  private reactPromptBuilder: ReActPromptBuilder;
+  private reactParser: ReActParser;
+  private contextCompressor: ContextCompressor;
+  private executionMemory: ExecutionMemory;
+  private progressTracker: ProgressTracker;
+  private errorRecovery: ErrorRecovery;
 
   constructor(private ctx: PluginContextV3) {
     this.loopDetector = new LoopDetector();
     this.toolExecutor = new ToolExecutor(ctx);
+    this.taskClassifier = new TaskClassifier();
+    this.reactPromptBuilder = new ReActPromptBuilder();
+    this.reactParser = new ReActParser();
+    this.contextCompressor = new ContextCompressor(ctx);
+    this.executionMemory = new ExecutionMemory();
+    // Use global LLM via useLLM() composable (accesses platform singleton)
+    const llm = useLLM();
+    if (!llm) {
+      throw new Error('LLM not configured - required for ProgressTracker and ErrorRecovery');
+    }
+    this.progressTracker = new ProgressTracker(llm);
+    this.errorRecovery = new ErrorRecovery(llm);
   }
 
   /**
@@ -71,6 +97,18 @@ export class AgentExecutor {
       },
     };
 
+    // PHASE 1: Classify task to determine optimal strategy
+    this.ctx.platform.logger.info('Classifying task...', { task });
+    const classification = await this.taskClassifier.classify(task, context.tools || []);
+
+    this.ctx.platform.logger.info('Task classified', {
+      type: classification.type,
+      complexity: classification.complexity,
+      strategy: classification.suggestedStrategy,
+      estimatedSteps: classification.estimatedSteps,
+      reasoning: classification.reasoning,
+    });
+
     // Categorize task for analytics correlation
     const taskCategory = this.categorizeTask(task);
     const taskHash = this.hashTask(task);
@@ -82,6 +120,8 @@ export class AgentExecutor {
       taskCategory,
       taskHash,
       maxSteps: state.maxSteps,
+      classificationType: classification.type,
+      classificationComplexity: classification.complexity,
     });
 
     // Track agent execution start
@@ -93,11 +133,22 @@ export class AgentExecutor {
       taskHash,
       maxSteps: state.maxSteps,
       toolsAvailable: (context.tools || []).length,
+      classificationType: classification.type,
+      classificationComplexity: classification.complexity,
+      classificationStrategy: classification.suggestedStrategy,
     });
 
     try {
-      // Build system prompt
-      const systemPrompt = this.buildSystemPrompt(context);
+      // PHASE 2: Clear memory from previous execution
+      this.executionMemory.clear();
+      // Set task goal for progress tracking
+      this.executionMemory.setTaskGoal(task);
+
+      // PHASE 3: Clear progress tracker from previous execution
+      this.progressTracker.clear();
+
+      // Build ReAct system prompt based on classification
+      const systemPrompt = this.buildReActSystemPrompt(context, classification);
 
       // Initial user message
       let messages: Array<{ role: string; content: string; toolCallId?: string }> = [
@@ -115,6 +166,26 @@ export class AgentExecutor {
 
         // Notify step start
         progressCallback?.onStepStart?.(state.currentStep, state.maxSteps);
+
+        // PHASE 1.5: Compress context if needed
+        if (this.contextCompressor.shouldCompress(messages as Message[])) {
+          this.ctx.platform.logger.info('Context window getting large, compressing...', {
+            currentMessages: messages.length,
+          });
+
+          const compressionResult = await this.contextCompressor.compress(
+            messages as Message[],
+            systemPrompt,
+            task
+          );
+
+          messages = compressionResult.compressedMessages as typeof messages;
+
+          this.ctx.platform.logger.info('Context compressed', {
+            savedTokens: compressionResult.originalTokens - compressionResult.compressedTokens,
+            compressionRatio: `${(compressionResult.compressionRatio * 100).toFixed(1)}%`,
+          });
+        }
 
         // Call LLM
         progressCallback?.onLLMStart?.(state.currentStep);
@@ -140,17 +211,39 @@ export class AgentExecutor {
           durationMs: stepDuration,
         };
 
-        // Check if LLM wants to use tools
-        if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
+        // PHASE 1: Hybrid approach - parse ReAct text if native calling didn't work
+        let toolCallsToExecute = llmResponse.toolCalls || [];
+
+        if (toolCallsToExecute.length === 0 && this.reactParser.hasReActPattern(llmResponse.content)) {
+          // LLM wrote ReAct format but didn't trigger native calling
+          // Parse text and extract tool call
+          this.ctx.platform.logger.info('Detected ReAct pattern in text, parsing tool call', {
+            step: state.currentStep,
+          });
+
+          const parsedToolCall = this.reactParser.parse(llmResponse.content);
+          const toolCall = this.reactParser.toToolCall(parsedToolCall);
+
+          if (toolCall) {
+            this.ctx.platform.logger.info('Extracted tool call from ReAct text', {
+              tool: toolCall.name,
+              input: toolCall.input,
+            });
+            toolCallsToExecute = [toolCall];
+          }
+        }
+
+        // Check if LLM wants to use tools (native or parsed)
+        if (toolCallsToExecute.length > 0) {
           this.ctx.platform.logger.debug('LLM requested tools', {
-            count: llmResponse.toolCalls.length,
-            tools: llmResponse.toolCalls.map((tc) => tc.name),
+            count: toolCallsToExecute.length,
+            tools: toolCallsToExecute.map((tc) => tc.name),
           });
 
           // Execute tool calls and build tool ID mapping
           const toolCallIdMap = new Map<string, string>(); // name -> id
 
-          for (const toolCall of llmResponse.toolCalls) {
+          for (const toolCall of toolCallsToExecute) {
             // Save tool call ID for native tool message format (use name as fallback)
             toolCallIdMap.set(toolCall.name, toolCall.id || toolCall.name);
 
@@ -289,17 +382,145 @@ export class AgentExecutor {
         // Add step to history
         state.steps.push(step);
 
+        // PHASE 2: Extract findings from this step to memory
+        this.executionMemory.extractFromStep(step);
+
+        // PHASE 3: Estimate progress toward goal
+        const progressEstimate = await this.progressTracker.estimateProgress(
+          this.executionMemory,
+          task,
+          step
+        );
+
+        this.ctx.platform.logger.info('Progress estimate', {
+          step: state.currentStep,
+          progressPercent: progressEstimate.progressPercent,
+          nextMilestone: progressEstimate.nextMilestone,
+          isStuck: progressEstimate.isStuck,
+          blockers: progressEstimate.blockers,
+        });
+
+        // PHASE 3: Check if agent is stuck
+        if (progressEstimate.isStuck) {
+          this.ctx.platform.logger.warn('Agent appears stuck (no progress)', {
+            step: state.currentStep,
+            progressPercent: progressEstimate.progressPercent,
+            reasoning: progressEstimate.reasoning,
+            blockers: progressEstimate.blockers,
+          });
+
+          // PHASE 4: Attempt error recovery
+          if (this.errorRecovery.shouldAttemptRecovery(progressEstimate, this.executionMemory)) {
+            this.ctx.platform.logger.info('Attempting error recovery...', {
+              blockers: progressEstimate.blockers,
+              progressPercent: progressEstimate.progressPercent,
+            });
+
+            const recoveryAction = await this.errorRecovery.generateRecoveryAction(
+              progressEstimate,
+              this.executionMemory,
+              step
+            );
+
+            this.ctx.platform.logger.info('Recovery strategy generated', {
+              strategy: recoveryAction.strategy,
+              reasoning: recoveryAction.reasoning,
+              confidence: recoveryAction.confidence,
+            });
+
+            // Execute recovery based on strategy
+            if (recoveryAction.strategy === 'give-up') {
+              this.ctx.platform.logger.warn('Recovery strategy: give up', {
+                reasoning: recoveryAction.reasoning,
+              });
+              // Continue to next step (will likely hit max steps soon)
+            } else if (recoveryAction.strategy === 'escalate') {
+              this.ctx.platform.logger.warn('Recovery strategy: escalate to user', {
+                message: recoveryAction.action.escalationMessage,
+              });
+              // Log escalation message for user (Phase 5 will add interactive escalation)
+            } else {
+              // Strategies: retry, alternative-tool, parameter-adjustment
+              this.ctx.platform.logger.info('Recovery strategy: attempting alternative approach', {
+                strategy: recoveryAction.strategy,
+                toolName: recoveryAction.action.toolName,
+              });
+
+              // Record the recovery attempt
+              this.errorRecovery.recordAttempt(recoveryAction.action.toolName);
+
+              // For now, log the suggested recovery (Phase 5 will execute it)
+              // This provides observability without risking breaking changes
+              this.ctx.platform.logger.info('Suggested recovery action', {
+                action: recoveryAction.action,
+                expectedOutcome: recoveryAction.expectedOutcome,
+              });
+            }
+          }
+        }
+
         // Check for loops
         const loopResult = this.loopDetector.checkForLoop(state.steps);
         if (loopResult.detected) {
-          const durationMs = Date.now() - state.startTime;
-          const toolStats = this.collectToolStats(state.steps);
-
           this.ctx.platform.logger.warn('Loop detected', {
             type: loopResult.type,
             description: loopResult.description,
             confidence: loopResult.confidence,
           });
+
+          // PHASE 4: Attempt error recovery for loop detection
+          // Treat loop detection as a stuck condition
+          const loopDescription = loopResult.description || 'Unknown loop pattern';
+          const existingBlockers = progressEstimate.blockers || [];
+          const loopBlockers: string[] = [...existingBlockers, loopDescription];
+          const loopProgressEstimate: ProgressEstimate = {
+            progressPercent: progressEstimate.progressPercent,
+            reasoning: `Loop detected: ${loopDescription}`,
+            nextMilestone: progressEstimate.nextMilestone || 'Break the loop',
+            blockers: loopBlockers,
+            isStuck: true, // Force stuck state
+          };
+
+          if (this.errorRecovery.shouldAttemptRecovery(loopProgressEstimate, this.executionMemory)) {
+            console.log('[PHASE 4] Attempting error recovery for loop:', {
+              loopType: loopResult.type,
+              blockers: loopProgressEstimate.blockers,
+            });
+            this.ctx.platform.logger.info('Attempting error recovery for loop...', {
+              loopType: loopResult.type,
+              blockers: loopProgressEstimate.blockers,
+            });
+
+            const recoveryAction = await this.errorRecovery.generateRecoveryAction(
+              loopProgressEstimate,
+              this.executionMemory,
+              step
+            );
+
+            console.log('[PHASE 4] Recovery strategy generated:', {
+              strategy: recoveryAction.strategy,
+              reasoning: recoveryAction.reasoning,
+              confidence: recoveryAction.confidence,
+            });
+            this.ctx.platform.logger.info('Recovery strategy generated for loop', {
+              strategy: recoveryAction.strategy,
+              reasoning: recoveryAction.reasoning,
+              confidence: recoveryAction.confidence,
+            });
+
+            // For Phase 4, we just log recovery strategies (observability-first)
+            // Phase 5 will actually execute them
+            if (recoveryAction.strategy !== 'give-up' && recoveryAction.strategy !== 'escalate') {
+              this.ctx.platform.logger.info('Suggested recovery for loop', {
+                action: recoveryAction.action,
+                expectedOutcome: recoveryAction.expectedOutcome,
+              });
+            }
+          }
+
+          // After recovery logging, still fail execution (Phase 5 will break the loop)
+          const durationMs = Date.now() - state.startTime;
+          const toolStats = this.collectToolStats(state.steps);
 
           // Track loop detection
           await this.ctx.platform.analytics.track('agent.execution.completed', {
@@ -419,7 +640,34 @@ export class AgentExecutor {
   }
 
   /**
-   * Build system prompt from agent context
+   * Build ReAct system prompt with task classification
+   * (PHASE 1: Tool-first thinking)
+   * (PHASE 2: Memory-aware prompting)
+   */
+  private buildReActSystemPrompt(context: AgentContext, classification: TaskClassification): string {
+    // Start with agent's base system prompt (if any)
+    const basePrompt = this.buildSystemPrompt(context);
+
+    // PHASE 2: Get memory summary
+    const memorySummary = this.executionMemory.getSummary();
+
+    // Build ReAct pattern prompt using classification
+    const reactPrompt = this.reactPromptBuilder.build(
+      classification,
+      context.tools || [],
+      basePrompt
+    );
+
+    // PHASE 2: Inject memory if we have findings
+    if (memorySummary.count > 0) {
+      return reactPrompt + '\n\n# Execution Memory\n\n' + memorySummary.formattedText;
+    }
+
+    return reactPrompt;
+  }
+
+  /**
+   * Build system prompt from agent context (legacy)
    */
   private buildSystemPrompt(context: AgentContext): string {
     let prompt = '';
