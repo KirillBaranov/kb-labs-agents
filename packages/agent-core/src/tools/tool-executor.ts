@@ -18,7 +18,24 @@ import { join } from 'path';
  * - KB Labs plugin commands (devkit:*, mind:*, workflow:*)
  */
 export class ToolExecutor {
-  constructor(private ctx: PluginContextV3) {}
+  private agentId?: string;
+  private sessionId: string;
+
+  constructor(
+    private ctx: PluginContextV3,
+    private agentContext?: { tools: Array<{ name: string; inputSchema: any }> }
+  ) {
+    // Generate unique session ID for this ToolExecutor instance
+    this.sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  /**
+   * Set agent ID for cache key generation
+   * Called by AgentExecutor after context is loaded
+   */
+  setAgentId(agentId: string): void {
+    this.agentId = agentId;
+  }
 
   /**
    * Execute a tool call
@@ -35,6 +52,33 @@ export class ToolExecutor {
         input: toolCall.input,
       });
 
+      // Generate cache key
+      const cacheKey = this.generateCacheKey(toolCall);
+
+      // Check if forceRefresh flag is set in input
+      const input = toolCall.input as Record<string, any> | undefined;
+      const forceRefresh = input?.forceRefresh === true;
+
+      // Try to get from cache if not forcing refresh
+      if (!forceRefresh && this.ctx.platform.cache) {
+        const cached = await this.ctx.platform.cache.get<ToolResult>(cacheKey);
+        if (cached) {
+          const durationMs = Date.now() - startTime;
+          console.log('[TOOL CACHE] ✅ HIT', {
+            tool: toolCall.name,
+            cacheKey: cacheKey.substring(0, 60) + '...',
+            durationMs,
+          });
+
+          // Return cached result with fromCache flag
+          return {
+            ...cached,
+            metadata: { ...cached.metadata, durationMs, fromCache: true },
+          };
+        }
+      }
+
+      // Cache miss or forceRefresh - execute tool
       let output: string;
 
       // Route to appropriate executor based on tool prefix
@@ -54,11 +98,23 @@ export class ToolExecutor {
         durationMs,
       });
 
-      return {
+      const result: ToolResult = {
         success: true,
         output,
-        metadata: { durationMs },
+        metadata: { durationMs, fromCache: false },
       };
+
+      // Cache successful results for 1 minute (60000ms)
+      if (result.success && this.ctx.platform.cache) {
+        await this.ctx.platform.cache.set(cacheKey, result, 60000);
+        console.log('[TOOL CACHE] 💾 STORED', {
+          tool: toolCall.name,
+          cacheKey: cacheKey.substring(0, 60) + '...',
+          ttl: '60s',
+        });
+      }
+
+      return result;
     } catch (error) {
       const durationMs = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -75,7 +131,7 @@ export class ToolExecutor {
           code: 'EXECUTION_ERROR',
           message: errorMessage,
         },
-        metadata: { durationMs },
+        metadata: { durationMs, fromCache: false },
       };
     }
   }
@@ -93,8 +149,17 @@ export class ToolExecutor {
         if (!path) {
           throw new Error('Missing required parameter: path');
         }
-        const content = await fs.readFile(path, 'utf-8');
-        return content;
+
+        try {
+          const content = await fs.readFile(path, 'utf-8');
+          return content;
+        } catch (error: any) {
+          // Enhanced error handling for ENOENT (file not found)
+          if (error.code === 'ENOENT') {
+            return await this.handleFileNotFound(path);
+          }
+          throw error;
+        }
       }
 
       case 'fs:write': {
@@ -337,7 +402,69 @@ export class ToolExecutor {
       throw new Error(`Invalid plugin command format: ${toolCall.name}`);
     }
 
-    const input = toolCall.input as Record<string, any>;
+    console.log('[DEBUG] Plugin command input:', {
+      name: toolCall.name,
+      input: toolCall.input,
+      inputType: typeof toolCall.input,
+    });
+
+    // Handle case where LLM passes string instead of object
+    // Adaptively convert based on tool's input schema
+    let input: Record<string, any>;
+    if (typeof toolCall.input === 'string' && this.agentContext) {
+      // Find tool definition to get its schema
+      const tool = this.agentContext.tools.find(t => t.name === toolCall.name);
+
+      if (tool?.inputSchema?.properties) {
+        // Find the "main" parameter from schema:
+        // 1. First required string parameter
+        // 2. Common names: 'text', 'query', 'command', 'message', 'prompt'
+        // 3. First string parameter
+        const props = tool.inputSchema.properties as Record<string, any>;
+        const required = (tool.inputSchema.required as string[]) || [];
+        let mainParam: string | undefined;
+
+        // Try required params first
+        for (const req of required) {
+          if (props[req]?.type === 'string') {
+            mainParam = req;
+            break;
+          }
+        }
+
+        // Try common names
+        if (!mainParam) {
+          const commonNames = ['text', 'query', 'command', 'message', 'prompt', 'input'];
+          for (const name of commonNames) {
+            if (props[name]?.type === 'string') {
+              mainParam = name;
+              break;
+            }
+          }
+        }
+
+        // Use first string parameter
+        if (!mainParam) {
+          for (const [key, value] of Object.entries(props)) {
+            if ((value as any).type === 'string') {
+              mainParam = key;
+              break;
+            }
+          }
+        }
+
+        if (mainParam) {
+          input = { [mainParam]: toolCall.input };
+          console.log(`[DEBUG] Converted string to object: { ${mainParam}: "${toolCall.input}" }`);
+        } else {
+          input = {};
+        }
+      } else {
+        input = {};
+      }
+    } else {
+      input = toolCall.input as Record<string, any>;
+    }
 
     // Build command args from input
     const args: string[] = [pluginName, commandName];
@@ -391,5 +518,139 @@ export class ToolExecutor {
         reject(new Error(`Failed to execute command: ${error.message}`));
       });
     });
+  }
+
+  /**
+   * Generate cache key for tool call
+   *
+   * Format: agent-tools:{agentId}:{sessionId}:{toolName}:{inputHash}
+   *
+   * @param toolCall - Tool call to generate key for
+   * @returns Cache key string
+   */
+  private generateCacheKey(toolCall: ToolCall): string {
+    const agentId = this.agentId || 'unknown';
+    const inputHash = this.hashInput(toolCall.input);
+    return `agent-tools:${agentId}:${this.sessionId}:${toolCall.name}:${inputHash}`;
+  }
+
+  /**
+   * Hash tool input for cache key
+   *
+   * Creates a deterministic hash from input object.
+   * Removes forceRefresh flag before hashing to ensure consistent keys.
+   *
+   * @param input - Tool input (string, object, or undefined)
+   * @returns Short hash string
+   */
+  private hashInput(input: any): string {
+    // Handle undefined/null
+    if (input === undefined || input === null) {
+      return 'none';
+    }
+
+    // Clone and remove forceRefresh flag (shouldn't affect cache key)
+    let inputToHash = input;
+    if (typeof input === 'object' && !Array.isArray(input)) {
+      inputToHash = { ...input };
+      delete inputToHash.forceRefresh;
+    }
+
+    // Convert to deterministic string
+    const str = typeof inputToHash === 'string'
+      ? inputToHash
+      : JSON.stringify(inputToHash, Object.keys(inputToHash).sort());
+
+    // Simple hash function (djb2)
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash) + str.charCodeAt(i); // hash * 33 + c
+    }
+
+    // Convert to base36 (alphanumeric) and take first 8 chars
+    return Math.abs(hash).toString(36).substring(0, 8);
+  }
+
+  /**
+   * Handle file not found error with helpful suggestions
+   *
+   * Provides:
+   * 1. Similar file names (fuzzy match)
+   * 2. Contents of parent directory
+   * 3. Actionable suggestions
+   */
+  private async handleFileNotFound(path: string): Promise<string> {
+    const fs = this.ctx.runtime.fs;
+    const { dirname, basename } = await import('path');
+
+    const parentDir = dirname(path);
+    const fileName = basename(path);
+    const suggestions: string[] = [];
+
+    // Try to list parent directory
+    try {
+      const entries = await fs.readdir(parentDir);
+
+      // Find similar files (case-insensitive partial match)
+      const similar = entries.filter(entry => {
+        const lowerEntry = entry.toLowerCase();
+        const lowerFile = fileName.toLowerCase();
+
+        // Exact match (shouldn't happen, but just in case)
+        if (lowerEntry === lowerFile) return true;
+
+        // Contains the filename
+        if (lowerEntry.includes(lowerFile) || lowerFile.includes(lowerEntry)) return true;
+
+        // Remove extension and check stem
+        const stemEntry = lowerEntry.replace(/\.[^.]+$/, '');
+        const stemFile = lowerFile.replace(/\.[^.]+$/, '');
+        if (stemEntry.includes(stemFile) || stemFile.includes(stemEntry)) return true;
+
+        return false;
+      }).slice(0, 5); // Limit to 5 suggestions
+
+      if (similar.length > 0) {
+        suggestions.push(`Similar files in ${parentDir}:`);
+        similar.forEach(file => {
+          suggestions.push(`  - ${parentDir}/${file}`);
+        });
+      } else {
+        // No similar files, show all files in directory
+        suggestions.push(`Files in ${parentDir}:`);
+        const limited = entries.slice(0, 10); // Show max 10 files
+        limited.forEach(file => {
+          suggestions.push(`  - ${file}`);
+        });
+        if (entries.length > 10) {
+          suggestions.push(`  ... and ${entries.length - 10} more files`);
+        }
+      }
+    } catch (dirError) {
+      // Parent directory doesn't exist either
+      suggestions.push(`Parent directory ${parentDir} also doesn't exist.`);
+
+      // Try to suggest checking path construction
+      suggestions.push(`The path may be incorrectly constructed.`);
+      suggestions.push(`Common issues:`);
+      suggestions.push(`  - Wrong monorepo name (check: kb-labs-mind vs kb-labs-core)`);
+      suggestions.push(`  - Missing/wrong package name`);
+      suggestions.push(`  - File moved or deleted`);
+    }
+
+    // Build helpful error message
+    const errorMessage = [
+      `❌ File not found: ${path}`,
+      ``,
+      ...suggestions,
+      ``,
+      `💡 Suggestions:`,
+      `  1. Use fs:list to explore the correct directory`,
+      `  2. Try one of the similar files listed above`,
+      `  3. Use mind:rag-query to search for the code semantically`,
+      `  4. Check if the file was moved or renamed`,
+    ].join('\n');
+
+    throw new Error(errorMessage);
   }
 }

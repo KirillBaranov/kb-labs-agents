@@ -247,49 +247,116 @@ export class ExecutionMemory {
       return `Failed: ${output.slice(0, 100)}`;
     }
 
+    // Filter out system noise (npm output, bash errors, etc.)
+    const cleanOutput = this.filterSystemNoise(output);
+
     // Tool-specific fact extraction
     if (tool === 'fs:read') {
-      return this.extractFileReadFact(output);
+      return this.extractFileReadFact(cleanOutput);
     }
 
     if (tool === 'mind:rag-query') {
-      return this.extractRagQueryFact(output);
+      return this.extractRagQueryFact(cleanOutput);
     }
 
     if (tool === 'fs:search') {
-      return this.extractSearchFact(output);
+      return this.extractSearchFact(cleanOutput);
     }
 
     // Generic: truncate output
-    return output.length > 200 ? `${output.slice(0, 200)}...` : output;
+    return cleanOutput.length > 200 ? `${cleanOutput.slice(0, 200)}...` : cleanOutput;
+  }
+
+  /**
+   * Filter out system noise from tool output
+   *
+   * Removes:
+   * - npm output (> @kb-labs/...)
+   * - bash command echoes
+   * - ANSI color codes
+   * - Empty lines
+   */
+  private filterSystemNoise(output: string): string {
+    const lines = output.split('\n');
+    const cleanLines = lines.filter((line) => {
+      const trimmed = line.trim();
+
+      // Skip empty lines
+      if (!trimmed) return false;
+
+      // Skip npm output
+      if (trimmed.startsWith('> @kb-labs/')) return false;
+      if (trimmed.startsWith('> ') && trimmed.includes('node_modules')) return false;
+
+      // Skip bash command echoes
+      if (trimmed.startsWith('$ ')) return false;
+
+      // Skip generic status messages
+      if (trimmed.match(/^(Building|Compiling|Running|Done in)/i)) return false;
+
+      return true;
+    });
+
+    return cleanLines.join('\n').trim();
   }
 
   /**
    * Extract fact from fs:read output
    */
   private extractFileReadFact(output: string): string {
-    const lines = output.split('\n');
+    const lines = output.split('\n').filter((l) => l.trim());
 
-    // File is small, just note we read it
-    if (lines.length < 50) {
-      return `File read (${lines.length} lines)`;
+    // Empty file
+    if (lines.length === 0) {
+      return 'Empty file';
     }
 
-    // File is large, extract key info (interfaces, classes, exports)
-    const keyLines = lines.filter(
-      (line) =>
-        line.includes('export') ||
-        line.includes('interface') ||
-        line.includes('class') ||
-        line.includes('function')
-    );
+    // Extract key code elements (interfaces, classes, exports)
+    const interfaces: string[] = [];
+    const classes: string[] = [];
+    const functions: string[] = [];
 
-    if (keyLines.length > 0) {
-      const sample = keyLines.slice(0, 3).join('; ');
-      return `File contains: ${sample}${keyLines.length > 3 ? '...' : ''}`;
+    for (const line of lines) {
+      // Remove line number prefix if present (e.g., "123→" or "123:")
+      const cleanedLine = line.replace(/^\s*\d+[→:]\s*/, '').trim();
+
+      // Extract interface names (TypeScript/JavaScript)
+      const interfaceMatch = cleanedLine.match(/export\s+interface\s+(\w+)/);
+      if (interfaceMatch?.[1]) {
+        interfaces.push(interfaceMatch[1]);
+      }
+
+      // Extract class names (any language: class, struct, type)
+      const classMatch = cleanedLine.match(/(?:export\s+)?(?:class|struct|type)\s+(\w+)/);
+      if (classMatch?.[1]) {
+        classes.push(classMatch[1]);
+      }
+
+      // Extract function names (any language: function, def, func, fn)
+      const funcMatch = cleanedLine.match(/(?:export\s+)?(?:async\s+)?(?:function|def|func|fn)\s+(\w+)/);
+      if (funcMatch?.[1]) {
+        functions.push(funcMatch[1]);
+      }
     }
 
-    return `File read (${lines.length} lines)`;
+    // Build summary
+    const parts: string[] = [];
+    if (interfaces.length > 0) {
+      parts.push(`Interfaces: ${interfaces.slice(0, 3).join(', ')}${interfaces.length > 3 ? '...' : ''}`);
+    }
+    if (classes.length > 0) {
+      parts.push(`Classes: ${classes.slice(0, 3).join(', ')}${classes.length > 3 ? '...' : ''}`);
+    }
+    if (functions.length > 0) {
+      parts.push(`Functions: ${functions.slice(0, 3).join(', ')}${functions.length > 3 ? '...' : ''}`);
+    }
+
+    if (parts.length > 0) {
+      return parts.join(' | ');
+    }
+
+    // Fallback: just note we read it
+    return `Read file (${lines.length} lines)`;
   }
 
   /**
@@ -334,8 +401,11 @@ export class ExecutionMemory {
   ): string | undefined {
     if (tool === 'fs:read') {
       if (typeof input === 'string') return input;
-      if (typeof input === 'object' && input.filePath) {
-        return String(input.filePath);
+      if (typeof input === 'object') {
+        // Try multiple field names (filePath, file_path, path)
+        if (input.filePath) return String(input.filePath);
+        if (input.file_path) return String(input.file_path);
+        if (input.path) return String(input.path);
       }
     }
 
