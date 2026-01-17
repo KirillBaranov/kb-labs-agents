@@ -66,6 +66,9 @@ export const AgentFilesystemPermissionsSchema = z.object({
  */
 export const AgentFilesystemConfigSchema = z.object({
   enabled: z.boolean(),
+  mode: z.enum(['allowlist', 'denylist']).optional(),
+  allow: z.array(z.string()).optional(),
+  deny: z.array(z.string()).optional(),
   permissions: AgentFilesystemPermissionsSchema.optional(),
 });
 
@@ -74,6 +77,9 @@ export const AgentFilesystemConfigSchema = z.object({
  */
 export const AgentShellConfigSchema = z.object({
   enabled: z.boolean(),
+  mode: z.enum(['allowlist', 'denylist']).optional(),
+  allow: z.array(z.string()).optional(),
+  deny: z.array(z.string()).optional(),
   allowedCommands: z.array(z.string()).optional(),
 });
 

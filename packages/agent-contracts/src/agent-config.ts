@@ -13,8 +13,23 @@ export type AgentSchema = 'kb.agent/1';
  * LLM configuration for the agent
  */
 export interface AgentLLMConfig {
-  /** LLM model identifier (e.g., "gpt-4", "gpt-4o-mini", "claude-sonnet-4") */
-  model: string;
+  /**
+   * LLM tier (small/medium/large) - resolved to actual model via kb.config.json
+   *
+   * IMPORTANT: Use abstract tiers for flexibility!
+   * DO NOT hardcode model names - platform resolves tier to model.
+   *
+   * @example 'small' - Fast, cheap (resolved to gpt-4o-mini)
+   * @example 'medium' - Balanced (resolved to claude-sonnet-4-5)
+   * @example 'large' - Powerful (resolved to claude-opus-4-5)
+   */
+  tier: 'small' | 'medium' | 'large';
+
+  /**
+   * @deprecated Use 'tier' instead. Kept for backward compatibility only.
+   */
+  model?: string;
+
   /** Temperature (0-1). Lower = more deterministic, higher = more creative */
   temperature: number;
   /** Maximum tokens for LLM response */
@@ -81,6 +96,12 @@ export interface AgentFilesystemPermissions {
 export interface AgentFilesystemConfig {
   /** Enable filesystem tools (fs:read, fs:write, fs:edit, fs:list, fs:search) */
   enabled: boolean;
+  /** Mode: 'allowlist' (only allow specified tools) or 'denylist' (allow all except specified) */
+  mode?: 'allowlist' | 'denylist';
+  /** Tool names to allow (e.g., ["fs:read", "fs:list"]) */
+  allow?: string[];
+  /** Tool names to deny (e.g., ["fs:delete"]) */
+  deny?: string[];
   /** Filesystem permissions */
   permissions?: AgentFilesystemPermissions;
 }
@@ -91,7 +112,13 @@ export interface AgentFilesystemConfig {
 export interface AgentShellConfig {
   /** Enable shell tools */
   enabled: boolean;
-  /** Allowed shell commands (e.g., ["git status", "pnpm build"]) */
+  /** Mode: 'allowlist' (only allow specified tools) or 'denylist' (allow all except specified) */
+  mode?: 'allowlist' | 'denylist';
+  /** Tool names/commands to allow (e.g., ["shell:exec"]) or command patterns (e.g., ["git *", "pnpm build"]) */
+  allow?: string[];
+  /** Tool names/commands to deny */
+  deny?: string[];
+  /** @deprecated Use allow/deny with mode instead. Allowed shell commands (e.g., ["git status", "pnpm build"]) */
   allowedCommands?: string[];
 }
 
@@ -131,6 +158,15 @@ export interface AgentConfigV1 {
   name: string;
   /** Agent description */
   description?: string;
+  /** Orchestrator metadata (NEW - for agent-aware orchestration) */
+  metadata?: {
+    /** Brief description for orchestrator (1-2 sentences) */
+    description: string;
+    /** Optional tags for categorization */
+    tags?: string[];
+    /** Optional example tasks this agent handles well */
+    examples?: string[];
+  };
   /** LLM configuration */
   llm: AgentLLMConfig;
   /** Custom prompt configuration */
