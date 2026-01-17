@@ -1,0 +1,40 @@
+{
+  "name": "@kb-labs/task-classifier",
+  "version": "0.1.0",
+  "description": "Task complexity classifier for adaptive orchestration",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rimraf dist",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@kb-labs/sdk": "link:../../../kb-labs-sdk/packages/sdk"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^1.1.0",
+    "rimraf": "^5.0.5"
+  },
+  "keywords": [
+    "kb-labs",
+    "agents",
+    "orchestration",
+    "classifier",
+    "llm"
+  ],
+  "author": "KB Labs",
+  "license": "MIT"
+}
