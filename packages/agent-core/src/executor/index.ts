@@ -11,3 +11,5 @@ export { ProgressTracker } from './progress-tracker.js';
 export type { ProgressEstimate } from './progress-tracker.js';
 export { ErrorRecovery } from './error-recovery.js';
 export type { RecoveryAction, RecoveryResult, RecoveryStrategyType } from './error-recovery.js';
+export { parseTerminationSignal, shouldGiveUp } from './termination-parser.js';
+export type { TerminationSignal } from './termination-parser.js';

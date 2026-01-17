@@ -21,9 +21,10 @@ import { TaskClassifier, type TaskClassification } from '../planning/task-classi
 import { ReActPromptBuilder } from '../planning/react-prompt-builder.js';
 import { ReActParser } from './react-parser.js';
 import { ContextCompressor, type Message } from './context-compressor.js';
-import { ExecutionMemory } from './execution-memory.js';
+import { ExecutionMemory, type Finding } from './execution-memory.js';
 import { ProgressTracker, type ProgressEstimate } from './progress-tracker.js';
 import { ErrorRecovery } from './error-recovery.js';
+import { parseTerminationSignal, shouldGiveUp } from './termination-parser.js';
 
 /**
  * Agent Executor
@@ -47,8 +48,16 @@ export class AgentExecutor {
   private progressTracker: ProgressTracker;
   private errorRecovery: ErrorRecovery;
 
+  // Track whether last step was tool execution (for forced reasoning)
+  private lastStepWasToolExecution: boolean = false;
+
+  // Track consecutive failures for give-up mechanism
+  private consecutiveFailures: number = 0;
+  private readonly MAX_CONSECUTIVE_FAILURES = 3;
+
   constructor(private ctx: PluginContextV3) {
     this.loopDetector = new LoopDetector();
+    // toolExecutor will be initialized in execute() with agent context
     this.toolExecutor = new ToolExecutor(ctx);
     this.taskClassifier = new TaskClassifier();
     this.reactPromptBuilder = new ReActPromptBuilder();
@@ -79,13 +88,25 @@ export class AgentExecutor {
   ): Promise<AgentResult> {
     const config = context.config;
 
+    // Initialize tool executor with tools for adaptive input parsing
+    this.toolExecutor = new ToolExecutor(this.ctx, { tools: context.tools || [] });
+
+    // Set agent ID for cache key generation
+    this.toolExecutor.setAgentId(config.id);
+
+    // Reset forced reasoning flag for new task
+    this.lastStepWasToolExecution = false;
+
+    // Reset consecutive failures counter for new task
+    this.consecutiveFailures = 0;
+
     // Initialize runtime state
     const state: AgentRuntimeState = {
       agentId: config.id,
       task,
       tools: context.tools || [],
       currentStep: 0,
-      maxSteps: config.llm.maxToolCalls || 20,
+      maxSteps: config.llm.maxToolCalls || 10, // Reduced to 10 for testing final step summary
       steps: [],
       tokensUsed: 0,
       startTime: Date.now(),
@@ -147,9 +168,6 @@ export class AgentExecutor {
       // PHASE 3: Clear progress tracker from previous execution
       this.progressTracker.clear();
 
-      // Build ReAct system prompt based on classification
-      const systemPrompt = this.buildReActSystemPrompt(context, classification);
-
       // Initial user message
       let messages: Array<{ role: string; content: string; toolCallId?: string }> = [
         { role: 'user', content: task },
@@ -166,6 +184,25 @@ export class AgentExecutor {
 
         // Notify step start
         progressCallback?.onStepStart?.(state.currentStep, state.maxSteps);
+
+        // PHASE 3: Build system prompt dynamically on each step
+        // When lastStepWasToolExecution=true, exclude tools from prompt (forced reasoning)
+        // When lastStepWasToolExecution=false, include tools in prompt (allow tool calls)
+        const includeToolsInPrompt = !this.lastStepWasToolExecution;
+        const systemPrompt = this.buildReActSystemPrompt(
+          context,
+          classification,
+          includeToolsInPrompt,
+          state.currentStep, // Pass current step for completion reminder
+          state.maxSteps      // Pass max steps for completion reminder
+        );
+
+        console.log('[DYNAMIC PROMPT]', {
+          step: state.currentStep,
+          lastStepWasToolExecution: this.lastStepWasToolExecution,
+          includeToolsInPrompt,
+          promptLength: systemPrompt.length,
+        });
 
         // PHASE 1.5: Compress context if needed
         if (this.contextCompressor.shouldCompress(messages as Message[])) {
@@ -187,10 +224,22 @@ export class AgentExecutor {
           });
         }
 
-        // Call LLM
+        // Call LLM with forced reasoning pattern
+        // If last step was tool execution, force text-only response to make agent reason
+        // ALSO force reasoning on final step to ensure agent provides summary instead of calling tools
+        // Otherwise, allow tool calls
+        const isFinalStep = !!(state.maxSteps && state.currentStep === state.maxSteps);
+        const forceReasoning = this.lastStepWasToolExecution || isFinalStep;
+
         progressCallback?.onLLMStart?.(state.currentStep);
         const stepStartTime = Date.now();
-        const llmResponse = await this.callLLM(systemPrompt, messages, state.tools, config.llm);
+        const llmResponse = await this.callLLM(
+          systemPrompt,
+          messages,
+          state.tools,
+          config.llm,
+          forceReasoning // Force reasoning after tool execution OR on final step
+        );
 
         const stepDuration = Date.now() - stepStartTime;
         state.tokensUsed += llmResponse.tokensUsed || 0;
@@ -290,6 +339,28 @@ export class AgentExecutor {
               success: result.success,
               error: result.error?.message,
             });
+
+            // Track failures for give-up mechanism
+            if (!result.success) {
+              this.consecutiveFailures++;
+              console.log('[FAILURE TRACKING]', {
+                consecutiveFailures: this.consecutiveFailures,
+                maxAllowed: this.MAX_CONSECUTIVE_FAILURES,
+                tool: toolCall.name,
+              });
+
+              // Check if should give up
+              if (shouldGiveUp(this.consecutiveFailures, this.MAX_CONSECUTIVE_FAILURES)) {
+                console.log('[FAILURE TRACKING] Max consecutive failures reached → forcing give-up');
+                // Will be handled in reasoning step
+              }
+            } else {
+              // Reset failure counter on success
+              if (this.consecutiveFailures > 0) {
+                console.log('[FAILURE TRACKING] Tool succeeded → resetting counter');
+                this.consecutiveFailures = 0;
+              }
+            }
           }
 
           // Add tool results to message history
@@ -326,6 +397,10 @@ export class AgentExecutor {
             });
           }
 
+          // Mark that tools were executed - next step should force reasoning
+          this.lastStepWasToolExecution = true;
+          console.log('[FORCED REASONING] Tools executed, setting flag to TRUE → next step will be reasoning-only');
+
           // Notify step complete (with tools)
           progressCallback?.onStepComplete?.(
             state.currentStep,
@@ -333,56 +408,188 @@ export class AgentExecutor {
             step.toolCalls?.length || 0
           );
         } else {
-          // No tools requested - task might be complete
-          state.steps.push(step);
+          // No tools requested - could be reasoning step OR final answer
 
-          // Notify step complete (no tools)
-          progressCallback?.onStepComplete?.(state.currentStep, state.tokensUsed, 0);
+          // Check if this was a forced reasoning step (after tool execution)
+          const wasReasoningStep = this.lastStepWasToolExecution;
 
-          const durationMs = Date.now() - state.startTime;
-          const toolStats = this.collectToolStats(state.steps);
+          // Reset flag for next iteration
+          this.lastStepWasToolExecution = false;
 
-          this.ctx.platform.logger.info('Agent execution completed', {
-            model: config.llm.model,
-            steps: state.currentStep,
-            tokensUsed: state.tokensUsed,
-            durationMs,
-            toolStats,
-          });
+          if (wasReasoningStep) {
+            // This was a reasoning step - agent is reflecting on tool results
+            // Continue loop to allow agent to take action on next step
+            console.log('[FORCED REASONING] Reasoning step complete, setting flag to FALSE → next step can use tools');
+            console.log('[FORCED REASONING] Continuing loop to allow agent to act on reflection...');
 
-          // Track successful completion
-          await this.ctx.platform.analytics.track('agent.execution.completed', {
-            agentId: config.id,
-            model: config.llm.model,
-            success: true,
-            taskCategory,
-            taskHash,
-            steps: state.currentStep,
-            tokensUsed: state.tokensUsed,
-            durationMs,
-            toolsUsed: toolStats.totalCalls,
-            uniqueTools: toolStats.uniqueTools,
-            toolStats: toolStats.byTool,
-          });
+            state.steps.push(step);
 
-          const result: AgentResult = {
-            success: true,
-            result: llmResponse.content,
-            steps: state.steps,
-            totalTokens: state.tokensUsed,
-            durationMs,
-          };
+            // Notify step complete (reasoning)
+            progressCallback?.onStepComplete?.(state.currentStep, state.tokensUsed, 0);
 
-          // Notify completion
-          progressCallback?.onComplete?.(result);
+            // Add reasoning to message history as assistant response
+            messages.push({
+              role: 'assistant',
+              content: llmResponse.content,
+            });
 
-          return result;
+            // Continue loop - don't return yet
+          } else {
+            // No tools AND wasn't a reasoning step - check for termination signals
+            console.log('[FORCED REASONING] No tools and not reasoning step → checking for termination signals');
+
+            // Parse response for termination markers
+            const terminationSignal = parseTerminationSignal(llmResponse.content || '');
+
+            if (terminationSignal.type !== 'none') {
+              console.log('[TERMINATION]', {
+                type: terminationSignal.type,
+                reason: 'reason' in terminationSignal ? terminationSignal.reason : undefined,
+              });
+
+              state.steps.push(step);
+
+              // Notify step complete
+              progressCallback?.onStepComplete?.(state.currentStep, state.tokensUsed, 0);
+
+              const durationMs = Date.now() - state.startTime;
+              const toolStats = this.collectToolStats(state.steps);
+
+              // Handle different termination types
+              if (terminationSignal.type === 'task_complete') {
+                this.ctx.platform.logger.info('Agent task completed successfully', {
+                  model: config.llm.model,
+                  steps: state.currentStep,
+                  tokensUsed: state.tokensUsed,
+                  durationMs,
+                });
+
+                await this.ctx.platform.analytics.track('agent.execution.completed', {
+                  agentId: config.id,
+                  model: config.llm.model,
+                  success: true,
+                  taskCategory,
+                  taskHash,
+                  steps: state.currentStep,
+                  tokensUsed: state.tokensUsed,
+                  durationMs,
+                  toolsUsed: toolStats.totalCalls,
+                  uniqueTools: toolStats.uniqueTools,
+                  toolStats: toolStats.byTool,
+                  terminationType: 'task_complete',
+                });
+
+                return {
+                  success: true,
+                  result: terminationSignal.response,
+                  steps: state.steps,
+                  totalTokens: state.tokensUsed,
+                  durationMs,
+                };
+              } else if (terminationSignal.type === 'need_escalation') {
+                this.ctx.platform.logger.warn('Agent needs escalation', {
+                  reason: terminationSignal.reason,
+                  steps: state.currentStep,
+                });
+
+                await this.ctx.platform.analytics.track('agent.execution.escalation', {
+                  agentId: config.id,
+                  reason: terminationSignal.reason,
+                  steps: state.currentStep,
+                  tokensUsed: state.tokensUsed,
+                  durationMs,
+                });
+
+                return {
+                  success: false,
+                  result: terminationSignal.response,
+                  error: {
+                    code: 'ESCALATION_REQUIRED',
+                    message: `Agent needs escalation: ${terminationSignal.reason}`,
+                  },
+                  steps: state.steps,
+                  totalTokens: state.tokensUsed,
+                  durationMs,
+                };
+              } else if (terminationSignal.type === 'give_up') {
+                this.ctx.platform.logger.warn('Agent gave up', {
+                  reason: terminationSignal.reason,
+                  steps: state.currentStep,
+                });
+
+                await this.ctx.platform.analytics.track('agent.execution.give_up', {
+                  agentId: config.id,
+                  reason: terminationSignal.reason,
+                  steps: state.currentStep,
+                  tokensUsed: state.tokensUsed,
+                  durationMs,
+                });
+
+                return {
+                  success: false,
+                  result: terminationSignal.response,
+                  error: {
+                    code: 'GIVE_UP',
+                    message: `Agent gave up: ${terminationSignal.reason}`,
+                  },
+                  steps: state.steps,
+                  totalTokens: state.tokensUsed,
+                  durationMs,
+                };
+              }
+            }
+
+            // No termination marker - agent completed task implicitly
+            console.log('[FORCED REASONING] No termination marker found → implicit task completion');
+
+            state.steps.push(step);
+
+            // Notify step complete (no tools)
+            progressCallback?.onStepComplete?.(state.currentStep, state.tokensUsed, 0);
+
+            const durationMs = Date.now() - state.startTime;
+            const toolStats = this.collectToolStats(state.steps);
+
+            this.ctx.platform.logger.info('Agent execution completed (implicit)', {
+              model: config.llm.model,
+              steps: state.currentStep,
+              tokensUsed: state.tokensUsed,
+              durationMs,
+              toolStats,
+            });
+
+            // Track successful completion
+            await this.ctx.platform.analytics.track('agent.execution.completed', {
+              agentId: config.id,
+              model: config.llm.model,
+              success: true,
+              taskCategory,
+              taskHash,
+              steps: state.currentStep,
+              tokensUsed: state.tokensUsed,
+              durationMs,
+              toolsUsed: toolStats.totalCalls,
+              uniqueTools: toolStats.uniqueTools,
+              toolStats: toolStats.byTool,
+            });
+
+            const result: AgentResult = {
+              success: true,
+              result: llmResponse.content,
+              steps: state.steps,
+              totalTokens: state.tokensUsed,
+              durationMs,
+            };
+
+            // Notify completion
+            progressCallback?.onComplete?.(result);
+
+            return result;
+          }
         }
 
-        // Add step to history
-        state.steps.push(step);
-
         // PHASE 2: Extract findings from this step to memory
+        // (Step already added to state.steps in the if/else blocks above)
         this.executionMemory.extractFromStep(step);
 
         // PHASE 3: Estimate progress toward goal
@@ -556,46 +763,169 @@ export class AgentExecutor {
         }
       }
 
-      // Reached max steps
+      // Reached max steps - check if LLM provided a termination marker
+      const lastStep = state.steps[state.steps.length - 1];
+      const lastResponse = lastStep?.response || '';
+
+      // Check if LLM used a termination marker
+      const terminationSignal = parseTerminationSignal(lastResponse);
+
+      console.log('[MAX_STEPS_REACHED] Checking final step for termination marker', {
+        hasTerminationMarker: terminationSignal.type !== 'none',
+        terminationType: terminationSignal.type,
+        stepCount: state.steps.length,
+      });
+
+      // If no termination marker found, auto-insert [NEED_ESCALATION] with summary
+      if (terminationSignal.type === 'none') {
+        console.log('[MAX_STEPS_REACHED] No termination marker found → auto-inserting [NEED_ESCALATION]');
+
+        // Generate summary from ExecutionMemory
+        const memorySummary = this.executionMemory.getSummary();
+
+        // Build escalation message with summary
+        let escalationMessage = '[NEED_ESCALATION: ran out of steps]\n\n';
+        escalationMessage += 'I reached the maximum number of steps without completing the task. Here\'s what I investigated:\n\n';
+
+        // Files read
+        if (memorySummary.byCategory.filesRead.length > 0) {
+          escalationMessage += '**Files I read:**\n';
+          memorySummary.byCategory.filesRead.slice(0, 10).forEach((finding: Finding) => {
+            escalationMessage += `- ${finding.filePath || 'unknown'}\n`;
+          });
+          if (memorySummary.byCategory.filesRead.length > 10) {
+            escalationMessage += `- ... and ${memorySummary.byCategory.filesRead.length - 10} more files\n`;
+          }
+          escalationMessage += '\n';
+        }
+
+        // Key findings from search results
+        if (memorySummary.byCategory.searchResults.length > 0) {
+          escalationMessage += '**What I learned:**\n';
+          memorySummary.byCategory.searchResults.slice(0, 5).forEach((finding: Finding) => {
+            escalationMessage += `- ${finding.fact}\n`;
+          });
+          escalationMessage += '\n';
+        } else if (memorySummary.byCategory.otherFindings.length > 0) {
+          // Fallback to other findings if no search results
+          escalationMessage += '**What I learned:**\n';
+          memorySummary.byCategory.otherFindings.slice(0, 5).forEach((finding: Finding) => {
+            escalationMessage += `- ${finding.fact}\n`;
+          });
+          escalationMessage += '\n';
+        }
+
+        // What's missing
+        escalationMessage += '**What\'s still unclear:**\n';
+        escalationMessage += `- The task required more investigation than ${state.maxSteps} steps allowed\n`;
+        escalationMessage += '- I may need more specific guidance on what aspect to focus on\n\n';
+
+        // Suggested next steps
+        escalationMessage += '**Suggested next steps:**\n';
+        escalationMessage += '1. Review the files I read above to understand what I learned\n';
+        escalationMessage += '2. Provide more specific questions if needed\n';
+        escalationMessage += '3. Consider increasing maxSteps for complex analysis tasks\n';
+
+        // Update last step response with auto-generated escalation
+        if (lastStep) {
+          lastStep.response = escalationMessage;
+          console.log('[MAX_STEPS_REACHED] Updated last step response with auto-generated summary');
+        }
+
+        // Now re-parse to get the escalation signal
+        const autoEscalationSignal = parseTerminationSignal(escalationMessage);
+
+        // Return as escalation (not error)
+        const durationMs = Date.now() - state.startTime;
+        const toolStats = this.collectToolStats(state.steps);
+
+        this.ctx.platform.logger.warn('Agent needs escalation (auto-generated)', {
+          reason: 'ran out of steps',
+          steps: state.currentStep,
+          filesRead: memorySummary.byCategory.filesRead.length,
+        });
+
+        await this.ctx.platform.analytics.track('agent.execution.escalation', {
+          agentId: config.id,
+          reason: 'ran out of steps (auto-generated)',
+          steps: state.currentStep,
+          tokensUsed: state.tokensUsed,
+          durationMs,
+          autoGenerated: true,
+        });
+
+        const escalationResult: AgentResult = {
+          success: false,
+          error: {
+            code: 'NEED_ESCALATION',
+            message: autoEscalationSignal.type === 'need_escalation'
+              ? autoEscalationSignal.reason
+              : 'ran out of steps',
+          },
+          result: escalationMessage,
+          steps: state.steps,
+          totalTokens: state.tokensUsed,
+          durationMs,
+        };
+
+        progressCallback?.onComplete?.(escalationResult);
+        return escalationResult;
+      }
+
+      // LLM provided termination marker - return appropriate error code
       const durationMs = Date.now() - state.startTime;
       const toolStats = this.collectToolStats(state.steps);
 
-      this.ctx.platform.logger.warn('Agent reached max steps', {
+      // Determine error code based on termination signal type
+      const errorCode = terminationSignal.type === 'need_escalation'
+        ? 'NEED_ESCALATION'
+        : terminationSignal.type === 'give_up'
+        ? 'TASK_FAILED'
+        : 'MAX_STEPS_REACHED';
+
+      this.ctx.platform.logger.warn('Agent reached max steps with termination marker', {
         maxSteps: state.maxSteps,
         tokensUsed: state.tokensUsed,
+        terminationType: terminationSignal.type,
+        errorCode,
       });
 
-      // Track max steps reached
+      // Track completion
       await this.ctx.platform.analytics.track('agent.execution.completed', {
         agentId: config.id,
         model: config.llm.model,
         success: false,
         taskCategory,
         taskHash,
-        errorCode: 'MAX_STEPS_REACHED',
+        errorCode,
         steps: state.currentStep,
         tokensUsed: state.tokensUsed,
         durationMs,
         toolsUsed: toolStats.totalCalls,
         uniqueTools: toolStats.uniqueTools,
         toolStats: toolStats.byTool,
+        hadTerminationMarker: true,
       });
 
-      const maxStepsResult: AgentResult = {
+      const result: AgentResult = {
         success: false,
         error: {
-          code: 'MAX_STEPS_REACHED',
-          message: `Agent reached maximum steps (${state.maxSteps}) without completing task`,
+          code: errorCode,
+          message:
+            terminationSignal.type !== 'task_complete' && terminationSignal.reason
+              ? terminationSignal.reason
+              : `Agent reached maximum steps (${state.maxSteps})`,
         },
+        result: lastResponse, // Include the LLM's response with termination marker
         steps: state.steps,
         totalTokens: state.tokensUsed,
         durationMs,
       };
 
       // Notify completion
-      progressCallback?.onComplete?.(maxStepsResult);
+      progressCallback?.onComplete?.(result);
 
-      return maxStepsResult;
+      return result;
     } catch (err) {
       const errorObj = err instanceof Error ? err : new Error(String(err));
       const durationMs = Date.now() - state.startTime;
@@ -643,27 +973,113 @@ export class AgentExecutor {
    * Build ReAct system prompt with task classification
    * (PHASE 1: Tool-first thinking)
    * (PHASE 2: Memory-aware prompting)
+   * (PHASE 3: Forced reasoning - conditionally include/exclude tools)
    */
-  private buildReActSystemPrompt(context: AgentContext, classification: TaskClassification): string {
+  private buildReActSystemPrompt(
+    context: AgentContext,
+    classification: TaskClassification,
+    includeTools: boolean = true,
+    currentStep?: number,
+    maxSteps?: number
+  ): string {
     // Start with agent's base system prompt (if any)
     const basePrompt = this.buildSystemPrompt(context);
 
     // PHASE 2: Get memory summary
     const memorySummary = this.executionMemory.getSummary();
 
-    // Build ReAct pattern prompt using classification
+    // PHASE 3: Build ReAct pattern prompt with conditional tools
+    // When includeTools=false, prompt won't mention tools at all (forced reasoning)
     const reactPrompt = this.reactPromptBuilder.build(
       classification,
       context.tools || [],
-      basePrompt
+      basePrompt,
+      includeTools // NEW: Pass flag to conditionally include/exclude tools
     );
 
     // PHASE 2: Inject memory if we have findings
+    let finalPrompt = reactPrompt;
+
     if (memorySummary.count > 0) {
-      return reactPrompt + '\n\n# Execution Memory\n\n' + memorySummary.formattedText;
+      finalPrompt += '\n\n# Execution Memory\n\n' + memorySummary.formattedText;
     }
 
-    return reactPrompt;
+    // FINAL STEP LOGIC: Force summary if this is the last step
+    if (currentStep && maxSteps && currentStep === maxSteps) {
+      console.log('[FINAL STEP] 🚨 SUMMARY PROMPT INJECTED', {
+        currentStep,
+        maxSteps,
+        promptLengthBefore: finalPrompt.length,
+      });
+
+      finalPrompt += `\n\n# 🚨 FINAL STEP - PROVIDE SUMMARY\n\n`;
+      finalPrompt += `**This is your LAST step (${currentStep}/${maxSteps}).**\n\n`;
+      finalPrompt += `You MUST provide a summary of your work using one of these markers:\n\n`;
+
+      finalPrompt += `**Option 1: If you CAN answer the question** (even partially):\n`;
+      finalPrompt += `\`\`\`\n`;
+      finalPrompt += `[TASK_COMPLETE]\n`;
+      finalPrompt += `Based on my investigation, here's what I found:\n`;
+      finalPrompt += `[Your answer based on the files you read and what you learned]\n`;
+      finalPrompt += `\`\`\`\n\n`;
+
+      finalPrompt += `**Option 2: If you CANNOT complete the task:**\n`;
+      finalPrompt += `\`\`\`\n`;
+      finalPrompt += `[NEED_ESCALATION: ran out of steps]\n`;
+      finalPrompt += `I investigated the following:\n`;
+      finalPrompt += `- Files read: [list key files]\n`;
+      finalPrompt += `- What I learned: [key findings]\n`;
+      finalPrompt += `- What's still missing: [what you couldn't figure out]\n`;
+      finalPrompt += `- Suggested next steps: [what should be done next]\n`;
+      finalPrompt += `\`\`\`\n\n`;
+
+      finalPrompt += `**Files you've read so far:**\n`;
+      if (memorySummary.byCategory.filesRead.length > 0) {
+        finalPrompt += `${memorySummary.byCategory.filesRead.map((f: Finding) => `- ${f.filePath || 'unknown'}`).join('\n')}\n\n`;
+      } else {
+        finalPrompt += `(None yet)\n\n`;
+      }
+
+      finalPrompt += `**DO NOT call any more tools** - this is the final step. Just provide your summary.\n`;
+    }
+    // Add completion reminder in reasoning mode when approaching deadline (but not final step)
+    else if (!includeTools && currentStep && maxSteps) {
+      const stepsRemaining = maxSteps - currentStep;
+      const filesReadCount = memorySummary.byCategory.filesRead.length;
+
+      // Inject reminder if:
+      // - More than 2 files read (gathered substantial info)
+      // - Less than 5 steps remaining (approaching deadline)
+      if (filesReadCount >= 2 && stepsRemaining <= 5) {
+        finalPrompt += `\n\n# ⏰ Completion Reminder\n\n`;
+        finalPrompt += `**You have ${stepsRemaining} steps remaining** (Step ${currentStep}/${maxSteps}).\n\n`;
+        finalPrompt += `**Files you've already read:** ${filesReadCount} files\n`;
+        if (memorySummary.byCategory.filesRead.length > 0) {
+          finalPrompt += `- ${memorySummary.byCategory.filesRead.map((f: Finding) => f.filePath || 'unknown').join('\n- ')}\n`;
+        }
+        finalPrompt += `\n**❓ Critical question:** Do you already have enough information to answer the user's question?\n\n`;
+        finalPrompt += `✅ **If YES** → Use [TASK_COMPLETE] now with your answer based on what you've learned\n`;
+        finalPrompt += `❌ **If NO** → Explain what specific information is still missing and plan your next tool call\n\n`;
+        finalPrompt += `⚠️ **Don't waste steps re-reading files you've already read!** Use the Execution Memory above.\n`;
+      }
+    }
+
+    // Add failure tracking info if in reasoning mode and have consecutive failures
+    if (!includeTools && this.consecutiveFailures > 0) {
+      finalPrompt += `\n\n# Failure Alert\n\n`;
+      finalPrompt += `⚠️ **${this.consecutiveFailures} consecutive tool failures detected.**\n`;
+
+      if (shouldGiveUp(this.consecutiveFailures, this.MAX_CONSECUTIVE_FAILURES)) {
+        finalPrompt += `\n❌ **CRITICAL: You have reached the maximum allowed failures (${this.MAX_CONSECUTIVE_FAILURES}).**\n`;
+        finalPrompt += `\nYou should strongly consider using [GIVE_UP: reason] if you cannot find a working approach.\n`;
+        finalPrompt += `\nExplain what you tried and why it didn't work, then use [GIVE_UP: brief reason].\n`;
+      } else {
+        finalPrompt += `\n💡 **Suggestion**: Review what's failing and try a different approach in your next action.\n`;
+        finalPrompt += `\nIf the next tool call also fails, consider using [GIVE_UP: reason] or [NEED_ESCALATION: reason].\n`;
+      }
+    }
+
+    return finalPrompt;
   }
 
   /**
@@ -702,12 +1118,15 @@ export class AgentExecutor {
    *
    * Supports both native tool calling (OpenAI function calling, Claude tool use)
    * and fallback to text-based tool prompting for adapters without native support.
+   *
+   * @param forceReasoning - If true, sets tool_choice to "none" to force text-only response
    */
   private async callLLM(
     systemPrompt: string,
     messages: Array<{ role: string; content: string; toolCallId?: string }>,
     tools: ToolDefinition[],
-    llmConfig: { temperature?: number; maxTokens?: number }
+    llmConfig: { temperature?: number; maxTokens?: number },
+    forceReasoning: boolean = false
   ): Promise<{
     content: string;
     toolCalls?: ToolCall[];
@@ -721,7 +1140,7 @@ export class AgentExecutor {
 
     // Check if LLM supports native tool calling
     if (llm.chatWithTools && tools.length > 0) {
-      return this.callLLMWithNativeTools(systemPrompt, messages, tools, llmConfig);
+      return this.callLLMWithNativeTools(systemPrompt, messages, tools, llmConfig, forceReasoning);
     }
 
     // Fallback to text-based tool prompting
@@ -735,7 +1154,8 @@ export class AgentExecutor {
     systemPrompt: string,
     messages: Array<{ role: string; content: string; toolCallId?: string }>,
     tools: ToolDefinition[],
-    llmConfig: { temperature?: number; maxTokens?: number }
+    llmConfig: { temperature?: number; maxTokens?: number },
+    forceReasoning: boolean = false
   ): Promise<{
     content: string;
     toolCalls?: ToolCall[];
@@ -771,10 +1191,31 @@ export class AgentExecutor {
       };
     });
 
+    // FORCED REASONING PATTERN:
+    // When forceReasoning=true, pass empty tools array to guarantee text-only response
+    // This is more reliable than tool_choice='none' which some providers ignore
+    const toolsToPass = forceReasoning ? [] : llmTools;
+    const toolChoice = forceReasoning ? undefined : 'auto';
+
+    // DEBUG: Log forced reasoning state
+    console.log('[FORCED REASONING]', {
+      forceReasoning,
+      toolsCount: toolsToPass.length,
+      toolChoice,
+      lastStepWasToolExecution: this.lastStepWasToolExecution,
+    });
+
+    this.ctx.platform.logger.debug('LLM call with forced reasoning', {
+      forceReasoning,
+      toolsCount: toolsToPass.length,
+      toolChoice,
+      lastStepWasToolExecution: this.lastStepWasToolExecution,
+    });
+
     // Call native tool calling API
     const response = await llm.chatWithTools!(llmMessages, {
-      tools: llmTools,
-      toolChoice: 'auto',
+      tools: toolsToPass,
+      toolChoice,
       temperature: llmConfig.temperature || 0.7,
       maxTokens: llmConfig.maxTokens || 4000,
     });
