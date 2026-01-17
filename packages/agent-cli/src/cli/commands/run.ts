@@ -4,14 +4,17 @@
  * Execute an agent with a task
  */
 
-import { defineCommand, TimingTracker, type PluginContextV3, type CommandResult } from '@kb-labs/sdk';
+import { defineCommand, TimingTracker, type PluginContextV3, type CommandResult, useLogger } from '@kb-labs/sdk';
 import { AgentRegistry, AgentExecutor, ToolDiscoverer } from '@kb-labs/agent-core';
 import type { AgentProgressCallback } from '@kb-labs/agent-contracts';
+import { AdaptiveOrchestrator } from '@kb-labs/adaptive-orchestrator';
+import type { ProgressEvent } from '@kb-labs/progress-reporter';
 
 interface RunFlags {
   agentId: string;
   task: string;
   json?: boolean;
+  adaptive?: boolean;
 }
 
 interface RunInput {
@@ -29,6 +32,195 @@ interface RunResult {
   steps?: number;
   totalTokens?: number;
   durationMs?: number;
+}
+
+/**
+ * Execute task using AdaptiveOrchestrator (cost-optimized multi-tier approach)
+ */
+async function executeWithAdaptiveOrchestration(
+  ctx: PluginContextV3<unknown>,
+  task: string,
+  tracker: TimingTracker,
+  jsonOutput?: boolean
+): Promise<CommandResult<RunResult>> {
+  const startTime = Date.now();
+
+  ctx.ui.info(`Running with Adaptive Orchestration`, {
+    title: 'Agent Run',
+    sections: [
+      {
+        header: 'Mode',
+        items: [
+          'Adaptive Orchestration (cost-optimized)',
+          'Task will be classified and broken into subtasks',
+          'Each subtask uses appropriate tier (small/medium/large)',
+        ],
+      },
+      {
+        header: 'Task',
+        items: [task],
+      },
+    ],
+  });
+
+  // Create progress callback for UI updates
+  const progressCallback = (event: ProgressEvent) => {
+    const getTimestamp = () => {
+      const elapsed = Date.now() - startTime;
+      const seconds = Math.floor(elapsed / 1000);
+      const minutes = Math.floor(seconds / 60);
+      const displaySeconds = seconds % 60;
+      const displayMinutes = minutes % 60;
+      return `${displayMinutes.toString().padStart(2, '0')}:${displaySeconds.toString().padStart(2, '0')}`;
+    };
+
+    const timestamp = ctx.ui.colors.dim(getTimestamp());
+
+    switch (event.type) {
+      case 'task_started':
+        ctx.ui.write(`${timestamp} ${ctx.ui.colors.accent('🎯')} Task started: ${event.data.taskDescription}`);
+        break;
+
+      case 'task_classified':
+        const tierEmoji = event.data.tier === 'small' ? '🟢' : event.data.tier === 'medium' ? '🟡' : '🔴';
+        ctx.ui.write(
+          `${timestamp} ${tierEmoji} Classified as '${event.data.tier}' tier (${event.data.confidence} confidence, ${event.data.method})`
+        );
+        break;
+
+      case 'planning_started':
+        ctx.ui.write(`${timestamp} ${ctx.ui.colors.dim('📋 Planning subtasks...')}`);
+        break;
+
+      case 'planning_completed':
+        ctx.ui.write(
+          `${timestamp} ${ctx.ui.colors.success(ctx.ui.symbols.success)} Plan created: ${event.data.subtaskCount} subtasks`
+        );
+        ctx.ui.write(''); // Empty line
+        break;
+
+      case 'subtask_started':
+        const subtaskEmoji = event.data.tier === 'small' ? '🟢' : event.data.tier === 'medium' ? '🟡' : '🔴';
+        ctx.ui.write(
+          `${timestamp} ${subtaskEmoji} [${event.data.subtaskId}] Starting: ${event.data.description}`
+        );
+        break;
+
+      case 'subtask_completed':
+        ctx.ui.write(
+          `${timestamp} ${ctx.ui.colors.success(ctx.ui.symbols.success)} [${event.data.subtaskId}] Completed: ${event.data.description}`
+        );
+        break;
+
+      case 'tier_escalated':
+        ctx.ui.write(
+          `${timestamp} ${ctx.ui.colors.warning('⬆️')} [${event.data.subtaskId}] Escalated from ${event.data.fromTier} → ${event.data.toTier}`
+        );
+        ctx.ui.write(`${timestamp} ${ctx.ui.colors.dim(`   Reason: ${event.data.reason}`)}`);
+        break;
+
+      case 'task_completed':
+        ctx.ui.write(''); // Empty line
+        const totalDurationMs = event.data.totalDuration || 0;
+        ctx.ui.write(
+          `${timestamp} ${ctx.ui.colors.success(ctx.ui.symbols.success)} Task ${event.data.status} in ${(totalDurationMs / 1000).toFixed(1)}s`
+        );
+        if (event.data.costBreakdown) {
+          ctx.ui.write(`${timestamp} ${ctx.ui.colors.accent('💰')} Cost: ${event.data.costBreakdown.total}`);
+          ctx.ui.write(
+            `${timestamp}    🟢 Small:  ${event.data.costBreakdown.small} | 🟡 Medium: ${event.data.costBreakdown.medium} | 🔴 Large:  ${event.data.costBreakdown.large}`
+          );
+        }
+        break;
+    }
+  };
+
+  try {
+    const logger = useLogger();
+    const orchestrator = new AdaptiveOrchestrator(logger, progressCallback);
+    const result = await orchestrator.execute(task);
+
+    tracker.checkpoint('execution');
+
+    const output: RunResult = {
+      success: result.status === 'success',
+      result: result.result,
+      steps: result.subtaskResults?.length || 0,
+      durationMs: Date.now() - startTime,
+    };
+
+    if (jsonOutput) {
+      ctx.ui.json({
+        ...output,
+        costBreakdown: result.costBreakdown,
+        subtaskResults: result.subtaskResults,
+      });
+    } else {
+      if (result.status === 'success') {
+        const sections = [
+          {
+            header: 'Result',
+            items: [result.result || '(no output)'],
+          },
+          {
+            header: 'Statistics',
+            items: [
+              `Subtasks: ${output.steps}`,
+              `Duration: ${output.durationMs}ms`,
+            ],
+          },
+          {
+            header: 'Cost Breakdown',
+            items: [
+              `Total: ${result.costBreakdown.total}`,
+              `🟢 Small:  ${result.costBreakdown.small}`,
+              `🟡 Medium: ${result.costBreakdown.medium}`,
+              `🔴 Large:  ${result.costBreakdown.large}`,
+            ],
+          },
+        ];
+
+        ctx.ui.success('Adaptive orchestration completed', {
+          title: 'Agent Run',
+          sections,
+          timing: tracker.total(),
+        });
+      } else {
+        ctx.ui.error('Orchestration failed', {
+          title: 'Agent Run Failed',
+          sections: [
+            {
+              header: 'Error',
+              items: [result.result || 'Unknown error'],
+            },
+          ],
+        });
+      }
+    }
+
+    return {
+      exitCode: result.status === 'success' ? 0 : 1,
+      result: output,
+      meta: {
+        timing: tracker.breakdown(),
+      },
+    };
+  } catch (error) {
+    ctx.ui.error(error instanceof Error ? error.message : String(error), {
+      title: 'Adaptive Orchestration Failed',
+    });
+
+    return {
+      exitCode: 1,
+      result: {
+        success: false,
+        error: {
+          code: 'ORCHESTRATION_ERROR',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      },
+    };
+  }
 }
 
 /**
@@ -125,7 +317,13 @@ export default defineCommand<unknown, RunInput, RunResult>({
 
         tracker.checkpoint('tools');
 
-        // Execute agent
+        // Check if adaptive orchestration is enabled
+        if (input.flags.adaptive) {
+          // Use AdaptiveOrchestrator for cost-optimized execution
+          return await executeWithAdaptiveOrchestration(ctx, task, tracker, input.flags.json);
+        }
+
+        // Execute agent (standard mode)
         ctx.ui.info(`Running agent: ${config.name}`, {
           title: 'Agent Run',
           sections: [
@@ -268,25 +466,38 @@ export default defineCommand<unknown, RunInput, RunResult>({
               timing: tracker.total(),
             });
           } else {
+            // Build sections array
+            const errorSections: Array<{ header: string; items: string[] }> = [
+              {
+                header: 'Error',
+                items: [
+                  `Code: ${result.error?.code || 'UNKNOWN'}`,
+                  `Message: ${result.error?.message || 'Unknown error'}`,
+                ],
+              },
+            ];
+
+            // Add summary/result section if available (e.g., for NEED_ESCALATION)
+            if (result.result) {
+              errorSections.push({
+                header: 'Summary',
+                items: [result.result],
+              });
+            }
+
+            // Add statistics
+            errorSections.push({
+              header: 'Statistics',
+              items: [
+                `Steps completed: ${output.steps || 0}`,
+                `Tokens used: ${output.totalTokens || 0}`,
+                `Duration: ${output.durationMs || 0}ms`,
+              ],
+            });
+
             ctx.ui.error(result.error?.message || 'Unknown error', {
               title: 'Agent Run Failed',
-              sections: [
-                {
-                  header: 'Error',
-                  items: [
-                    `Code: ${result.error?.code || 'UNKNOWN'}`,
-                    `Message: ${result.error?.message || 'Unknown error'}`,
-                  ],
-                },
-                {
-                  header: 'Statistics',
-                  items: [
-                    `Steps completed: ${output.steps || 0}`,
-                    `Tokens used: ${output.totalTokens || 0}`,
-                    `Duration: ${output.durationMs || 0}ms`,
-                  ],
-                },
-              ],
+              sections: errorSections,
             });
           }
         }

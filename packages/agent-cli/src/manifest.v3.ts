@@ -147,6 +147,11 @@ export const manifest = defineManifest({
             required: true,
             alias: 't',
           },
+          adaptive: {
+            type: 'boolean',
+            description: 'Use adaptive orchestration (cost-optimized multi-tier execution)',
+            default: false,
+          },
           json: {
             type: 'boolean',
             description: 'Output as JSON',
@@ -157,6 +162,10 @@ export const manifest = defineManifest({
           {
             description: 'Run coding agent',
             flags: { agentId: 'coding-agent', task: 'Fix the bug in auth.ts' }
+          },
+          {
+            description: 'Run with adaptive orchestration (cost-optimized)',
+            flags: { agentId: 'coding-agent', task: 'Implement user authentication', adaptive: true }
           },
           {
             description: 'Run with JSON output',
