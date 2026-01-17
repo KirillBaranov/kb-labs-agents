@@ -47,20 +47,34 @@ export class ToolDiscoverer {
    * @returns Array of ToolDefinitions
    */
   async discover(config: {
-    filesystem?: { enabled: boolean };
-    shell?: { enabled: boolean };
+    filesystem?: { enabled: boolean; mode?: 'allowlist' | 'denylist'; allow?: string[]; deny?: string[] };
+    shell?: { enabled: boolean; mode?: 'allowlist' | 'denylist'; allow?: string[]; deny?: string[] };
     kbLabs?: { mode: 'allowlist' | 'denylist'; allow?: string[]; deny?: string[] };
   }): Promise<ToolDefinition[]> {
     const tools: ToolDefinition[] = [];
 
-    // Add filesystem tools if enabled
+    // Add filesystem tools if enabled (with filtering)
     if (config.filesystem?.enabled) {
-      tools.push(...this.getFilesystemTools());
+      const fsTools = this.getFilesystemTools();
+      const filtered = this.filterTools(
+        fsTools,
+        config.filesystem.mode,
+        config.filesystem.allow,
+        config.filesystem.deny
+      );
+      tools.push(...filtered);
     }
 
-    // Add shell tools if enabled
+    // Add shell tools if enabled (with filtering)
     if (config.shell?.enabled) {
-      tools.push(...this.getShellTools());
+      const shellTools = this.getShellTools();
+      const filtered = this.filterTools(
+        shellTools,
+        config.shell.mode,
+        config.shell.allow,
+        config.shell.deny
+      );
+      tools.push(...filtered);
     }
 
     // Add KB Labs plugin tools if configured
@@ -365,6 +379,39 @@ export class ToolDiscoverer {
     const withoutPrefix = withoutCli.replace(/^kb-labs-/, '');
 
     return withoutPrefix;
+  }
+
+  /**
+   * Filter tools based on allowlist/denylist configuration
+   *
+   * @param tools - Array of tools to filter
+   * @param mode - Filter mode ('allowlist' or 'denylist'). If undefined, returns all tools.
+   * @param allow - Patterns to allow (used with 'allowlist' mode)
+   * @param deny - Patterns to deny (used with 'denylist' mode)
+   * @returns Filtered array of tools
+   */
+  private filterTools(
+    tools: ToolDefinition[],
+    mode?: 'allowlist' | 'denylist',
+    allow?: string[],
+    deny?: string[]
+  ): ToolDefinition[] {
+    // No filtering if mode not specified
+    if (!mode) {
+      return tools;
+    }
+
+    return tools.filter((tool) => {
+      if (mode === 'allowlist') {
+        // Only include if matches allow patterns
+        const allowPatterns = allow || [];
+        return allowPatterns.some((pattern) => this.matchesPattern(tool.name, pattern));
+      } else {
+        // Include unless matches deny patterns
+        const denyPatterns = deny || [];
+        return !denyPatterns.some((pattern) => this.matchesPattern(tool.name, pattern));
+      }
+    });
   }
 
   /**
