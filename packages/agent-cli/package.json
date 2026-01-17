@@ -44,6 +44,8 @@
     "@kb-labs/sdk": "link:../../../kb-labs-sdk/packages/sdk",
     "@kb-labs/agent-contracts": "workspace:*",
     "@kb-labs/agent-core": "workspace:*",
+    "@kb-labs/adaptive-orchestrator": "workspace:*",
+    "@kb-labs/progress-reporter": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

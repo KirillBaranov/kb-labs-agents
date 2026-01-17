@@ -3,6 +3,12 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
+      "@kb-labs/adaptive-orchestrator": [
+        "packages/adaptive-orchestrator/src/index.ts"
+      ],
+      "@kb-labs/adaptive-orchestrator/*": [
+        "packages/adaptive-orchestrator/src/*"
+      ],
       "@kb-labs/agent-contracts": [
         "packages/agent-contracts/src/index.ts"
       ],
@@ -21,11 +27,23 @@
       "@kb-labs/plugin-runtime/*": [
         "../kb-labs-plugin/packages/plugin-runtime/src/*"
       ],
+      "@kb-labs/progress-reporter": [
+        "packages/progress-reporter/src/index.ts"
+      ],
+      "@kb-labs/progress-reporter/*": [
+        "packages/progress-reporter/src/*"
+      ],
       "@kb-labs/sdk": [
         "../kb-labs-sdk/packages/sdk/src/index.ts"
       ],
       "@kb-labs/sdk/*": [
         "../kb-labs-sdk/packages/sdk/src/*"
+      ],
+      "@kb-labs/task-classifier": [
+        "packages/task-classifier/src/index.ts"
+      ],
+      "@kb-labs/task-classifier/*": [
+        "packages/task-classifier/src/*"
       ]
     }
   }
