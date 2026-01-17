@@ -19,11 +19,14 @@ import type { ToolDefinition } from '@kb-labs/agent-contracts';
 export class ReActPromptBuilder {
   /**
    * Build ReAct system prompt based on task classification
+   *
+   * @param includeTools - If false, excludes tool descriptions to force reasoning-only response
    */
   build(
     classification: TaskClassification,
     tools: ToolDefinition[],
-    baseSystemPrompt?: string
+    baseSystemPrompt?: string,
+    includeTools: boolean = true
   ): string {
     let prompt = '';
 
@@ -33,19 +36,27 @@ export class ReActPromptBuilder {
     }
 
     // Add ReAct pattern instructions
-    prompt += this.buildReActInstructions();
+    prompt += this.buildReActInstructions(includeTools);
 
     // Add task-specific guidance
     prompt += this.buildTaskSpecificGuidance(classification);
 
-    // Add tool usage guidelines
-    prompt += this.buildToolGuidelines(classification, tools);
+    // FORCED REASONING MODE:
+    // When includeTools=false, skip tool guidelines entirely
+    // This prevents LLM from "knowing" about tools and trying to call them
+    if (includeTools) {
+      // Add tool usage guidelines
+      prompt += this.buildToolGuidelines(classification, tools);
 
-    // Add critical rules
-    prompt += this.buildCriticalRules(classification);
+      // Add critical rules
+      prompt += this.buildCriticalRules(classification);
 
-    // Add examples
-    prompt += this.buildExamples(classification);
+      // Add examples
+      prompt += this.buildExamples(classification);
+    } else {
+      // Reasoning-only mode: Add reflection instructions
+      prompt += this.buildReasoningModeInstructions();
+    }
 
     return prompt;
   }
@@ -53,7 +64,24 @@ export class ReActPromptBuilder {
   /**
    * Core ReAct pattern instructions
    */
-  private buildReActInstructions(): string {
+  private buildReActInstructions(includeTools: boolean): string {
+    if (!includeTools) {
+      // Reasoning-only mode: simplified instructions
+      return `# Reasoning Mode
+
+You are in REFLECTION mode. Your task is to THINK about what you just learned.
+
+DO NOT call any tools in this step. Just reflect on:
+- What did the previous tool results tell me?
+- What have I learned so far?
+- What should my next step be?
+- Do I have enough information to answer, or do I need more?
+
+After your reflection, I will enable tools again for your next action.
+
+`;
+    }
+
     return `# ReAct Pattern: Reasoning + Acting
 
 You MUST follow this structured thinking pattern for EVERY response:
@@ -72,6 +100,99 @@ Then repeat the cycle until you have enough information to answer.
 
 CRITICAL: You MUST use tools to search the codebase BEFORE providing an answer.
 NEVER answer from general knowledge without checking the actual codebase first.
+
+## Task Completion Signals
+
+**🎯 CRITICAL: You MUST use these markers to complete your task!**
+
+When you finish your task or encounter obstacles, use these markers:
+
+**✅ Task Complete (USE THIS WHEN YOU CAN ANSWER THE QUESTION):**
+\`\`\`
+[TASK_COMPLETE]
+Your final answer here...
+\`\`\`
+
+**When to use [TASK_COMPLETE]:**
+- ✅ You have read the relevant files and understand the implementation
+- ✅ You can explain how the system works based on actual code you've seen
+- ✅ You've gathered enough information to answer the user's question
+- ✅ Re-reading files won't give you new information
+
+**DO NOT wait until you've explored everything!** Once you can answer the question, use [TASK_COMPLETE] immediately.
+
+**🆘 Need Escalation (complex decision, ambiguity, need human input):**
+\`\`\`
+[NEED_ESCALATION: brief reason]
+What you found so far...
+\`\`\`
+
+**❌ Give Up (tried everything, cannot proceed):**
+\`\`\`
+[GIVE_UP: brief reason]
+What you tried and why it didn't work...
+\`\`\`
+
+`;
+  }
+
+  /**
+   * Instructions for reasoning-only mode (after tool execution)
+   */
+  private buildReasoningModeInstructions(): string {
+    return `# Reflection Instructions
+
+You just received results from tool execution. Now you need to THINK about what you learned.
+
+## What to do in this step:
+
+1. **Analyze the results** - What did the tool tell you?
+2. **Check for errors** - Did the tool fail? What was the error message?
+3. **Learn from failures** - If something failed, why? What should you try differently?
+4. **Review Execution Memory** - Check what you ALREADY KNOW from previous steps (see "Execution Memory" section above)
+5. **Plan next steps** - Based on what you learned AND what you already know, what should you do next?
+6. **Assess progress** - Are you closer to answering the question? Do you have enough information?
+7. **🎯 DECIDE: Can you answer now?** - If you have enough information, use [TASK_COMPLETE] in your NEXT step instead of calling more tools!
+
+## CRITICAL RULES FOR REASONING MODE:
+
+❌ **DO NOT try to call tools** - Tools are disabled in this reflection step
+❌ **DO NOT repeat queries** - Check Execution Memory first! If you already searched for something, use those results instead of searching again
+✅ **DO reflect on what you learned** - Explain what the results mean
+✅ **DO identify errors** - If tool failed, explain why and what to try next
+✅ **DO plan ahead** - Decide what your next action will be (will be executed in the next step)
+✅ **DO check memory** - Review "Execution Memory" section to see what you already learned
+
+## Avoiding Redundant Work:
+
+**Before planning your next tool call, ask yourself:**
+- Have I already searched for this? (Check "Previous Search Results" in memory)
+- Have I already read this file? (Check "Files Already Read" in memory)
+- Can I answer based on what I ALREADY KNOW instead of searching again?
+
+**Example good reflection:**
+
+"I tried to read vector-store.ts but got 'File not found' error. The error message suggests similar files like 'index.ts' and 'types.ts'. This means vector-store.ts doesn't exist in that directory. I should try reading index.ts to see what's exported from that module. That will tell me where VectorStore is actually defined."
+
+**Example bad reflection (don't do this):**
+
+"File not found. Let me try another file." [then immediately calls fs:read again]
+
+**Example - checking memory:**
+
+"I was about to search for 'reasoning patterns' but I see in Execution Memory that I already searched for this on Step 3 and found the relevant files. Instead of searching again, I should read one of those files that was mentioned in the previous search results."
+
+## When to Give Up:
+
+If you've tried multiple approaches and nothing works:
+- ✅ Use [GIVE_UP: brief reason] to signal you cannot complete the task
+- ✅ Explain what you tried and why it didn't work
+- ✅ Be honest - it's better to escalate than to loop forever
+
+If you need clarification or human decision:
+- ✅ Use [NEED_ESCALATION: brief reason] to ask for help
+
+Take your time to think. The next step will allow tool usage again.
 
 `;
   }

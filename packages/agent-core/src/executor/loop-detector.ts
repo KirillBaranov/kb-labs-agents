@@ -29,9 +29,9 @@ export class LoopDetector {
   }) {
     this.state = {
       stateHashes: [],
-      maxHistorySize: options?.maxHistorySize ?? 5,
+      maxHistorySize: options?.maxHistorySize ?? 10, // Increased from 5 to allow more exploration
       toolCallSequences: [],
-      loopThreshold: options?.loopThreshold ?? 3,
+      loopThreshold: options?.loopThreshold ?? 4, // Increased from 3 to be less aggressive
     };
   }
 
@@ -49,10 +49,11 @@ export class LoopDetector {
     }
 
     // Strategy 1: Exact state repeat (hash-based)
-    const exactRepeat = this.checkExactRepeat(currentStep);
-    if (exactRepeat.detected) {
-      return exactRepeat;
-    }
+    // DISABLED: Too aggressive with forced reasoning pattern
+    // const exactRepeat = this.checkExactRepeat(currentStep);
+    // if (exactRepeat.detected) {
+    //   return exactRepeat;
+    // }
 
     // Strategy 2: Tool call sequence repeat
     const sequenceRepeat = this.checkToolSequenceRepeat(steps);
@@ -72,21 +73,26 @@ export class LoopDetector {
   /**
    * Strategy 1: Check for exact state repeats
    *
-   * Hashes current tool calls + response and checks against history
+   * UPDATED LOGIC: Only flag as loop if CONSECUTIVE repeats (within 3 tool execution steps).
+   * This allows: Search → Read → Analyze → Read (re-reading for more details)
+   * But blocks: Read → Reasoning → Read (immediate repeat after forced reasoning = likely stuck)
    */
   private checkExactRepeat(step: AgentExecutionStep): LoopDetectionResult {
     const stateHash = this.hashStep(step);
 
-    // Check if this exact state was seen before
-    const lastIndex = this.state.stateHashes.lastIndexOf(stateHash);
-    if (lastIndex !== -1) {
-      const stepsSinceLastSeen = this.state.stateHashes.length - lastIndex;
+    // Check if this exact state was seen recently (within last 3 tool steps)
+    // This allows one forced reasoning step between tool re-use
+    const recentHistory = this.state.stateHashes.slice(-3); // Last 3 hashes
+    const recentRepeatIndex = recentHistory.indexOf(stateHash);
+
+    if (recentRepeatIndex !== -1) {
+      const stepsSinceLastSeen = recentHistory.length - recentRepeatIndex;
 
       return {
         detected: true,
         type: 'exact_repeat',
         description: `Exact state repeated after ${stepsSinceLastSeen} steps`,
-        loopSteps: [lastIndex + 1, step.step],
+        loopSteps: [step.step - stepsSinceLastSeen, step.step],
         confidence: 1.0, // 100% confidence for exact repeats
       };
     }
@@ -213,17 +219,27 @@ export class LoopDetector {
 
   /**
    * Hash a step into a unique string
+   *
+   * We hash ONLY tool NAME + INPUT (not output, not reasoning).
+   * This creates consistent hashes for same tool calls.
+   *
+   * Combined with checkExactRepeat's "recent history" check,
+   * this allows re-using tools after a gap but blocks immediate repeats.
    */
   private hashStep(step: AgentExecutionStep): string {
     const toolCallsStr = step.toolCalls
       ? step.toolCalls
-          .map((tc) => `${tc.name}:${JSON.stringify(tc.input)}:${tc.output}`)
+          .map((tc) => `${tc.name}:${JSON.stringify(tc.input)}`)
           .join('|')
       : '';
 
-    const responseStr = step.response?.slice(0, 500) || ''; // First 500 chars
+    // For reasoning-only steps, each step is unique (forced reasoning pattern)
+    if (!toolCallsStr) {
+      return this.hashString(`reasoning-step-${step.step}`);
+    }
 
-    return this.hashString(toolCallsStr + responseStr);
+    // For tool execution steps: hash tool calls only
+    return this.hashString(toolCallsStr);
   }
 
   /**
