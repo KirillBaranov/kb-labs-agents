@@ -3,12 +3,6 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@kb-labs/adaptive-orchestrator": [
-        "packages/adaptive-orchestrator/src/index.ts"
-      ],
-      "@kb-labs/adaptive-orchestrator/*": [
-        "packages/adaptive-orchestrator/src/*"
-      ],
       "@kb-labs/agent-contracts": [
         "packages/agent-contracts/src/index.ts"
       ],
@@ -20,6 +14,12 @@
       ],
       "@kb-labs/agent-core/*": [
         "packages/agent-core/src/*"
+      ],
+      "@kb-labs/iterative-orchestrator": [
+        "packages/iterative-orchestrator/src/index.ts"
+      ],
+      "@kb-labs/iterative-orchestrator/*": [
+        "packages/iterative-orchestrator/src/*"
       ],
       "@kb-labs/plugin-runtime": [
         "../kb-labs-plugin/packages/plugin-runtime/src/index.ts"
