@@ -69,6 +69,7 @@ export interface SubtaskEvent extends BaseProgressEvent {
     subtaskId: number;
     description: string;
     tier: LLMTier;
+    agentId?: string; // Optional: specialist agent handling this subtask
     progress?: number; // 0-100, only for 'progress'
     error?: string; // Only for 'failed'
   };

@@ -101,9 +101,10 @@ export class ProgressReporter {
     description: string,
     tier: LLMTier,
     phase: 'started' | 'progress' | 'completed' | 'failed',
-    extra?: { progress?: number; error?: string }
+    extra?: { progress?: number; error?: string; agentId?: string }
   ): void {
     const emoji = this.getTierEmoji(tier);
+    const agentLabel = extra?.agentId ? ` [Agent: ${extra.agentId}]` : '';
 
     this.emit({
       type: `subtask_${phase}` as any,
@@ -118,16 +119,16 @@ export class ProgressReporter {
 
     switch (phase) {
       case 'started':
-        this.logger.info(`${emoji} [${subtaskId}] Starting: ${description}`);
+        this.logger.info(`${emoji} [${subtaskId}]${agentLabel} Starting: ${description}`);
         break;
       case 'progress':
-        this.logger.info(`${emoji} [${subtaskId}] Progress: ${extra?.progress || 0}%`);
+        this.logger.info(`${emoji} [${subtaskId}]${agentLabel} Progress: ${extra?.progress || 0}%`);
         break;
       case 'completed':
-        this.logger.info(`✅ [${subtaskId}] Completed: ${description}`);
+        this.logger.info(`✅ [${subtaskId}]${agentLabel} Completed: ${description}`);
         break;
       case 'failed':
-        this.logger.error(`❌ [${subtaskId}] Failed: ${extra?.error || 'Unknown error'}`);
+        this.logger.error(`❌ [${subtaskId}]${agentLabel} Failed: ${extra?.error || 'Unknown error'}`);
         break;
     }
   }
