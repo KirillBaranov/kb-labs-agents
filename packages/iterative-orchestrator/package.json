@@ -1,0 +1,44 @@
+{
+  "name": "@kb-labs/iterative-orchestrator",
+  "version": "0.1.0",
+  "description": "Iterative agent orchestrator with smart delegation and user escalation",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rimraf dist",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@kb-labs/sdk": "link:../../../kb-labs-sdk/packages/sdk",
+    "@kb-labs/agent-contracts": "workspace:*",
+    "@kb-labs/agent-core": "workspace:*",
+    "@kb-labs/progress-reporter": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^1.1.0",
+    "rimraf": "^5.0.5",
+    "@types/node": "^20.0.0"
+  },
+  "keywords": [
+    "kb-labs",
+    "agents",
+    "orchestration",
+    "iterative",
+    "llm"
+  ],
+  "author": "KB Labs",
+  "license": "MIT"
+}
