@@ -81,15 +81,15 @@ importers:
 
   packages/agent-cli:
     dependencies:
-      '@kb-labs/adaptive-orchestrator':
-        specifier: workspace:*
-        version: link:../adaptive-orchestrator
       '@kb-labs/agent-contracts':
         specifier: workspace:*
         version: link:../agent-contracts
       '@kb-labs/agent-core':
         specifier: workspace:*
         version: link:../agent-core
+      '@kb-labs/iterative-orchestrator':
+        specifier: workspace:*
+        version: link:../iterative-orchestrator
       '@kb-labs/progress-reporter':
         specifier: workspace:*
         version: link:../progress-reporter
@@ -189,6 +189,37 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.10.4)
+
+  packages/iterative-orchestrator:
+    dependencies:
+      '@kb-labs/agent-contracts':
+        specifier: workspace:*
+        version: link:../agent-contracts
+      '@kb-labs/agent-core':
+        specifier: workspace:*
+        version: link:../agent-core
+      '@kb-labs/progress-reporter':
+        specifier: workspace:*
+        version: link:../progress-reporter
+      '@kb-labs/sdk':
+        specifier: link:../../../kb-labs-sdk/packages/sdk
+        version: link:../../../kb-labs-sdk/packages/sdk
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.30
+      rimraf:
+        specifier: ^5.0.5
+        version: 5.0.10
+      tsup:
+        specifier: ^8.0.1
+        version: 8.5.0(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.1.0
+        version: 1.6.1(@types/node@20.19.30)
 
   packages/progress-reporter:
     dependencies:
