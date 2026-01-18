@@ -15,7 +15,7 @@ export const AgentSchemaSchema = z.literal('kb.agent/1');
  * LLM configuration schema
  */
 export const AgentLLMConfigSchema = z.object({
-  model: z.string().min(1),
+  tier: z.enum(['small', 'medium', 'large']),
   temperature: z.number().min(0).max(1),
   maxTokens: z.number().int().positive(),
   maxToolCalls: z.number().int().positive().default(20).optional(),

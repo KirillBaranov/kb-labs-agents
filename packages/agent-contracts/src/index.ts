@@ -19,6 +19,13 @@ export type {
   AgentMetadata,
 } from './agent-config.js';
 
+// Agent Orchestrator Metadata Types
+export type {
+  AgentOrchestratorMetadata,
+  AgentInfo,
+  AgentSelectionReasoning,
+} from './agent-orchestrator-metadata.js';
+
 // Tool Types
 export type {
   ToolInputSchema,

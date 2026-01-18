@@ -25,11 +25,6 @@ export interface AgentLLMConfig {
    */
   tier: 'small' | 'medium' | 'large';
 
-  /**
-   * @deprecated Use 'tier' instead. Kept for backward compatibility only.
-   */
-  model?: string;
-
   /** Temperature (0-1). Lower = more deterministic, higher = more creative */
   temperature: number;
   /** Maximum tokens for LLM response */
