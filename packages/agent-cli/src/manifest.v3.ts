@@ -71,6 +71,9 @@ const runPermissions: PermissionSpec = {
     llm: true,
     cache: true,
   },
+  invoke: {
+    allow: ['*'], // Agents can invoke any plugin
+  },
   quotas: {
     timeoutMs: 300000, // 5 minutes
     memoryMb: 512,
@@ -137,8 +140,8 @@ export const manifest = defineManifest({
         flags: defineCommandFlags({
           agentId: {
             type: 'string',
-            description: 'Agent ID to execute',
-            required: true,
+            description: 'Agent ID to execute (not required with --adaptive)',
+            required: false,
             alias: 'a',
           },
           task: {

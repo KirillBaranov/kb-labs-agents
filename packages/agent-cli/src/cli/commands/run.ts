@@ -101,14 +101,16 @@ async function executeWithAdaptiveOrchestration(
 
       case 'subtask_started':
         const subtaskEmoji = event.data.tier === 'small' ? '🟢' : event.data.tier === 'medium' ? '🟡' : '🔴';
+        const agentLabelStart = event.data.agentId ? ctx.ui.colors.accent(` [Agent: ${event.data.agentId}]`) : '';
         ctx.ui.write(
-          `${timestamp} ${subtaskEmoji} [${event.data.subtaskId}] Starting: ${event.data.description}`
+          `${timestamp} ${subtaskEmoji} [${event.data.subtaskId}]${agentLabelStart} Starting: ${event.data.description}`
         );
         break;
 
       case 'subtask_completed':
+        const agentLabelCompleted = event.data.agentId ? ctx.ui.colors.accent(` [Agent: ${event.data.agentId}]`) : '';
         ctx.ui.write(
-          `${timestamp} ${ctx.ui.colors.success(ctx.ui.symbols.success)} [${event.data.subtaskId}] Completed: ${event.data.description}`
+          `${timestamp} ${ctx.ui.colors.success(ctx.ui.symbols.success)} [${event.data.subtaskId}]${agentLabelCompleted} Completed: ${event.data.description}`
         );
         break;
 
@@ -137,7 +139,7 @@ async function executeWithAdaptiveOrchestration(
 
   try {
     const logger = useLogger();
-    const orchestrator = new AdaptiveOrchestrator(logger, progressCallback);
+    const orchestrator = new AdaptiveOrchestrator(ctx, logger, progressCallback);
     const result = await orchestrator.execute(task);
 
     tracker.checkpoint('execution');
@@ -235,10 +237,25 @@ export default defineCommand<unknown, RunInput, RunResult>({
       ctx: PluginContextV3<unknown>,
       input: RunInput
     ): Promise<CommandResult<RunResult>> {
-      const tracker = new TimingTracker();
-      const { agentId, task } = input.flags;
+      // DEBUG: Check permissions received
+      console.log('[agent:run DEBUG] Context check:', {
+        hasApi: !!ctx.api,
+        hasInvoke: !!ctx.api?.invoke,
+        apiInvokeType: typeof ctx.api?.invoke?.call,
+      });
 
-      if (!agentId) {
+      // Try to call invoke to see what error we get
+      try {
+        await ctx.api.invoke.call('mind', { command: 'rag-query', query: 'test' });
+      } catch (err) {
+        console.log('[agent:run DEBUG] Invoke test failed:', err instanceof Error ? err.message : String(err));
+      }
+
+      const tracker = new TimingTracker();
+      const { agentId, task, adaptive } = input.flags;
+
+      // agentId is only required for standard (non-adaptive) mode
+      if (!agentId && !adaptive) {
         ctx.ui.error('Missing required flag: --agent-id', {
           title: 'Agent Run',
         });
@@ -248,7 +265,7 @@ export default defineCommand<unknown, RunInput, RunResult>({
             success: false,
             error: {
               code: 'MISSING_AGENT_ID',
-              message: 'Agent ID is required',
+              message: 'Agent ID is required (or use --adaptive for automatic agent selection)',
             },
           },
         };
@@ -271,8 +288,16 @@ export default defineCommand<unknown, RunInput, RunResult>({
       }
 
       try {
-        // Discover and load agent
         tracker.checkpoint('init');
+
+        // Check if adaptive orchestration is enabled
+        if (input.flags.adaptive) {
+          // Use AdaptiveOrchestrator for cost-optimized execution
+          // No need to validate specific agent - orchestrator will select agents automatically
+          return await executeWithAdaptiveOrchestration(ctx, task, tracker, input.flags.json);
+        }
+
+        // Standard agent execution - validate agent exists
         const registry = new AgentRegistry(ctx);
 
         // Check if agent exists
@@ -316,12 +341,6 @@ export default defineCommand<unknown, RunInput, RunResult>({
         const fullContext = { ...agentContext, tools };
 
         tracker.checkpoint('tools');
-
-        // Check if adaptive orchestration is enabled
-        if (input.flags.adaptive) {
-          // Use AdaptiveOrchestrator for cost-optimized execution
-          return await executeWithAdaptiveOrchestration(ctx, task, tracker, input.flags.json);
-        }
 
         // Execute agent (standard mode)
         ctx.ui.info(`Running agent: ${config.name}`, {
