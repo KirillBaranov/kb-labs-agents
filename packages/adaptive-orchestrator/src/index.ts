@@ -36,6 +36,9 @@
 
 export { AdaptiveOrchestrator } from './orchestrator.js';
 export { OrchestrationAnalytics, ORCHESTRATION_EVENTS } from './analytics.js';
+export { OrchestratorAgentRegistry } from './agent-registry.js';
+export { FileHistoryStorage } from './history-storage.js';
+export { executeWithAgent } from './agent-execution-helper.js';
 
 export type {
   Subtask,
@@ -44,3 +47,11 @@ export type {
   OrchestratorResult,
   OrchestratorConfig,
 } from './types.js';
+
+export type {
+  OrchestrationHistory,
+  SubtaskTrace,
+  ToolCallRecord,
+  LLMInteraction,
+  IHistoryStorage,
+} from './history-types.js';

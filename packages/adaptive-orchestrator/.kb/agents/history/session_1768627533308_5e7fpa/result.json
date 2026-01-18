@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "result": "[{\"id\":1,\"description\":\"Subtask 1\",\"complexity\":\"small\"},{\"id\":2,\"description\":\"Subtask 2\",\"complexity\":\"medium\"}]",
+  "costBreakdown": {
+    "total": "N/A",
+    "small": "N/A",
+    "medium": "N/A",
+    "large": "N/A"
+  },
+  "subtaskResults": [
+    {
+      "id": 1,
+      "status": "success",
+      "tier": "medium",
+      "content": "MEDIUM | Standard development task",
+      "tokens": 26
+    }
+  ]
+}
