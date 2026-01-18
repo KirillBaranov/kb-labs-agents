@@ -13,3 +13,24 @@ export { ErrorRecovery } from './error-recovery.js';
 export type { RecoveryAction, RecoveryResult, RecoveryStrategyType } from './error-recovery.js';
 export { parseTerminationSignal, shouldGiveUp } from './termination-parser.js';
 export type { TerminationSignal } from './termination-parser.js';
+
+// Specialist Executor exports (V2)
+export { SpecialistExecutor } from './specialist-executor.js';
+export type { SpecialistContext, SpecialistResult } from './specialist-executor.js';
+
+// Session State Manager exports (V2)
+export { SessionStateManager } from './session-state-manager.js';
+export type {
+  SessionState,
+  SessionFinding,
+  Artifact,
+  ArtifactReference,
+} from './session-state-manager.js';
+
+// Orchestrator Executor exports (V2)
+export { OrchestratorExecutor } from './orchestrator-executor.js';
+export type {
+  SubTask,
+  DelegatedResult,
+  OrchestratorResult,
+} from './orchestrator-executor.js';
