@@ -466,58 +466,44 @@ export class ToolExecutor {
       input = toolCall.input as Record<string, any>;
     }
 
-    // Build command args from input
-    const args: string[] = [pluginName, commandName];
+    // Use plugin invoke API to call other plugins directly
+    try {
+      const invokeInput = {
+        command: commandName,
+        ...input,
+      };
 
-    // Convert input object to CLI flags
-    for (const [key, value] of Object.entries(input)) {
-      if (value === true) {
-        // Boolean flag
-        args.push(`--${key}`);
-      } else if (value !== false && value !== null && value !== undefined) {
-        // Value flag
-        args.push(`--${key}`, String(value));
+      console.log('[DEBUG] Invoking plugin:', {
+        pluginId: pluginName,
+        command: commandName,
+        invokeInput,
+      });
+
+      const result = await this.ctx.api.invoke.call(pluginName, invokeInput);
+
+      console.log('[DEBUG] Plugin invocation result:', {
+        pluginId: pluginName,
+        resultType: typeof result,
+        resultPreview: typeof result === 'string' ? result.substring(0, 200) : result,
+      });
+
+      // Convert result to string
+      if (typeof result === 'string') {
+        return result;
+      } else if (result && typeof result === 'object') {
+        return JSON.stringify(result, null, 2);
+      } else {
+        return String(result);
       }
+    } catch (error: any) {
+      console.error('[DEBUG] Plugin invocation error:', {
+        pluginId: pluginName,
+        command: commandName,
+        error: error.message,
+        stack: error.stack,
+      });
+      throw new Error(`Plugin invocation failed: ${error.message}`);
     }
-
-    // Execute using kb CLI
-    return new Promise((resolve, reject) => {
-      const kbCommand = 'pnpm kb';
-      const fullCommand = `${kbCommand} ${args.join(' ')}`;
-
-      this.ctx.platform.logger.debug('Executing plugin command', {
-        command: fullCommand,
-      });
-
-      const child = spawn(fullCommand, {
-        shell: true,
-        cwd: this.ctx.cwd,
-        env: process.env,
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout?.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      child.stderr?.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      child.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`Command failed with exit code ${code}:\n${stderr}`));
-        } else {
-          resolve(stdout || stderr || 'Command executed successfully');
-        }
-      });
-
-      child.on('error', (error) => {
-        reject(new Error(`Failed to execute command: ${error.message}`));
-      });
-    });
   }
 
   /**

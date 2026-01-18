@@ -136,7 +136,7 @@ export class AgentExecutor {
 
     this.ctx.platform.logger.info('Starting agent execution', {
       agentId: config.id,
-      model: config.llm.model,
+      model: config.llm.tier,
       task,
       taskCategory,
       taskHash,
@@ -148,7 +148,7 @@ export class AgentExecutor {
     // Track agent execution start
     await this.ctx.platform.analytics.track('agent.execution.started', {
       agentId: config.id,
-      model: config.llm.model,
+      model: config.llm.tier,
       taskLength: task.length,
       taskCategory,
       taskHash,
@@ -458,7 +458,7 @@ export class AgentExecutor {
               // Handle different termination types
               if (terminationSignal.type === 'task_complete') {
                 this.ctx.platform.logger.info('Agent task completed successfully', {
-                  model: config.llm.model,
+                  model: config.llm.tier,
                   steps: state.currentStep,
                   tokensUsed: state.tokensUsed,
                   durationMs,
@@ -466,7 +466,7 @@ export class AgentExecutor {
 
                 await this.ctx.platform.analytics.track('agent.execution.completed', {
                   agentId: config.id,
-                  model: config.llm.model,
+                  model: config.llm.tier,
                   success: true,
                   taskCategory,
                   taskHash,
@@ -551,7 +551,7 @@ export class AgentExecutor {
             const toolStats = this.collectToolStats(state.steps);
 
             this.ctx.platform.logger.info('Agent execution completed (implicit)', {
-              model: config.llm.model,
+              model: config.llm.tier,
               steps: state.currentStep,
               tokensUsed: state.tokensUsed,
               durationMs,
@@ -561,7 +561,7 @@ export class AgentExecutor {
             // Track successful completion
             await this.ctx.platform.analytics.track('agent.execution.completed', {
               agentId: config.id,
-              model: config.llm.model,
+              model: config.llm.tier,
               success: true,
               taskCategory,
               taskHash,
@@ -732,7 +732,7 @@ export class AgentExecutor {
           // Track loop detection
           await this.ctx.platform.analytics.track('agent.execution.completed', {
             agentId: config.id,
-            model: config.llm.model,
+            model: config.llm.tier,
             success: false,
             taskCategory,
             taskHash,
@@ -893,7 +893,7 @@ export class AgentExecutor {
       // Track completion
       await this.ctx.platform.analytics.track('agent.execution.completed', {
         agentId: config.id,
-        model: config.llm.model,
+        model: config.llm.tier,
         success: false,
         taskCategory,
         taskHash,
@@ -936,7 +936,7 @@ export class AgentExecutor {
       // Track execution error
       await this.ctx.platform.analytics.track('agent.execution.completed', {
         agentId: config.id,
-        model: config.llm.model,
+        model: config.llm.tier,
         success: false,
         taskCategory,
         taskHash,
