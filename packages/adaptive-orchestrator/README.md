@@ -22,22 +22,27 @@ pnpm add @kb-labs/adaptive-orchestrator
 
 ```typescript
 import { AdaptiveOrchestrator } from '@kb-labs/adaptive-orchestrator';
-import { useLogger } from '@kb-labs/sdk';
+import type { PluginContextV3 } from '@kb-labs/sdk';
 
-const logger = useLogger();
-const orchestrator = new AdaptiveOrchestrator(logger);
+// Inside your plugin handler
+export async function handler(ctx: PluginContextV3) {
+  const logger = ctx.platform.logger;
+  const orchestrator = new AdaptiveOrchestrator(ctx, logger);
 
-// Execute task
-const result = await orchestrator.execute('Implement user authentication with JWT');
+  // Execute task with full agent support
+  const result = await orchestrator.execute('Implement user authentication with JWT');
 
-console.log(result.result);
-// → "Authentication system implemented with JWT tokens, including..."
+  console.log(result.result);
+  // → "Authentication system implemented with JWT tokens, including..."
 
-console.log(result.costBreakdown);
-// → { total: '$0.0331', small: '$0.0050', medium: '$0.0281', large: '$0.0000' }
+  console.log(result.costBreakdown);
+  // → { total: '$0.0331', small: '$0.0050', medium: '$0.0281', large: '$0.0000' }
 
-console.log(result.status);
-// → 'success'
+  console.log(result.status);
+  // → 'success'
+
+  return result;
+}
 ```
 
 ## How It Works
@@ -359,6 +364,95 @@ try {
 }
 ```
 
+## Execution History
+
+Every orchestration session is automatically saved to `.kb/agents/history/` for replay and analysis.
+
+### Storage Structure
+
+```
+.kb/agents/history/
+├── session_1234567890_abc123/
+│   ├── session.json       # Full execution history
+│   ├── plan.json          # Execution plan
+│   └── result.json        # Final result
+├── session_1234567891_def456/
+│   └── ...
+└── index.json             # Metadata index
+```
+
+### What's Tracked
+
+```typescript
+interface OrchestrationHistory {
+  sessionId: string;
+  task: string;
+  classifiedTier: LLMTier;
+  classificationConfidence: 'high' | 'low';
+  plan: ExecutionPlan;
+  agentsLoadedCount: number;
+  availableAgents: string[];
+  subtaskTraces: SubtaskTrace[];  // Full execution trace
+  result: OrchestratorResult;
+  durationMs: number;
+  success: boolean;
+}
+```
+
+Each `SubtaskTrace` includes:
+- **LLM interactions** - All prompts and responses
+- **Tool calls** - Every tool executed with input/output
+- **Agent execution** - Which specialist agent was used
+- **Token usage** - Tokens per step
+- **Timing** - Duration of each operation
+
+### Loading History
+
+```typescript
+import { FileHistoryStorage } from '@kb-labs/adaptive-orchestrator';
+
+const storage = new FileHistoryStorage();
+
+// List all sessions
+const sessions = await storage.list();
+console.log(sessions); // ['session_123...', 'session_456...']
+
+// Load specific session
+const history = await storage.load(sessions[0]);
+
+// Analyze execution
+console.log(`Task: ${history.task}`);
+console.log(`Success: ${history.success}`);
+console.log(`Total duration: ${history.durationMs}ms`);
+console.log(`Subtasks: ${history.subtaskTraces.length}`);
+
+// Inspect tool calls
+for (const trace of history.subtaskTraces) {
+  if (trace.toolCalls) {
+    console.log(`\nSubtask ${trace.id}: ${trace.description}`);
+    for (const call of trace.toolCalls) {
+      console.log(`  Tool: ${call.name}`);
+      console.log(`  Duration: ${call.durationMs}ms`);
+    }
+  }
+}
+```
+
+### Future: Diff Analysis
+
+History storage enables future diff analysis:
+
+```bash
+# Future feature (not yet implemented)
+kb agent:compare session_123 session_456
+
+# Shows:
+# - Different execution paths
+# - Tool call differences
+# - Performance comparison
+# - Token usage comparison
+```
+
 ## Comparison with Manual Approach
 
 | Aspect | Manual | Adaptive Orchestrator |
@@ -369,6 +463,8 @@ try {
 | **Progress** | No feedback | Real-time events |
 | **Planning** | Manual breakdown | Automatic subtasks |
 | **Optimization** | None | Tier-based routing |
+| **History** | None | Full execution replay |
+| **Tool Execution** | Manual integration | Automatic via AgentExecutor |
 
 ## License
 
