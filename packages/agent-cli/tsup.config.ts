@@ -12,6 +12,8 @@ export default defineConfig({
     'src/cli/commands/init.ts',   // Agent commands
     'src/cli/commands/list.ts',
     'src/cli/commands/run.ts',
+    'src/cli/commands/specialist-run.ts', // Specialist command (V2)
+    'src/cli/commands/orchestrator-run.ts', // Orchestrator command (V2)
     'src/cli/commands/hello.ts',  // V3 hello command
     'src/cli/commands/test-loader.ts',
     'src/cli/commands/hello-v3.ts',
