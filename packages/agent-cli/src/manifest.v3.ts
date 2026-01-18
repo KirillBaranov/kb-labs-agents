@@ -13,8 +13,8 @@ import { AGENTS_BASE_PATH, AGENTS_ROUTES } from '@kb-labs/agent-contracts';
  */
 const pluginPermissions: PermissionSpec = {
   fs: {
-    read: ['.kb/agents/**', '.kb/cache/**', '.kb/mind/**', '**'],
-    write: ['.kb/agents/**', '.kb/cache/**', '**'],
+    read: ['.kb/agents/**', '.kb/specialists/**', '.kb/cache/**', '.kb/mind/**', '**'],
+    write: ['.kb/agents/**', '.kb/specialists/**', '.kb/cache/**', '**'],
   },
   shell: {
     allow: ['*'],
@@ -177,6 +177,84 @@ export const manifest = defineManifest({
         ]),
         handler: './cli/commands/run.js#default',
         handlerPath: './cli/commands/run.js',
+        permissions: runPermissions,
+      },
+      {
+        id: 'specialist:run',
+        group: 'specialist',
+        describe: 'Execute a specialist with a task (V2 Architecture)',
+        longDescription: 'Runs a specialist agent with configurable forced reasoning, static context, and structured I/O. Specialists are domain experts with deep context loaded from .kb/specialists/.',
+        flags: defineCommandFlags({
+          specialistId: {
+            type: 'string',
+            description: 'Specialist ID to execute (e.g., researcher, implementer)',
+            required: true,
+            alias: 's',
+          },
+          task: {
+            type: 'string',
+            description: 'Task description for the specialist',
+            required: true,
+            alias: 't',
+          },
+          json: {
+            type: 'boolean',
+            description: 'Output as JSON',
+            default: false,
+          },
+        }),
+        examples: generateExamples('run', 'specialist', [
+          {
+            description: 'Run researcher specialist',
+            flags: { specialistId: 'researcher', task: 'Find implementation of Mind RAG hybrid search' }
+          },
+          {
+            description: 'Run implementer specialist',
+            flags: { specialistId: 'implementer', task: 'Add unit tests for VectorStore interface' }
+          },
+          {
+            description: 'Output as JSON',
+            flags: { specialistId: 'researcher', task: 'Explain context compression', json: true }
+          },
+        ]),
+        handler: './cli/commands/specialist-run.js#default',
+        handlerPath: './cli/commands/specialist-run.js',
+        permissions: runPermissions,
+      },
+      {
+        id: 'orchestrator:run',
+        group: 'orchestrator',
+        describe: 'Execute a complex task via orchestrator with specialist delegation',
+        longDescription: 'Runs an orchestrator that breaks complex tasks into subtasks, delegates them to specialists, and synthesizes results into a coherent answer. Uses smart tier LLM for planning and synthesis.',
+        flags: defineCommandFlags({
+          task: {
+            type: 'string',
+            description: 'Task description for the orchestrator',
+            required: true,
+            alias: 't',
+          },
+          json: {
+            type: 'boolean',
+            description: 'Output as JSON',
+            default: false,
+          },
+        }),
+        examples: generateExamples('run', 'orchestrator', [
+          {
+            description: 'Execute complex multi-step task',
+            flags: { task: 'Analyze the V2 agent architecture and create implementation plan' }
+          },
+          {
+            description: 'Research and implement feature',
+            flags: { task: 'Find how hybrid search works and add similar functionality to workflow engine' }
+          },
+          {
+            description: 'Output as JSON',
+            flags: { task: 'Explain the plugin system architecture', json: true }
+          },
+        ]),
+        handler: './cli/commands/orchestrator-run.js#default',
+        handlerPath: './cli/commands/orchestrator-run.js',
         permissions: runPermissions,
       }
     ]
