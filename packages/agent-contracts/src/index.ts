@@ -19,6 +19,20 @@ export type {
   AgentMetadata,
 } from './agent-config.js';
 
+// Specialist Configuration Types (V2)
+export type {
+  SpecialistSchema,
+  SpecialistLimits,
+  SpecialistStaticContext,
+  SpecialistDynamicContext,
+  SpecialistContextConfig,
+  SpecialistInputSchema,
+  SpecialistOutputSchema,
+  SpecialistCapability,
+  SpecialistConfigV1,
+  SpecialistMetadata,
+} from './specialist-config.js';
+
 // Agent Orchestrator Metadata Types
 export type {
   AgentOrchestratorMetadata,
@@ -72,6 +86,22 @@ export {
   parseAgentConfig,
   validateAgentConfig,
 } from './agent-schemas.js';
+
+// Specialist Zod Schemas and Validators (V2)
+export {
+  SpecialistSchemaSchema,
+  SpecialistLimitsSchema,
+  SpecialistStaticContextSchema,
+  SpecialistDynamicContextSchema,
+  SpecialistContextConfigSchema,
+  SpecialistInputSchemaSchema,
+  SpecialistOutputSchemaSchema,
+  SpecialistCapabilitySchema,
+  SpecialistMetadataInlineSchema,
+  SpecialistConfigV1Schema,
+  parseSpecialistConfig,
+  validateSpecialistConfig,
+} from './specialist-schemas.js';
 
 // REST API Schemas and Types
 export type {
