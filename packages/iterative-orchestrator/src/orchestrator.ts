@@ -14,7 +14,7 @@
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
 import { useLLM } from '@kb-labs/sdk';
-import { AgentExecutor } from '@kb-labs/agent-core';
+import { AgentExecutor, ToolDiscoverer } from '@kb-labs/agent-core';
 import type { AgentContext, AgentConfigV1 } from '@kb-labs/agent-contracts';
 import type {
   OrchestratorDecision,
@@ -297,7 +297,7 @@ export class IterativeOrchestrator {
       // Create agent executor
       const executor = new AgentExecutor(this.ctx);
 
-      // Build agent context
+      // Build agent config
       const agentConfig: AgentConfigV1 = {
         schema: 'kb.agent/1',
         id: agentId,
@@ -309,17 +309,23 @@ export class IterativeOrchestrator {
           maxTokens: 4000,
           maxToolCalls: 10,
         },
-        tools: {
-          kbLabs: {
-            mode: 'allowlist',
-            allow: agent.tools,
-          },
-        },
+        tools: this.buildToolsConfig(agent.tools),
       };
+
+      // Discover actual tools using ToolDiscoverer
+      const toolDiscoverer = new ToolDiscoverer(this.ctx);
+      const tools = await toolDiscoverer.discover(agentConfig.tools);
+
+      this.ctx.platform.logger.debug('Discovered tools for agent', {
+        agentId,
+        requestedTools: agent.tools,
+        discoveredCount: tools.length,
+        discoveredTools: tools.map(t => t.name),
+      });
 
       const agentContext: AgentContext = {
         config: agentConfig,
-        tools: [], // TODO: Load tools based on agent definition
+        tools,
       };
 
       // Execute agent
@@ -563,5 +569,59 @@ export class IterativeOrchestrator {
     const orchestratorCost = (orchestratorTokens / 1_000_000) * 45; // Average
     const agentCost = (agentTokens / 1_000_000) * 0.75; // Average
     return orchestratorCost + agentCost;
+  }
+
+  /**
+   * Build tools config from agent tool list
+   *
+   * Converts simple tool names like ['mind:rag-query', 'fs:read']
+   * into proper AgentToolsConfig structure for ToolDiscoverer
+   */
+  private buildToolsConfig(tools: string[]): AgentConfigV1['tools'] {
+    // Categorize tools by prefix
+    const fsTools: string[] = [];
+    const shellTools: string[] = [];
+    const kbLabsTools: string[] = [];
+
+    for (const tool of tools) {
+      if (tool.startsWith('fs:')) {
+        fsTools.push(tool);
+      } else if (tool.startsWith('shell:')) {
+        shellTools.push(tool);
+      } else {
+        // Everything else is a KB Labs plugin tool (mind:*, devkit:*, etc.)
+        kbLabsTools.push(tool);
+      }
+    }
+
+    const config: AgentConfigV1['tools'] = {};
+
+    // Configure filesystem tools
+    if (fsTools.length > 0) {
+      config.filesystem = {
+        enabled: true,
+        mode: 'allowlist',
+        allow: fsTools,
+      };
+    }
+
+    // Configure shell tools
+    if (shellTools.length > 0) {
+      config.shell = {
+        enabled: true,
+        mode: 'allowlist',
+        allow: shellTools,
+      };
+    }
+
+    // Configure KB Labs plugin tools
+    if (kbLabsTools.length > 0) {
+      config.kbLabs = {
+        mode: 'allowlist',
+        allow: kbLabsTools,
+      };
+    }
+
+    return config;
   }
 }
