@@ -17,6 +17,10 @@ export interface Subtask {
   complexity: LLMTier;
   /** Dependencies (IDs of subtasks that must complete first) */
   dependencies?: number[];
+  /** Optional: Specialist agent to handle this subtask */
+  agentId?: string;
+  /** Optional: Reasoning for agent selection */
+  reasoning?: string;
 }
 
 /**
@@ -39,6 +43,8 @@ export interface SubtaskResult {
   status: 'success' | 'failed';
   /** Tier used for execution */
   tier: LLMTier;
+  /** Agent used (if any) */
+  agentId?: string;
   /** Result content */
   content?: string;
   /** Error message (if failed) */

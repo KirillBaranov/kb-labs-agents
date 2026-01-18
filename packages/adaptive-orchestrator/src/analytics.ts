@@ -5,6 +5,7 @@
  * Tracks:
  * - Task classification accuracy
  * - Tier usage distribution
+ * - Agent selection and usage
  * - Cost savings vs naive approach
  * - Escalation frequency
  * - Execution time
@@ -25,6 +26,8 @@ export const ORCHESTRATION_EVENTS = {
   SUBTASK_EXECUTED: 'orchestration.subtask.executed',
   TIER_ESCALATED: 'orchestration.tier.escalated',
   COST_SAVED: 'orchestration.cost.saved',
+  AGENT_SELECTED: 'orchestration.agent.selected',
+  AGENT_EXECUTED: 'orchestration.agent.executed',
 } as const;
 
 /**
@@ -128,16 +131,28 @@ export class OrchestrationAnalytics {
   /**
    * Track planning completion.
    */
-  trackPlanningCompleted(subtaskCount: number, tierDistribution: Record<LLMTier, number>): void {
+  trackPlanningCompleted(
+    subtaskCount: number,
+    tierDistribution: Record<LLMTier, number>,
+    agentDistribution?: Record<string, number>
+  ): void {
     if (!this.analytics) return;
 
-    this.analytics.track(ORCHESTRATION_EVENTS.PLANNING_COMPLETED, {
+    const eventData: Record<string, any> = {
       subtask_count: subtaskCount,
       tier_small_count: tierDistribution.small || 0,
       tier_medium_count: tierDistribution.medium || 0,
       tier_large_count: tierDistribution.large || 0,
       timestamp: Date.now(),
-    });
+    };
+
+    // Add agent distribution if available
+    if (agentDistribution) {
+      eventData.agent_usage = agentDistribution;
+      eventData.agents_used_count = Object.keys(agentDistribution).length;
+    }
+
+    this.analytics.track(ORCHESTRATION_EVENTS.PLANNING_COMPLETED, eventData);
   }
 
   /**
@@ -146,13 +161,21 @@ export class OrchestrationAnalytics {
   trackSubtaskExecuted(result: SubtaskResult): void {
     if (!this.analytics) return;
 
-    this.analytics.track(ORCHESTRATION_EVENTS.SUBTASK_EXECUTED, {
+    const eventData: Record<string, any> = {
       subtask_id: result.id,
       status: result.status,
       tier: result.tier,
       tokens: result.tokens || 0,
       timestamp: Date.now(),
-    });
+    };
+
+    // Add agent info if used
+    if (result.agentId) {
+      eventData.agent_id = result.agentId;
+      eventData.used_agent = true;
+    }
+
+    this.analytics.track(ORCHESTRATION_EVENTS.SUBTASK_EXECUTED, eventData);
   }
 
   /**
@@ -184,6 +207,46 @@ export class OrchestrationAnalytics {
     this.analytics.track(ORCHESTRATION_EVENTS.COST_SAVED, {
       amount_saved: saved,
       savings_percent: savingsPercent,
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * Track agent selection during planning.
+   */
+  trackAgentSelected(
+    subtaskId: number,
+    agentId: string,
+    reasoning: string,
+    tier: LLMTier
+  ): void {
+    if (!this.analytics) return;
+
+    this.analytics.track(ORCHESTRATION_EVENTS.AGENT_SELECTED, {
+      subtask_id: subtaskId,
+      agent_id: agentId,
+      reasoning_length: reasoning.length,
+      tier,
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * Track agent execution.
+   */
+  trackAgentExecuted(
+    agentId: string,
+    tier: LLMTier,
+    status: 'success' | 'failed',
+    tokens: number
+  ): void {
+    if (!this.analytics) return;
+
+    this.analytics.track(ORCHESTRATION_EVENTS.AGENT_EXECUTED, {
+      agent_id: agentId,
+      tier,
+      status,
+      tokens,
       timestamp: Date.now(),
     });
   }

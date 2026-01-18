@@ -6,11 +6,14 @@
  * with automatic tier escalation and cost optimization.
  */
 
-import type { ILLM, ILogger, LLMTier } from '@kb-labs/sdk';
-import { useLLM, useAnalytics } from '@kb-labs/sdk';
+import type { ILLM, ILogger, LLMTier, PluginContextV3 } from '@kb-labs/sdk';
+import { useLLM, useAnalytics, findRepoRoot } from '@kb-labs/sdk';
 import { HybridComplexityClassifier } from '@kb-labs/task-classifier';
 import { ProgressReporter, type ProgressCallback } from '@kb-labs/progress-reporter';
 import { OrchestrationAnalytics } from './analytics.js';
+import { OrchestratorAgentRegistry } from './agent-registry.js';
+import { FileHistoryStorage } from './history-storage.js';
+import { executeWithAgent } from './agent-execution-helper.js';
 import type {
   ExecutionPlan,
   Subtask,
@@ -18,6 +21,7 @@ import type {
   OrchestratorResult,
   OrchestratorConfig,
 } from './types.js';
+import type { OrchestrationHistory, SubtaskTrace } from './history-types.js';
 
 /**
  * Adaptive orchestrator.
@@ -47,8 +51,14 @@ export class AdaptiveOrchestrator {
   private reporter: ProgressReporter;
   private analytics: OrchestrationAnalytics;
   private config: Required<OrchestratorConfig>;
+  private agentRegistry!: OrchestratorAgentRegistry; // Initialized in execute()
+  private agentsLoaded = false;
+  private historyStorage!: FileHistoryStorage; // Initialized in execute()
+  private currentHistory?: Partial<OrchestrationHistory>;
+  private subtaskTraces: SubtaskTrace[] = [];
 
   constructor(
+    private ctx: PluginContextV3,
     private logger: ILogger,
     onProgress?: ProgressCallback,
     config?: OrchestratorConfig
@@ -67,6 +77,9 @@ export class AdaptiveOrchestrator {
     const analyticsAdapter = useAnalytics();
     this.analytics = new OrchestrationAnalytics(analyticsAdapter);
 
+    // Note: Agent registry and history storage will be initialized in execute()
+    // after finding repo root (which is async)
+
     // Default config
     this.config = {
       maxEscalations: config?.maxEscalations ?? 2,
@@ -84,20 +97,63 @@ export class AdaptiveOrchestrator {
    */
   async execute(task: string): Promise<OrchestratorResult> {
     const startTime = Date.now();
+    const sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+
+    // Find repository root (like commit-plugin does)
+    const repoRoot = (await findRepoRoot(this.ctx.cwd || process.cwd())) ?? process.cwd();
+
+    // Initialize agent registry and history storage with repo root
+    if (!this.agentRegistry) {
+      this.agentRegistry = new OrchestratorAgentRegistry(repoRoot);
+    }
+    if (!this.historyStorage) {
+      this.historyStorage = new FileHistoryStorage(repoRoot);
+    }
+
+    // Reset state for new session
+    this.subtaskTraces = [];
+    this.currentHistory = {
+      sessionId,
+      task,
+      startTime,
+      agentsLoadedCount: 0,
+      availableAgents: [],
+    };
 
     // 1. Start tracking
     this.reporter.start(task);
     this.analytics.trackTaskStarted(task);
 
     try {
-      // 2. Classify task complexity
+      // 2. Load agents (lazy initialization)
+      if (!this.agentsLoaded) {
+        await this.agentRegistry.loadAgents();
+        this.agentsLoaded = true;
+        this.logger.debug(`Agent registry has ${this.agentRegistry.count()} agents`);
+        if (this.agentRegistry.hasAgents()) {
+          this.logger.info(`Loaded ${this.agentRegistry.count()} specialist agents`);
+        } else {
+          this.logger.warn('No specialist agents found in .kb/agents/');
+        }
+      }
+
+      // Update history with loaded agents
+      this.currentHistory!.agentsLoadedCount = this.agentRegistry.count();
+      this.currentHistory!.availableAgents = this.agentRegistry.getAll().map((a) => a.id);
+
+      // 3. Classify task complexity
       const { tier, confidence, method } = await this.classifier.classify({
         taskDescription: task,
       });
       this.reporter.classified(tier, confidence, method);
       this.analytics.trackClassification(tier, confidence, method);
 
-      // 3. Planning phase (use classified tier)
+      // Update history with classification
+      this.currentHistory!.classifiedTier = tier;
+      this.currentHistory!.classificationConfidence = confidence;
+      this.currentHistory!.classificationMethod = method;
+
+      // 4. Planning phase (use classified tier)
       this.reporter.planning('started');
       const llm = useLLM({ tier });
       if (!llm) {
@@ -107,7 +163,10 @@ export class AdaptiveOrchestrator {
       const plan = await this.createPlan(llm, task);
       this.reporter.planning('completed', { subtaskCount: plan.subtasks.length });
 
-      // Track tier distribution in plan
+      // Update history with plan
+      this.currentHistory!.plan = plan;
+
+      // Track tier and agent distribution in plan
       const tierDistribution = plan.subtasks.reduce(
         (acc, st) => {
           acc[st.complexity] = (acc[st.complexity] || 0) + 1;
@@ -115,7 +174,22 @@ export class AdaptiveOrchestrator {
         },
         {} as Record<LLMTier, number>
       );
-      this.analytics.trackPlanningCompleted(plan.subtasks.length, tierDistribution);
+
+      const agentDistribution = plan.subtasks.reduce(
+        (acc, st) => {
+          if (st.agentId) {
+            acc[st.agentId] = (acc[st.agentId] || 0) + 1;
+          }
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+
+      this.analytics.trackPlanningCompleted(
+        plan.subtasks.length,
+        tierDistribution,
+        Object.keys(agentDistribution).length > 0 ? agentDistribution : undefined
+      );
 
       // 4. Execute subtasks with appropriate tiers
       const results: SubtaskResult[] = [];
@@ -143,6 +217,9 @@ export class AdaptiveOrchestrator {
 
       this.analytics.trackTaskCompleted(task, orchestratorResult, duration);
 
+      // 8. Save execution history
+      await this.saveHistory(orchestratorResult, startTime, true);
+
       return orchestratorResult;
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -157,7 +234,74 @@ export class AdaptiveOrchestrator {
         error instanceof Error ? error : new Error(String(error)),
         duration
       );
+
+      // Save execution history even on failure
+      try {
+        const failedResult: OrchestratorResult = {
+          status: 'failed',
+          result: '',
+          costBreakdown: {
+            total: 'N/A',
+            small: 'N/A',
+            medium: 'N/A',
+            large: 'N/A',
+          },
+          subtaskResults: [],
+        };
+        await this.saveHistory(failedResult, startTime, false, error instanceof Error ? error.message : String(error));
+      } catch (historyError) {
+        this.logger.warn(`Failed to save execution history: ${historyError instanceof Error ? historyError.message : String(historyError)}`);
+      }
+
       throw error;
+    }
+  }
+
+  /**
+   * Validate and fix agent assignments in subtasks.
+   * Uses agent keywords to automatically assign agents when LLM didn't.
+   */
+  private validateAndFixAgentAssignments(subtasks: Subtask[]): void {
+    const agents = this.agentRegistry.getAll();
+
+    for (const subtask of subtasks) {
+      // Skip if agent already assigned
+      if (subtask.agentId) {
+        continue;
+      }
+
+      const desc = subtask.description.toLowerCase();
+
+      // Try to match with agent keywords
+      let bestMatch: { agentId: string; score: number; matchedKeywords: string[] } | null = null;
+
+      for (const agent of agents) {
+        const keywords = agent.metadata.keywords || [];
+        const matchedKeywords: string[] = [];
+
+        // Check how many keywords match
+        for (const keyword of keywords) {
+          if (desc.includes(keyword.toLowerCase())) {
+            matchedKeywords.push(keyword);
+          }
+        }
+
+        if (matchedKeywords.length > 0) {
+          const score = matchedKeywords.length;
+          if (!bestMatch || score > bestMatch.score) {
+            bestMatch = { agentId: agent.id, score, matchedKeywords };
+          }
+        }
+      }
+
+      // Auto-assign if we found a good match
+      if (bestMatch && bestMatch.score > 0) {
+        subtask.agentId = bestMatch.agentId;
+        subtask.reasoning = `Auto-assigned: Matched keywords [${bestMatch.matchedKeywords.join(', ')}]`;
+        this.logger.warn(
+          `Auto-assigned ${bestMatch.agentId} to subtask ${subtask.id}: "${subtask.description}" (matched: ${bestMatch.matchedKeywords.join(', ')})`
+        );
+      }
     }
   }
 
@@ -165,31 +309,73 @@ export class AdaptiveOrchestrator {
    * Create execution plan for task.
    */
   private async createPlan(llm: ILLM, task: string): Promise<ExecutionPlan> {
+    // Get available agents
+    const agentsList = this.agentRegistry.toPromptFormat();
+
     const prompt = `You are a task planning assistant. Break down the following task into subtasks.
 
 Task: ${task}
 
-Respond with a JSON array of subtasks. Each subtask should have:
+${this.agentRegistry.hasAgents() ? `## Available Specialist Agents
+
+**IMPORTANT:** You MUST assign specialist agents when subtasks require tools (file operations, code search, etc.).
+Generic LLM without agent cannot create files, modify code, or execute tools.
+
+${agentsList}
+
+**Agent Selection Rules:**
+1. If subtask needs to CREATE, WRITE, or IMPLEMENT code/files → MUST use coding-agent
+2. If subtask needs to WRITE TESTS → MUST use testing-agent
+3. If subtask needs to WRITE DOCUMENTATION → MUST use documentation-agent
+4. If subtask needs to FIX bugs or DEBUG → MUST use debugging-agent
+5. If subtask needs to REFACTOR or IMPROVE code → MUST use refactoring-agent
+6. Only use generic LLM (no agentId) for pure analysis/research tasks that don't need file access
+
+` : ''}Respond with a JSON array of subtasks. Each subtask should have:
 - id: number (1-based)
 - description: string
-- complexity: "small" | "medium" | "large"
+- complexity: "small" | "medium" | "large"${this.agentRegistry.hasAgents() ? `
+- agentId: string (REQUIRED if task needs tools; specialist agent ID)
+- reasoning: string (REQUIRED if agentId provided: why this agent was chosen)` : ''}
 
 Example:
 [
-  {"id": 1, "description": "Research authentication methods", "complexity": "small"},
-  {"id": 2, "description": "Implement JWT service", "complexity": "medium"},
-  {"id": 3, "description": "Write integration tests", "complexity": "small"}
+  {"id": 1, "description": "Create formatBytes utility function", "complexity": "small", "agentId": "coding-agent", "reasoning": "Needs to create new code file with implementation"},
+  {"id": 2, "description": "Write tests for formatBytes", "complexity": "small", "agentId": "testing-agent", "reasoning": "Needs to create test file"},
+  {"id": 3, "description": "Research best practices for formatting bytes", "complexity": "small"}
 ]
 
 Respond with ONLY the JSON array, no markdown.`;
 
+    // Debug: Log the planning prompt
+    this.logger.debug(`Planning prompt:\n${prompt.substring(0, 500)}...`);
+    this.logger.debug(`Available agents: ${this.agentRegistry.count()}`);
+
     const response = await llm.complete(prompt, {
-      maxTokens: 500,
+      maxTokens: 1000,
       temperature: 0.3,
     });
 
+    this.logger.debug(`LLM planning response: ${response.content.substring(0, 300)}...`);
+
     try {
       const subtasks = JSON.parse(response.content.trim());
+
+      // Validate and fix agent assignments
+      this.validateAndFixAgentAssignments(subtasks);
+
+      // Track agent selections
+      for (const subtask of subtasks) {
+        if (subtask.agentId && subtask.reasoning) {
+          this.analytics.trackAgentSelected(
+            subtask.id,
+            subtask.agentId,
+            subtask.reasoning,
+            subtask.complexity
+          );
+        }
+      }
+
       return { subtasks };
     } catch (error) {
       this.logger.error(`Failed to parse plan JSON: ${response.content.slice(0, 200)}`);
@@ -220,7 +406,8 @@ Respond with ONLY the JSON array, no markdown.`;
           subtask.id,
           subtask.description,
           currentTier,
-          'started'
+          'started',
+          { agentId: subtask.agentId }
         );
 
         // Execute with current tier
@@ -231,7 +418,8 @@ Respond with ONLY the JSON array, no markdown.`;
           subtask.id,
           subtask.description,
           currentTier,
-          'completed'
+          'completed',
+          { agentId: subtask.agentId }
         );
 
         // Track analytics
@@ -251,7 +439,10 @@ Respond with ONLY the JSON array, no markdown.`;
               subtask.description,
               currentTier,
               'failed',
-              { error: error instanceof Error ? error.message : 'Unknown error' }
+              {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                agentId: subtask.agentId
+              }
             );
             throw error;
           }
@@ -268,7 +459,10 @@ Respond with ONLY the JSON array, no markdown.`;
             subtask.description,
             currentTier,
             'failed',
-            { error: error instanceof Error ? error.message : 'Unknown error' }
+            {
+              error: error instanceof Error ? error.message : 'Unknown error',
+              agentId: subtask.agentId
+            }
           );
           throw error;
         }
@@ -285,6 +479,48 @@ Respond with ONLY the JSON array, no markdown.`;
     subtask: Subtask,
     tier: LLMTier
   ): Promise<SubtaskResult> {
+    const startTime = Date.now();
+
+    // If agent is specified, execute with full agent + tools
+    if (subtask.agentId) {
+      this.logger.info(`Executing subtask ${subtask.id} with specialist agent: ${subtask.agentId}`);
+
+      const { result, toolCalls, llmInteractions } = await executeWithAgent(
+        this.ctx,
+        subtask,
+        tier
+      );
+
+      const endTime = Date.now();
+
+      // Track in history
+      this.subtaskTraces.push({
+        id: subtask.id,
+        description: subtask.description,
+        tier,
+        agentId: subtask.agentId,
+        llmInteractions,
+        toolCalls,
+        result,
+        startTime,
+        endTime,
+        durationMs: endTime - startTime,
+      });
+
+      // Track agent execution analytics
+      this.analytics.trackAgentExecuted(
+        subtask.agentId,
+        tier,
+        result.status as 'success' | 'failed',
+        result.tokens || 0
+      );
+
+      return result;
+    }
+
+    // Otherwise, use generic LLM (no tools)
+    this.logger.debug(`Executing subtask ${subtask.id} with generic LLM (tier: ${tier})`);
+
     const llm = useLLM({ tier });
     if (!llm) {
       throw new Error(`LLM not available for tier: ${tier}`);
@@ -292,21 +528,83 @@ Respond with ONLY the JSON array, no markdown.`;
 
     const prompt = `Execute the following subtask:\n\n${subtask.description}\n\nProvide a concise result.`;
 
+    const llmStartTime = Date.now();
     const response = await llm.complete(prompt, {
       maxTokens: 1000,
       temperature: 0.5,
     });
+    const llmEndTime = Date.now();
 
     // Estimate tokens (rough approximation)
     const tokens = Math.ceil((prompt.length + response.content.length) / 4);
 
-    return {
+    const result: SubtaskResult = {
       id: subtask.id,
       status: 'success',
       tier,
       content: response.content,
       tokens,
     };
+
+    const endTime = Date.now();
+
+    // Track in history
+    this.subtaskTraces.push({
+      id: subtask.id,
+      description: subtask.description,
+      tier,
+      llmInteractions: [
+        {
+          type: 'complete',
+          tier,
+          input: prompt,
+          output: response.content,
+          tokens,
+          durationMs: llmEndTime - llmStartTime,
+          timestamp: llmStartTime,
+        },
+      ],
+      result,
+      startTime,
+      endTime,
+      durationMs: endTime - startTime,
+    });
+
+    return result;
+  }
+
+  /**
+   * Load agent context from context.md file.
+   */
+  private async loadAgentContext(agentId: string): Promise<string> {
+    try {
+      const agentInfo = this.agentRegistry.get(agentId);
+      if (!agentInfo) {
+        this.logger.warn(`Agent not found: ${agentId}, using generic LLM`);
+        return '';
+      }
+
+      // Try to load context.md
+      const { readFile } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      const contextPath = join(agentInfo.path, 'context.md');
+
+      try {
+        const contextContent = await readFile(contextPath, 'utf-8');
+        this.logger.debug(`Loaded context for agent: ${agentId} (${contextContent.length} chars)`);
+        return contextContent;
+      } catch (error) {
+        // context.md is optional
+        this.logger.debug(`No context.md found for agent: ${agentId}, using base config only`);
+        return '';
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to load agent context for ${agentId}:`,
+        error instanceof Error ? error : undefined
+      );
+      return '';
+    }
   }
 
   /**
@@ -349,6 +647,48 @@ Provide a concise, coherent final result.`;
         return 'large';
       case 'large':
         return 'large'; // Already at max
+    }
+  }
+
+  /**
+   * Save execution history to storage.
+   */
+  private async saveHistory(
+    result: OrchestratorResult,
+    startTime: number,
+    success: boolean,
+    error?: string
+  ): Promise<void> {
+    if (!this.currentHistory) {
+      this.logger.warn('No current history to save');
+      return;
+    }
+
+    const endTime = Date.now();
+
+    const history: OrchestrationHistory = {
+      sessionId: this.currentHistory.sessionId!,
+      task: this.currentHistory.task!,
+      classifiedTier: this.currentHistory.classifiedTier!,
+      classificationConfidence: this.currentHistory.classificationConfidence!,
+      classificationMethod: this.currentHistory.classificationMethod!,
+      plan: this.currentHistory.plan!,
+      agentsLoadedCount: this.currentHistory.agentsLoadedCount!,
+      availableAgents: this.currentHistory.availableAgents!,
+      subtaskTraces: this.subtaskTraces,
+      result,
+      startTime,
+      endTime,
+      durationMs: endTime - startTime,
+      success,
+      error,
+    };
+
+    try {
+      await this.historyStorage.save(history);
+      this.logger.info(`Execution history saved: ${history.sessionId}`);
+    } catch (err) {
+      this.logger.error('Failed to save execution history:', err instanceof Error ? err : undefined);
     }
   }
 
