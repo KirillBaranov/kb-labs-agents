@@ -1,0 +1,245 @@
+[
+  {
+    "sessionId": "session_1768627721556_vzghjc",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627721556,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627721553_dfyja7",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627721553,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627721552_1rbjf",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627721552,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627721550_xqzrfdh",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627721550,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627721548_s2kjmu",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627721548,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627721545_ghynq9",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627721545,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627721543_7b8q0k",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627721543,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627721540_musos",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627721540,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627721532_y07ozc",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 6,
+    "timestamp": 1768627721532,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667742_a8lucn",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627667742,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667739_180n8d",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627667739,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667735_cwfnwj",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627667735,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667732_qugolt",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627667732,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667730_xn2a4",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627667730,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667725_2yuzu",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 2,
+    "timestamp": 1768627667725,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667723_kvw4ll",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627667723,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667720_0afk9t",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627667720,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627667708_8cevhf",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 6,
+    "timestamp": 1768627667708,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533314_x46208",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627533314,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533312_u315b9",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627533312,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533310_s0akgo",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627533310,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533308_5e7fpa",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 1,
+    "timestamp": 1768627533308,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533307_9s1voh",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627533307,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533304_mlzgdf",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627533304,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533302_5r9lsc",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627533302,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533300_6jbrdl",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 0,
+    "timestamp": 1768627533300,
+    "agentsUsed": []
+  },
+  {
+    "sessionId": "session_1768627533292_yoh39c",
+    "task": "Test task",
+    "classifiedTier": "medium",
+    "success": true,
+    "durationMs": 6,
+    "timestamp": 1768627533292,
+    "agentsUsed": []
+  }
+]

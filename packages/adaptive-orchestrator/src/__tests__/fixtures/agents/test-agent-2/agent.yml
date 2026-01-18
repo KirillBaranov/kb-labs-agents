@@ -1,0 +1,28 @@
+schema: kb.agent/1
+id: test-agent-2
+name: Test Agent Two
+description: Second test agent for unit tests
+
+metadata:
+  description: "Test agent for search tasks. Specialized in finding things."
+  tags: [test, search, semantic]
+  examples:
+    - "Find implementation"
+    - "Search for code"
+
+llm:
+  tier: medium
+  temperature: 0.1
+  maxTokens: 2000
+  maxToolCalls: 10
+
+prompt:
+  systemPrompt: "You are a search specialist."
+
+tools:
+  kbLabs:
+    mode: allowlist
+    allow: ["mind:rag-query"]
+
+policies:
+  allowWrite: false
