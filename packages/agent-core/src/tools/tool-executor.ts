@@ -388,7 +388,10 @@ export class ToolExecutor {
   }
 
   /**
-   * Execute KB Labs plugin command
+   * Execute KB Labs plugin command via CLI spawn
+   *
+   * Uses subprocess execution instead of broken invoke API.
+   * Commands are executed as: pnpm kb <commandId> --flag=value
    *
    * Examples:
    * - devkit:check-imports
@@ -396,32 +399,98 @@ export class ToolExecutor {
    * - workflow:run
    */
   private async executePluginCommand(toolCall: ToolCall): Promise<string> {
-    const [pluginName, commandName] = toolCall.name.split(':');
+    const commandId = toolCall.name; // e.g., "mind:rag-query"
 
-    if (!pluginName || !commandName) {
+    if (!commandId.includes(':')) {
       throw new Error(`Invalid plugin command format: ${toolCall.name}`);
     }
 
-    console.log('[DEBUG] Plugin command input:', {
+    console.log('[SPAWN] Plugin command input:', {
       name: toolCall.name,
       input: toolCall.input,
       inputType: typeof toolCall.input,
     });
 
-    // Handle case where LLM passes string instead of object
-    // Adaptively convert based on tool's input schema
-    let input: Record<string, any>;
+    // Normalize input (handle string -> object conversion)
+    const input = this.normalizePluginInput(toolCall);
+
+    // Build CLI arguments from input
+    const args = this.buildCLIArgs(commandId, input);
+
+    console.log('[SPAWN] Executing CLI command:', {
+      command: 'pnpm kb',
+      args: args.join(' '),
+    });
+
+    return new Promise((resolve, reject) => {
+      const child = spawn('pnpm', ['kb', ...args], {
+        cwd: this.ctx.cwd,
+        env: {
+          ...process.env,
+          // Request JSON output for easier parsing
+          KB_OUTPUT_FORMAT: 'json',
+          // Disable interactive prompts
+          CI: '1',
+        },
+        shell: true,
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout?.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      child.stderr?.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      child.on('close', (code) => {
+        console.log('[SPAWN] Command completed:', {
+          code,
+          stdoutLength: stdout.length,
+          stderrLength: stderr.length,
+        });
+
+        if (code !== 0) {
+          // Try to extract meaningful error from stderr or stdout
+          const errorOutput = stderr || stdout || 'Unknown error';
+          reject(new Error(`CLI command failed (exit ${code}): ${errorOutput.substring(0, 500)}`));
+        } else {
+          // Parse and return output
+          const result = this.parseCLIOutput(stdout, stderr);
+          resolve(result);
+        }
+      });
+
+      child.on('error', (error) => {
+        reject(new Error(`Failed to spawn CLI command: ${error.message}`));
+      });
+    });
+  }
+
+  /**
+   * Normalize plugin input (handle string -> object conversion)
+   */
+  private normalizePluginInput(toolCall: ToolCall): Record<string, any> {
+    // If input is already an object, use it directly
+    if (typeof toolCall.input === 'object' && toolCall.input !== null) {
+      return toolCall.input as Record<string, any>;
+    }
+
+    // If input is a string, try to map it to the main parameter
     if (typeof toolCall.input === 'string' && this.agentContext) {
-      // Find tool definition to get its schema
       const tool = this.agentContext.tools.find(t => t.name === toolCall.name);
 
       if (tool?.inputSchema?.properties) {
-        // Find the "main" parameter from schema:
+        const props = tool.inputSchema.properties as Record<string, any>;
+        const required = (tool.inputSchema.required as string[]) || [];
+
+        // Find the "main" parameter:
         // 1. First required string parameter
         // 2. Common names: 'text', 'query', 'command', 'message', 'prompt'
         // 3. First string parameter
-        const props = tool.inputSchema.properties as Record<string, any>;
-        const required = (tool.inputSchema.required as string[]) || [];
         let mainParam: string | undefined;
 
         // Try required params first
@@ -454,56 +523,98 @@ export class ToolExecutor {
         }
 
         if (mainParam) {
-          input = { [mainParam]: toolCall.input };
-          console.log(`[DEBUG] Converted string to object: { ${mainParam}: "${toolCall.input}" }`);
-        } else {
-          input = {};
+          console.log(`[SPAWN] Converted string to object: { ${mainParam}: "${toolCall.input}" }`);
+          return { [mainParam]: toolCall.input };
         }
-      } else {
-        input = {};
       }
-    } else {
-      input = toolCall.input as Record<string, any>;
     }
 
-    // Use plugin invoke API to call other plugins directly
-    try {
-      const invokeInput = {
-        command: commandName,
-        ...input,
-      };
+    // Fallback: empty object
+    return {};
+  }
 
-      console.log('[DEBUG] Invoking plugin:', {
-        pluginId: pluginName,
-        command: commandName,
-        invokeInput,
-      });
+  /**
+   * Build CLI arguments from command ID and input
+   *
+   * Converts: { text: "hello", mode: "instant" }
+   * To: ["mind:rag-query", "--text", "hello", "--mode", "instant"]
+   */
+  private buildCLIArgs(commandId: string, input: Record<string, any>): string[] {
+    const args: string[] = [commandId];
 
-      const result = await this.ctx.api.invoke.call(pluginName, invokeInput);
-
-      console.log('[DEBUG] Plugin invocation result:', {
-        pluginId: pluginName,
-        resultType: typeof result,
-        resultPreview: typeof result === 'string' ? result.substring(0, 200) : result,
-      });
-
-      // Convert result to string
-      if (typeof result === 'string') {
-        return result;
-      } else if (result && typeof result === 'object') {
-        return JSON.stringify(result, null, 2);
-      } else {
-        return String(result);
+    for (const [key, value] of Object.entries(input)) {
+      if (value === undefined || value === null) {
+        continue;
       }
-    } catch (error: any) {
-      console.error('[DEBUG] Plugin invocation error:', {
-        pluginId: pluginName,
-        command: commandName,
-        error: error.message,
-        stack: error.stack,
-      });
-      throw new Error(`Plugin invocation failed: ${error.message}`);
+
+      // Handle boolean flags
+      if (typeof value === 'boolean') {
+        if (value) {
+          args.push(`--${key}`);
+        }
+        // Skip false booleans (don't add --no-flag)
+        continue;
+      }
+
+      // Handle arrays
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          args.push(`--${key}`, String(item));
+        }
+        continue;
+      }
+
+      // Handle strings and numbers
+      args.push(`--${key}`, String(value));
     }
+
+    // Always add --agent flag for JSON output (for commands that support it)
+    if (!args.includes('--agent')) {
+      args.push('--agent');
+    }
+
+    return args;
+  }
+
+  /**
+   * Parse CLI output, extracting JSON if present
+   */
+  private parseCLIOutput(stdout: string, _stderr: string): string {
+    // Try to find JSON in stdout (may be mixed with logs)
+    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        // If it's a structured response, extract the answer
+        if (parsed.answer) {
+          return parsed.answer;
+        }
+        // Return pretty-printed JSON
+        return JSON.stringify(parsed, null, 2);
+      } catch {
+        // Not valid JSON, fall through
+      }
+    }
+
+    // Return raw stdout if no JSON found
+    // Filter out common log prefixes
+    const cleanedOutput = stdout
+      .split('\n')
+      .filter(line => {
+        // Skip pnpm/npm lifecycle logs
+        if (line.startsWith('>')) return false;
+        // Skip empty lines at start/end
+        if (line.trim() === '') return false;
+        // Skip debug logs
+        if (line.includes('[DEBUG]') || line.includes('[v3-adapter DEBUG]')) return false;
+        // Skip AdapterLoader logs
+        if (line.includes('[AdapterLoader]')) return false;
+        return true;
+      })
+      .join('\n')
+      .trim();
+
+    return cleanedOutput || stdout;
   }
 
   /**
