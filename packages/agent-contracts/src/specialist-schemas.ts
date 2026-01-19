@@ -5,7 +5,8 @@
  */
 
 import { z } from 'zod';
-import { AgentLLMConfigSchema, AgentToolsConfigSchema, AgentPolicyConfigSchema } from './agent-schemas.js';
+import { AgentLLMConfigSchema, AgentPolicyConfigSchema } from './agent-schemas.js';
+import { ToolStrategyConfigSchema } from './tool-strategy-schemas.js';
 
 /**
  * Specialist schema version
@@ -100,7 +101,7 @@ export const SpecialistConfigV1Schema = z.object({
   limits: SpecialistLimitsSchema,
   capabilities: z.array(SpecialistCapabilitySchema).optional(),
   context: SpecialistContextConfigSchema.optional(),
-  tools: AgentToolsConfigSchema,
+  tools: ToolStrategyConfigSchema,
   constraints: z.array(z.string()).optional(),
   input: SpecialistInputSchemaSchema.optional(),
   output: SpecialistOutputSchemaSchema.optional(),

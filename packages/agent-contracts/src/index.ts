@@ -51,6 +51,36 @@ export type {
   ToolMetadata,
 } from './tool-types.js';
 
+// Tool Trace Types
+export type {
+  EvidenceRef,
+  ToolInvocation,
+  ToolTrace,
+  SpecialistOutput,
+  Claim,
+  FileWriteClaim,
+  FileEditClaim,
+  FileDeleteClaim,
+  CommandExecutedClaim,
+  CodeInsertedClaim,
+  CompactArtifact,
+} from './trace-types.js';
+
+// Tool Strategy Types
+export type {
+  ToolStrategyMode,
+  BuiltInToolCategory,
+  ToolHint,
+  ToolGroup,
+  FsPermissions,
+  ShellPermissions,
+  KBLabsPermissions,
+  ToolPermissions,
+  ToolStrategyConfig,
+  ToolExecutionState,
+  ToolAvailability,
+} from './tool-strategy.js';
+
 // Agent Execution Types
 export type {
   AgentContext,
@@ -86,6 +116,19 @@ export {
   parseAgentConfig,
   validateAgentConfig,
 } from './agent-schemas.js';
+
+// Tool Strategy Zod Schemas
+export {
+  ToolStrategyModeSchema,
+  ToolGroupSchema,
+  FsPermissionsSchema,
+  ShellPermissionsSchema,
+  KBLabsPermissionsSchema,
+  ToolPermissionsSchema,
+  BuiltInToolsConfigSchema,
+  ToolStrategyConfigSchema,
+  validateToolStrategyConfig,
+} from './tool-strategy-schemas.js';
 
 // Specialist Zod Schemas and Validators (V2)
 export {

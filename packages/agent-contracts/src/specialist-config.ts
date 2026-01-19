@@ -10,7 +10,8 @@
  * Based on kb.agent/1 but extends it for V2 orchestration.
  */
 
-import type { AgentLLMConfig, AgentToolsConfig, AgentPolicyConfig } from './agent-config.js';
+import type { AgentLLMConfig, AgentPolicyConfig } from './agent-config.js';
+import type { ToolStrategyConfig } from './tool-strategy.js';
 
 /**
  * Specialist configuration schema version
@@ -159,8 +160,8 @@ export interface SpecialistConfigV1 {
   /** Context configuration (static + dynamic) */
   context?: SpecialistContextConfig;
 
-  /** Tools configuration (inherited from AgentConfigV1) */
-  tools: AgentToolsConfig;
+  /** Tool strategy configuration */
+  tools: ToolStrategyConfig;
 
   /** Constraints (what specialist CANNOT do) */
   constraints?: string[];

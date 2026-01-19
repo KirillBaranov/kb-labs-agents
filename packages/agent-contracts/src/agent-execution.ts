@@ -187,6 +187,14 @@ export interface AgentResult {
   totalTokens?: number;
   /** Total execution duration in milliseconds */
   durationMs?: number;
+  /**
+   * Tool trace reference (for verification)
+   *
+   * Format: "trace:<traceId>"
+   * Points to ToolTrace containing all tool invocations during execution.
+   * Used by verifier to check claims and prevent hallucinations.
+   */
+  traceRef?: string;
   /** Number of tool calls made */
   toolCallCount?: number;
 }
