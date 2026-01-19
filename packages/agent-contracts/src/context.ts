@@ -9,7 +9,7 @@
  * - Available files created by previous specialists
  */
 
-import type { SpecialistResult } from './types.js';
+import type { DelegatedResult } from './callbacks.js';
 
 /**
  * Execution context passed from orchestrator to specialist
@@ -52,9 +52,9 @@ export interface ExecutionContext {
 
   /**
    * Results from dependency specialists
-   * Key: subtask ID, Value: specialist result
+   * Key: subtask ID, Value: delegated result
    */
-  previousResults: Map<string, SpecialistResult>;
+  previousResults: Map<string, DelegatedResult>;
 
   /**
    * Key findings extracted from previous specialists

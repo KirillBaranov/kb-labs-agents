@@ -98,7 +98,17 @@ export type {
 export type { ExecutionContext } from './context.js';
 
 // Specialist Outcome (V2 - Phase 3)
-export type { RunMeta, FailureReport, SpecialistOutcome } from './outcome.js';
+export type { LLMTier, RunMeta, FailureReport, SpecialistOutcome } from './outcome.js';
+
+// Orchestrator Callbacks (V2 - Phase 5)
+export type {
+  OrchestratorCallbacks,
+  SubTask,
+  ExecutionPlan,
+  ExecutionStats,
+  Progress,
+  DelegatedResult,
+} from './callbacks.js';
 
 // Zod Schemas and Validators
 export {

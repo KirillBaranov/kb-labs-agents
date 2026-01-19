@@ -11,6 +11,16 @@
  */
 
 /**
+ * LLM model tier
+ *
+ * Abstract tiers for model selection:
+ * - `small`: Fast, cheap models (e.g., gpt-4o-mini)
+ * - `medium`: Balanced models (e.g., claude-sonnet-4-5)
+ * - `large`: Powerful models (e.g., claude-opus-4-5)
+ */
+export type LLMTier = 'small' | 'medium' | 'large';
+
+/**
  * Runtime metadata for specialist execution
  */
 export interface RunMeta {
@@ -29,7 +39,7 @@ export interface RunMeta {
   toolCalls: number;
 
   /** Model tier used for execution */
-  modelTier: 'small' | 'medium' | 'large';
+  modelTier: LLMTier;
 }
 
 /**

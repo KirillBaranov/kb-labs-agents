@@ -12,6 +12,7 @@
 
 import type { AgentLLMConfig, AgentPolicyConfig } from './agent-config.js';
 import type { ToolStrategyConfig } from './tool-strategy.js';
+import type { LLMTier } from './outcome.js';
 
 /**
  * Specialist configuration schema version
@@ -187,7 +188,7 @@ export interface SpecialistMetadata {
   /** Capabilities */
   capabilities: SpecialistCapability[];
   /** LLM tier */
-  tier: 'small' | 'medium' | 'large';
+  tier: LLMTier;
   /** Path to specialist directory */
   path: string;
   /** Path to specialist.yml config file */

@@ -4,6 +4,8 @@
  * Defines the structure for agent configuration stored in .kb/agents/{agent-id}/agent.yml
  */
 
+import type { LLMTier } from './outcome.js';
+
 /**
  * Agent configuration schema version
  */
@@ -23,7 +25,21 @@ export interface AgentLLMConfig {
    * @example 'medium' - Balanced (resolved to claude-sonnet-4-5)
    * @example 'large' - Powerful (resolved to claude-opus-4-5)
    */
-  tier: 'small' | 'medium' | 'large';
+  tier: LLMTier;
+
+  /**
+   * Escalation ladder for automatic tier upgrade on failures (Phase 4)
+   *
+   * If specialist fails with initial tier, orchestrator will retry with next tier.
+   * Stops at first success or end of ladder.
+   *
+   * @example ['small', 'medium'] - Researcher (escalate to medium, but not large - too expensive)
+   * @example ['medium', 'large'] - Implementer (start with medium, escalate to large if needed)
+   * @example ['small'] - No escalation (always use small tier)
+   *
+   * Default: Uses tier as single-element ladder (no escalation)
+   */
+  escalationLadder?: LLMTier[];
 
   /** Temperature (0-1). Lower = more deterministic, higher = more creative */
   temperature: number;

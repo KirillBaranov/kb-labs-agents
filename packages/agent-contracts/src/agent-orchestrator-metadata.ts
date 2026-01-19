@@ -9,6 +9,8 @@
  * descriptions without any predefined constraints.
  */
 
+import type { LLMTier } from './outcome.js';
+
 /**
  * Agent metadata for orchestrator discovery (FLEXIBLE SCHEMA)
  *
@@ -86,7 +88,7 @@ export interface AgentInfo {
   metadata: AgentOrchestratorMetadata;
 
   /** LLM tier (small/medium/large) */
-  tier: 'small' | 'medium' | 'large';
+  tier: LLMTier;
 
   /** Path to agent directory */
   path: string;
