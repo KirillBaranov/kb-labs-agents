@@ -8,6 +8,13 @@ import { defineCommand, type CommandResult } from '@kb-labs/sdk';
 import type { PluginContextV3 } from '@kb-labs/sdk';
 import { OrchestratorExecutor } from '@kb-labs/agent-core';
 import type { OrchestratorResult } from '@kb-labs/agent-core';
+import type {
+  OrchestratorCallbacks,
+  SubTask,
+  DelegatedResult,
+  Progress,
+  ExecutionStats,
+} from '@kb-labs/agent-contracts';
 
 interface OrchestratorRunInput {
   flags: {
@@ -37,8 +44,53 @@ export default defineCommand<unknown, OrchestratorRunInput, OrchestratorRunOutpu
         // Create orchestrator executor
         const executor = new OrchestratorExecutor(ctx);
 
-        // Execute task
-        const result = await executor.execute(task);
+        // Phase 5: Setup real-time progress callbacks
+        const callbacks: OrchestratorCallbacks = {
+          onPlanCreated: (plan) => {
+            if (!jsonOutput) {
+              ctx.ui?.write('\n│ 📋 Plan Created\n');
+              ctx.ui?.write(`│  Subtasks: ${plan.subtasks.length}\n`);
+            }
+          },
+
+          onSubtaskStart: (subtask: SubTask, progress: Progress) => {
+            if (!jsonOutput) {
+              ctx.ui?.write(`│  ⏳ [${progress.current}/${progress.total}] ${subtask.specialistId}...\n`);
+            }
+          },
+
+          onSubtaskComplete: (subtask: SubTask, result: DelegatedResult, progress: Progress) => {
+            if (!jsonOutput) {
+              ctx.ui?.write(`│  ✅ [${progress.current}/${progress.total}] ${subtask.specialistId} (${result.durationMs}ms, ${result.tokensUsed} tokens)\n`);
+            }
+          },
+
+          onSubtaskFailed: (subtask: SubTask, result: DelegatedResult, progress: Progress) => {
+            if (!jsonOutput) {
+              ctx.ui?.write(`│  ❌ [${progress.current}/${progress.total}] ${subtask.specialistId} - ${result.error || 'unknown error'}\n`);
+            }
+          },
+
+          onAdaptation: (reason: string, newSubtasks: SubTask[]) => {
+            if (!jsonOutput) {
+              ctx.ui?.write(`│  ✨ Plan adapted: ${reason} (+${newSubtasks.length} subtasks)\n`);
+            }
+          },
+
+          onComplete: (finalResult: string, stats: ExecutionStats) => {
+            if (!jsonOutput) {
+              const successRate =
+                stats.totalSubtasks > 0
+                  ? Math.round((stats.successfulSubtasks / stats.totalSubtasks) * 100)
+                  : 0;
+              ctx.ui?.write(`│  🎉 Completed: ${stats.successfulSubtasks}/${stats.totalSubtasks} succeeded (${successRate}%)\n`);
+              ctx.ui?.write(`│  💰 Cost: $${stats.totalCostUsd.toFixed(4)}\n`);
+            }
+          },
+        };
+
+        // Execute task with real-time progress
+        const result = await executor.execute(task, callbacks);
 
         // Output results
         if (jsonOutput) {
