@@ -15,12 +15,18 @@
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
 import { useLLM, useAnalytics, useCache, findRepoRoot } from '@kb-labs/sdk';
-import type { SpecialistConfigV1, ExecutionContext } from '@kb-labs/agent-contracts';
-import { SpecialistExecutor, type SpecialistContext, type SpecialistResult } from './specialist-executor.js';
+import type {
+  SpecialistConfigV1,
+  ExecutionContext,
+  LLMTier,
+  OrchestratorCallbacks,
+} from '@kb-labs/agent-contracts';
+import { SpecialistExecutor, type SpecialistContext } from './specialist-executor.js';
 import { SpecialistRegistry } from '../registry/specialist-registry.js';
 import { ToolDiscoverer } from '../tools/tool-discoverer.js';
 import { OrchestratorAnalytics } from '../analytics/orchestrator-analytics.js';
 import { FindingsStore } from './findings-store.js';
+import { TaskVerifier } from '../verification/task-verifier.js';
 import * as path from 'path';
 import {
   createExecutionPlanTool,
@@ -65,7 +71,9 @@ export class OrchestratorExecutor {
   private specialistExecutor: SpecialistExecutor;
   private analytics: OrchestratorAnalytics;
   private findingsStore: FindingsStore; // Phase 2: Findings management
+  private taskVerifier: TaskVerifier; // ADR-0002: Output verification
   private sessionId: string; // Phase 2: Unique session ID for cleanup
+  private callbacks?: OrchestratorCallbacks; // Phase 5: Progress tracking callbacks
 
   constructor(private ctx: PluginContextV3) {
     this.registry = new SpecialistRegistry(ctx);
@@ -73,6 +81,7 @@ export class OrchestratorExecutor {
     this.specialistExecutor = new SpecialistExecutor(ctx);
     this.analytics = new OrchestratorAnalytics(useAnalytics());
     this.findingsStore = new FindingsStore(ctx);
+    this.taskVerifier = new TaskVerifier(ctx);
 
     // Generate unique session ID for this orchestrator run
     this.sessionId = `orch-${Date.now()}-${Math.random().toString(36).substring(7)}`;
@@ -116,12 +125,20 @@ export class OrchestratorExecutor {
   /**
    * Execute a complex task via delegation to specialists
    *
+   * Phase 5: Accepts optional callbacks for progress tracking
+   *
    * @param task - High-level task description
+   * @param callbacks - Optional progress tracking callbacks
    * @returns Orchestration result with synthesized answer
    */
-  async execute(task: string): Promise<OrchestratorResult> {
+  async execute(task: string, callbacks?: OrchestratorCallbacks): Promise<OrchestratorResult> {
     const startTime = Date.now();
     let totalTokens = 0;
+    let plan: SubTask[] = []; // Declare at function scope for error recovery
+    let delegatedResults: DelegatedResult[] = []; // Declare at function scope for error recovery
+
+    // Phase 5: Store callbacks for use during execution
+    this.callbacks = callbacks;
 
     this.ctx.platform.logger.info('Orchestrator started', {
       task,
@@ -135,18 +152,24 @@ export class OrchestratorExecutor {
       this.analytics.trackPlanningStarted(task);
       const planStartTime = Date.now();
 
-      const { plan, tokensUsed: planTokens } = await this.planExecution(task);
-      totalTokens += planTokens;
+      const planResult = await this.planExecution(task);
+      plan = planResult.plan;
+      totalTokens += planResult.tokensUsed;
 
-      this.analytics.trackPlanningCompleted(plan, planTokens, Date.now() - planStartTime);
+      this.analytics.trackPlanningCompleted(plan, planResult.tokensUsed, Date.now() - planStartTime);
       this.ctx.platform.logger.info('Execution plan created', {
         subtasks: plan.length,
-        tokensUsed: planTokens,
+        tokensUsed: planResult.tokensUsed,
+      });
+
+      // Phase 5: Notify plan created
+      this.callbacks?.onPlanCreated?.({
+        subtasks: plan,
       });
 
       // Step 2: Execute subtasks in order (respecting dependencies)
       this.ctx.platform.logger.info('Executing subtasks...');
-      const delegatedResults: DelegatedResult[] = [];
+      // delegatedResults already declared at function scope for error recovery
       let taskSolved = false; // Track if task is already solved
 
       for (const subtask of plan) {
@@ -172,6 +195,12 @@ export class OrchestratorExecutor {
           progress: `${delegatedResults.length}/${plan.length}`,
         });
 
+        // Phase 5: Notify subtask start
+        this.callbacks?.onSubtaskStart?.(subtask, {
+          current: delegatedResults.length + 1,
+          total: plan.length,
+        });
+
         // Execute subtask
         this.analytics.trackSpecialistDelegated(subtask);
         const result = await this.delegateTask(subtask, delegatedResults);
@@ -190,6 +219,12 @@ export class OrchestratorExecutor {
         // Track specialist result
         if (result.success) {
           this.analytics.trackSpecialistCompleted(subtask, result);
+
+          // Phase 5: Notify subtask completion
+          this.callbacks?.onSubtaskComplete?.(subtask, result, {
+            current: delegatedResults.length,
+            total: plan.length,
+          });
 
           // Phase 2: Quality validation (optional - can be enabled later)
           // For now, we trust specialist output and check findings only
@@ -227,6 +262,16 @@ export class OrchestratorExecutor {
                 confidence: adaptation.confidence,
                 addedCount: adaptation.newSubtasks.length,
               });
+
+              // Phase 5: Notify plan adaptation
+              this.callbacks?.onAdaptation?.(
+                adaptation.reason,
+                adaptation.newSubtasks,
+                {
+                  current: delegatedResults.length,
+                  total: plan.length - adaptation.newSubtasks.length, // Original total before adaptation
+                }
+              );
             } else if (adaptation.shouldAdapt && adaptation.confidence < 0.7) {
               this.ctx.platform.logger.info('⚠️  Adaptation suggested but low confidence, skipping', {
                 confidence: adaptation.confidence,
@@ -236,6 +281,12 @@ export class OrchestratorExecutor {
           }
         } else {
           this.analytics.trackSpecialistFailed(subtask, result);
+
+          // Phase 5: Notify subtask failure
+          this.callbacks?.onSubtaskFailed?.(subtask, result, {
+            current: delegatedResults.length,
+            total: plan.length,
+          });
         }
 
         // Verify tool trace if available (anti-hallucination check)
@@ -364,6 +415,19 @@ export class OrchestratorExecutor {
         sessionId: this.sessionId,
       });
 
+      // Phase 5: Notify completion
+      const successfulSubtasks = delegatedResults.filter((r) => r.success).length;
+      const failedSubtasks = delegatedResults.filter((r) => !r.success).length;
+
+      this.callbacks?.onComplete?.(answer, {
+        totalSubtasks: plan.length,
+        successfulSubtasks,
+        failedSubtasks,
+        totalDurationMs: durationMs,
+        totalTokensUsed: totalTokens,
+        totalCostUsd: this.analytics.getTotalCost(),
+      });
+
       // Phase 2: Cleanup findings when orchestrator session ends
       await this.cleanupFindings();
 
@@ -375,14 +439,54 @@ export class OrchestratorExecutor {
       this.analytics.trackTaskFailed(task, errorMessage, durationMs, totalTokens);
       this.ctx.platform.logger.error('Orchestrator failed', error instanceof Error ? error : new Error(errorMessage));
 
+      // ADR-0002: Try to recover partial results if specialists completed successfully
+      const hasPartialResults = delegatedResults.length > 0;
+      let fallbackAnswer = '';
+
+      if (hasPartialResults) {
+        this.ctx.platform.logger.warn('Synthesis failed, attempting fallback answer from partial results', {
+          completedSubtasks: delegatedResults.length,
+          totalSubtasks: plan.length,
+        });
+
+        try {
+          // Simple fallback: concatenate specialist outputs
+          const successfulResults = delegatedResults.filter(r => r.success);
+          if (successfulResults.length > 0) {
+            fallbackAnswer = '# Partial Results\n\n';
+            fallbackAnswer += `**Note**: Full synthesis failed, but ${successfulResults.length} specialist(s) completed successfully.\n\n`;
+
+            for (const result of successfulResults) {
+              const subtask = plan.find(s => s.id === result.subtaskId);
+              fallbackAnswer += `## ${subtask?.description || result.subtaskId}\n`;
+              fallbackAnswer += `**Specialist**: ${result.specialistId}\n\n`;
+
+              if (typeof result.output === 'string') {
+                fallbackAnswer += result.output + '\n\n';
+              } else if (result.output) {
+                fallbackAnswer += '```json\n' + JSON.stringify(result.output, null, 2) + '\n```\n\n';
+              }
+            }
+
+            this.ctx.platform.logger.info('Generated fallback answer from partial results', {
+              answerLength: fallbackAnswer.length,
+            });
+          }
+        } catch (fallbackError) {
+          this.ctx.platform.logger.warn('Fallback synthesis also failed', {
+            error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+          });
+        }
+      }
+
       // Phase 2: Cleanup findings even on failure
       await this.cleanupFindings();
 
       return {
-        success: false,
-        answer: '',
-        plan: [],
-        delegatedResults: [],
+        success: hasPartialResults, // True if at least some specialists completed
+        answer: fallbackAnswer || `Error during synthesis: ${errorMessage}`,
+        plan,
+        delegatedResults,
         tokensUsed: totalTokens,
         durationMs,
         error: errorMessage,
@@ -663,134 +767,574 @@ ${specialistDescriptions}
   }
 
   /**
-   * Delegate a subtask to a specialist
+   * Sleep for specified milliseconds (Phase 3: retry backoff)
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Execute specialist with retry logic (Phase 3)
    *
-   * Loads specialist configuration, discovers tools, and executes via SpecialistExecutor.
+   * Implements exponential backoff retry:
+   * - Retry 1: 1s delay
+   * - Retry 2: 2s delay
    *
-   * Phase 2: Gathers findings from dependency subtasks and passes them as input.
+   * Only retries if SpecialistOutcome.failure.suggestedRetry === true
+   *
+   * @param subtask - Subtask to execute
+   * @param delegatedResults - Previously completed results
+   * @param maxRetries - Max retry attempts (default: 2)
+   * @returns Delegated result
+   */
+  private async executeWithRetry(
+    subtask: SubTask,
+    delegatedResults: DelegatedResult[],
+    maxRetries = 2
+  ): Promise<DelegatedResult> {
+    const startTime = Date.now();
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      this.ctx.platform.logger.info('Executing specialist', {
+        subtaskId: subtask.id,
+        specialist: subtask.specialistId,
+        attempt,
+        maxRetries,
+      });
+
+      try {
+        // Load specialist config and tools
+        const config = await this.registry.load(subtask.specialistId);
+        const tools = await this.toolDiscoverer.discoverWithStrategy(config.tools);
+        const context: SpecialistContext = { config, tools };
+
+        // V2: Build ExecutionContext for specialist
+        const workingDir = process.cwd();
+        const projectRoot = await this.getProjectRoot();
+        const outputDir = this.extractOutputDir(subtask.description, projectRoot);
+        const findings = await this.extractFindings(
+          delegatedResults.filter((r) => subtask.dependencies?.includes(r.subtaskId))
+        );
+
+        // Build previousResults map (Phase 5: use DelegatedResult for ExecutionContext)
+        const previousResults = new Map<string, DelegatedResult>();
+        for (const depId of subtask.dependencies || []) {
+          const depResult = delegatedResults.find((r) => r.subtaskId === depId);
+          if (depResult && depResult.success) {
+            previousResults.set(depId, depResult);
+          }
+        }
+
+        const availableFiles = { created: [], modified: [] };
+
+        const executionContext: ExecutionContext = {
+          workingDir,
+          projectRoot,
+          outputDir,
+          taskDescription: subtask.description,
+          subtaskId: subtask.id,
+          previousResults,
+          findings,
+          availableFiles,
+        };
+
+        // Execute specialist
+        const outcome = await this.specialistExecutor.execute(context, subtask.description, executionContext);
+
+        // Success!
+        if (outcome.ok) {
+          this.ctx.platform.logger.info('Specialist succeeded', {
+            subtaskId: subtask.id,
+            attempt,
+            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            durationMs: outcome.meta.durationMs,
+          });
+
+          // Process findings if present
+          let findingsSummary: DelegatedResult['findingsSummary'];
+          let findingsRef: string | undefined;
+
+          if (outcome.result.output && typeof outcome.result.output === 'object' && 'findings' in outcome.result.output) {
+            const findings = (outcome.result.output as { findings: SpecialistFinding[] }).findings;
+            if (findings && findings.length > 0) {
+              findingsRef = await this.findingsStore.save(this.sessionId, subtask.id, findings);
+              findingsSummary = this.findingsStore.createSummary(findings);
+            }
+          }
+
+          return {
+            subtaskId: subtask.id,
+            specialistId: subtask.specialistId,
+            success: true,
+            output: outcome.result.output,
+            tokensUsed: outcome.result.tokensUsed,
+            durationMs: Date.now() - startTime,
+            traceRef: outcome.result.traceRef,
+            findingsSummary,
+            findingsRef,
+          };
+        }
+
+        // Failed - check if should retry
+        this.ctx.platform.logger.warn('Specialist failed', {
+          subtaskId: subtask.id,
+          attempt,
+          kind: outcome.failure.kind,
+          message: outcome.failure.message,
+          hasPartial: !!outcome.partial,
+          suggestedRetry: outcome.failure.suggestedRetry,
+        });
+
+        // If no retry suggested, return failure immediately
+        if (outcome.failure.suggestedRetry === false) {
+          this.ctx.platform.logger.info('Retry not recommended, stopping', {
+            subtaskId: subtask.id,
+            kind: outcome.failure.kind,
+          });
+
+          return {
+            subtaskId: subtask.id,
+            specialistId: subtask.specialistId,
+            success: false,
+            output: outcome.partial?.output || null,
+            error: outcome.failure.message,
+            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            durationMs: Date.now() - startTime,
+            traceRef: outcome.partial?.traceRef,
+          };
+        }
+
+        // Last attempt - return failure
+        if (attempt === maxRetries) {
+          this.ctx.platform.logger.warn('Max retries reached', {
+            subtaskId: subtask.id,
+            maxRetries,
+          });
+
+          return {
+            subtaskId: subtask.id,
+            specialistId: subtask.specialistId,
+            success: false,
+            output: outcome.partial?.output || null,
+            error: outcome.failure.message,
+            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            durationMs: Date.now() - startTime,
+            traceRef: outcome.partial?.traceRef,
+          };
+        }
+
+        // Exponential backoff before retry
+        const backoffMs = 1000 * Math.pow(2, attempt - 1);
+        this.ctx.platform.logger.info('Retrying after backoff', {
+          subtaskId: subtask.id,
+          backoffMs,
+          nextAttempt: attempt + 1,
+        });
+
+        await this.sleep(backoffMs);
+      } catch (error) {
+        // Unexpected error during execution
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        this.ctx.platform.logger.error('Unexpected error in specialist execution', new Error(
+          `[${subtask.specialistId}] ${errorMessage} (attempt ${attempt})`
+        ));
+
+        // If last attempt, return error
+        if (attempt === maxRetries) {
+          return {
+            subtaskId: subtask.id,
+            specialistId: subtask.specialistId,
+            success: false,
+            output: null,
+            error: errorMessage,
+            tokensUsed: 0,
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        // Retry after backoff
+        await this.sleep(1000 * Math.pow(2, attempt - 1));
+      }
+    }
+
+    // Should never reach here, but TypeScript needs it
+    throw new Error('executeWithRetry: unreachable code');
+  }
+
+  /**
+   * Execute specialist with escalation and retry (Phase 4)
+   *
+   * Implements escalation ladder:
+   * - Tries each tier in escalationLadder
+   * - For each tier, retries up to maxRetries times
+   * - Stops at first success or end of ladder
+   * - Tracks cost and enforces budget limits
+   *
+   * @param subtask - Subtask to execute
+   * @param delegatedResults - Previously completed results
+   * @param maxRetries - Max retries per tier (default: 2)
+   * @returns Delegated result
+   */
+  private async executeWithEscalation(
+    subtask: SubTask,
+    delegatedResults: DelegatedResult[],
+    maxRetries = 2
+  ): Promise<DelegatedResult> {
+    // Load specialist config to get escalation ladder
+    const config = await this.registry.load(subtask.specialistId);
+    const ladder: LLMTier[] = config.llm.escalationLadder || [config.llm.tier];
+
+    this.ctx.platform.logger.info('Starting execution with escalation', {
+      subtaskId: subtask.id,
+      specialistId: subtask.specialistId,
+      escalationLadder: ladder,
+      maxRetriesPerTier: maxRetries,
+    });
+
+    for (let tierIndex = 0; tierIndex < ladder.length; tierIndex++) {
+      const tier = ladder[tierIndex]!; // Safe: index is within bounds
+
+      this.ctx.platform.logger.info('Trying tier', {
+        subtaskId: subtask.id,
+        tier,
+        tierIndex: tierIndex + 1,
+        totalTiers: ladder.length,
+      });
+
+      // Execute with retry for current tier
+      const result = await this.executeWithRetryAndTier(
+        subtask,
+        delegatedResults,
+        tier,
+        maxRetries
+      );
+
+      // Success!
+      if (result.success) {
+        this.ctx.platform.logger.info('Specialist succeeded with tier', {
+          subtaskId: subtask.id,
+          tier,
+          tierIndex: tierIndex + 1,
+        });
+        return result;
+      }
+
+      // Failed - check if should escalate to next tier
+      if (tierIndex < ladder.length - 1) {
+        const nextTier = ladder[tierIndex + 1]!; // Safe: checked bounds above
+        this.ctx.platform.logger.warn('Escalating to next tier', {
+          subtaskId: subtask.id,
+          fromTier: tier,
+          toTier: nextTier,
+          error: result.error,
+        });
+
+        this.ctx.platform.analytics.track('orchestrator.escalation', {
+          subtaskId: subtask.id,
+          specialistId: subtask.specialistId,
+          fromTier: tier,
+          toTier: nextTier,
+          reason: result.error || 'unknown',
+        });
+      } else {
+        // No more tiers to try
+        this.ctx.platform.logger.error('All tiers exhausted', new Error(
+          `Subtask ${subtask.id} failed even after escalating through all tiers: ${ladder.join(' → ')}`
+        ));
+        return result;
+      }
+    }
+
+    // Should never reach here
+    throw new Error('executeWithEscalation: unreachable code');
+  }
+
+  /**
+   * Execute specialist with retry for specific tier (Phase 4)
+   *
+   * Similar to executeWithRetry but passes tier override to specialist.
+   *
+   * @param subtask - Subtask to execute
+   * @param delegatedResults - Previously completed results
+   * @param tier - Model tier to use
+   * @param maxRetries - Max retry attempts
+   * @returns Delegated result
+   */
+  private async executeWithRetryAndTier(
+    subtask: SubTask,
+    delegatedResults: DelegatedResult[],
+    tier: LLMTier,
+    maxRetries: number
+  ): Promise<DelegatedResult> {
+    const startTime = Date.now();
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      this.ctx.platform.logger.info('Executing specialist with tier', {
+        subtaskId: subtask.id,
+        specialist: subtask.specialistId,
+        tier,
+        attempt,
+        maxRetries,
+      });
+
+      try {
+        // Load specialist config and tools
+        const config = await this.registry.load(subtask.specialistId);
+        const tools = await this.toolDiscoverer.discoverWithStrategy(config.tools);
+        const context: SpecialistContext = { config, tools };
+
+        // V2: Build ExecutionContext for specialist
+        const workingDir = process.cwd();
+        const projectRoot = await this.getProjectRoot();
+        const outputDir = this.extractOutputDir(subtask.description, projectRoot);
+        const findings = await this.extractFindings(
+          delegatedResults.filter((r) => subtask.dependencies?.includes(r.subtaskId))
+        );
+
+        // Build previousResults map (Phase 5: use DelegatedResult for ExecutionContext)
+        const previousResults = new Map<string, DelegatedResult>();
+        for (const depId of subtask.dependencies || []) {
+          const depResult = delegatedResults.find((r) => r.subtaskId === depId);
+          if (depResult && depResult.success) {
+            previousResults.set(depId, depResult);
+          }
+        }
+
+        const availableFiles = { created: [], modified: [] };
+
+        const executionContext: ExecutionContext = {
+          workingDir,
+          projectRoot,
+          outputDir,
+          taskDescription: subtask.description,
+          subtaskId: subtask.id,
+          previousResults,
+          findings,
+          availableFiles,
+        };
+
+        // Phase 4: Execute specialist with tier override
+        const outcome = await this.specialistExecutor.execute(
+          context,
+          subtask.description,
+          executionContext,
+          undefined, // no progress callback
+          tier // tier override
+        );
+
+        // Phase 4: Track cost
+        const cost = this.analytics.trackSpecialistCost(
+          tier,
+          outcome.meta.tokenUsage.prompt,
+          outcome.meta.tokenUsage.completion
+        );
+
+        this.ctx.platform.logger.debug('Specialist execution cost', {
+          subtaskId: subtask.id,
+          tier,
+          promptTokens: outcome.meta.tokenUsage.prompt,
+          completionTokens: outcome.meta.tokenUsage.completion,
+          costUsd: cost.toFixed(6),
+          totalCostUsd: this.analytics.getTotalCost().toFixed(6),
+        });
+
+        // Success!
+        if (outcome.ok) {
+          this.ctx.platform.logger.info('Specialist succeeded', {
+            subtaskId: subtask.id,
+            tier,
+            attempt,
+            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            durationMs: outcome.meta.durationMs,
+            costUsd: cost.toFixed(6),
+          });
+
+          // Process findings if present
+          let findingsSummary: DelegatedResult['findingsSummary'];
+          let findingsRef: string | undefined;
+
+          if (outcome.result.output && typeof outcome.result.output === 'object' && 'findings' in outcome.result.output) {
+            const findings = (outcome.result.output as { findings: SpecialistFinding[] }).findings;
+            if (findings && findings.length > 0) {
+              findingsRef = await this.findingsStore.save(this.sessionId, subtask.id, findings);
+              findingsSummary = this.findingsStore.createSummary(findings);
+            }
+          }
+
+          // ADR-0002: Verify specialist output (3-level validation)
+          this.ctx.platform.logger.debug('Starting output verification', {
+            subtaskId: subtask.id,
+            hasOutput: !!outcome.result.output,
+            hasTraceRef: !!outcome.result.traceRef,
+          });
+
+          const verification = await this.taskVerifier.verify(
+            outcome.result.output,
+            outcome.result.toolTrace, // For Level 2 validation
+            workingDir,
+            subtask.specialistId, // For metrics
+            subtask.id // For metrics
+          );
+
+          if (!verification.valid) {
+            // Verification failed - log and return failure (triggers retry)
+            this.ctx.platform.logger.warn('Output verification failed', {
+              subtaskId: subtask.id,
+              tier,
+              attempt,
+              level: verification.level,
+              errors: verification.errors,
+            });
+
+            // If last attempt, return final failure
+            if (attempt === maxRetries) {
+              return {
+                subtaskId: subtask.id,
+                specialistId: subtask.specialistId,
+                success: false,
+                output: outcome.result.output,
+                error: `Verification failed: ${verification.errors?.join(', ')}`,
+                tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+                durationMs: Date.now() - startTime,
+                traceRef: outcome.result.traceRef,
+              };
+            }
+
+            // Retry with exponential backoff
+            const backoffMs = 1000 * Math.pow(2, attempt - 1);
+            this.ctx.platform.logger.info('Retrying after verification failure', {
+              subtaskId: subtask.id,
+              tier,
+              backoffMs,
+              nextAttempt: attempt + 1,
+            });
+
+            await this.sleep(backoffMs);
+            continue; // Retry the loop
+          }
+
+          // Verification passed!
+          this.ctx.platform.logger.debug('Output verification passed', {
+            subtaskId: subtask.id,
+            level: verification.level,
+          });
+
+          return {
+            subtaskId: subtask.id,
+            specialistId: subtask.specialistId,
+            success: true,
+            output: outcome.result.output,
+            tokensUsed: outcome.result.tokensUsed,
+            durationMs: Date.now() - startTime,
+            traceRef: outcome.result.traceRef,
+            findingsSummary,
+            findingsRef,
+          };
+        }
+
+        // Failed - check if should retry
+        this.ctx.platform.logger.warn('Specialist failed', {
+          subtaskId: subtask.id,
+          tier,
+          attempt,
+          kind: outcome.failure.kind,
+          message: outcome.failure.message,
+          hasPartial: !!outcome.partial,
+          suggestedRetry: outcome.failure.suggestedRetry,
+        });
+
+        // If no retry suggested, return failure immediately
+        if (outcome.failure.suggestedRetry === false) {
+          this.ctx.platform.logger.info('Retry not recommended, stopping', {
+            subtaskId: subtask.id,
+            kind: outcome.failure.kind,
+          });
+
+          return {
+            subtaskId: subtask.id,
+            specialistId: subtask.specialistId,
+            success: false,
+            output: outcome.partial?.output || null,
+            error: outcome.failure.message,
+            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            durationMs: Date.now() - startTime,
+            traceRef: outcome.partial?.traceRef,
+          };
+        }
+
+        // Last attempt - return failure
+        if (attempt === maxRetries) {
+          this.ctx.platform.logger.warn('Max retries reached for tier', {
+            subtaskId: subtask.id,
+            tier,
+            maxRetries,
+          });
+
+          return {
+            subtaskId: subtask.id,
+            specialistId: subtask.specialistId,
+            success: false,
+            output: outcome.partial?.output || null,
+            error: outcome.failure.message,
+            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            durationMs: Date.now() - startTime,
+            traceRef: outcome.partial?.traceRef,
+          };
+        }
+
+        // Exponential backoff before retry
+        const backoffMs = 1000 * Math.pow(2, attempt - 1);
+        this.ctx.platform.logger.info('Retrying after backoff', {
+          subtaskId: subtask.id,
+          tier,
+          backoffMs,
+          nextAttempt: attempt + 1,
+        });
+
+        await this.sleep(backoffMs);
+      } catch (error) {
+        // Unexpected error during execution
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        this.ctx.platform.logger.error('Unexpected error in specialist execution', new Error(
+          `[${subtask.specialistId}] Tier: ${tier}, Attempt: ${attempt}, Error: ${errorMessage}`
+        ));
+
+        // If last attempt, return error
+        if (attempt === maxRetries) {
+          return {
+            subtaskId: subtask.id,
+            specialistId: subtask.specialistId,
+            success: false,
+            output: null,
+            error: errorMessage,
+            tokensUsed: 0,
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        // Retry after backoff
+        await this.sleep(1000 * Math.pow(2, attempt - 1));
+      }
+    }
+
+    // Should never reach here, but TypeScript needs it
+    throw new Error('executeWithRetryAndTier: unreachable code');
+  }
+
+  /**
+   * Delegate a subtask to a specialist (Phase 4)
+   *
+   * Simplified wrapper around executeWithEscalation.
    *
    * @param subtask - Subtask to execute
    * @param delegatedResults - Previously completed subtasks
    * @returns Delegated result
    */
   private async delegateTask(subtask: SubTask, delegatedResults: DelegatedResult[]): Promise<DelegatedResult> {
-    const startTime = Date.now();
-
-    try {
-      // Load specialist configuration
-      const config = await this.registry.load(subtask.specialistId);
-
-      // Discover tools for specialist using new strategy
-      const tools = await this.toolDiscoverer.discoverWithStrategy(config.tools);
-
-      // Create specialist context
-      const context: SpecialistContext = { config, tools };
-
-      // V2: Build ExecutionContext for specialist
-      const workingDir = process.cwd();
-      const projectRoot = await this.getProjectRoot();
-
-      // Extract output directory ONLY if explicitly specified in task
-      // Otherwise undefined → specialists work directly in projectRoot
-      const outputDir = this.extractOutputDir(subtask.description, projectRoot);
-
-      // Extract findings from dependency subtasks
-      const findings = await this.extractFindings(
-        delegatedResults.filter((r) => subtask.dependencies?.includes(r.subtaskId))
-      );
-
-      // Build previousResults map
-      const previousResults = new Map<string, SpecialistResult>();
-      for (const depId of subtask.dependencies || []) {
-        const depResult = delegatedResults.find((r) => r.subtaskId === depId);
-        if (depResult && depResult.success) {
-          // Convert DelegatedResult to SpecialistResult format
-          // Note: steps field is not available in DelegatedResult, using empty array
-          previousResults.set(depId, {
-            success: depResult.success,
-            output: depResult.output,
-            steps: [], // Not tracked in orchestrator context
-            tokensUsed: depResult.tokensUsed,
-            durationMs: depResult.durationMs,
-            traceRef: depResult.traceRef,
-          });
-        }
-      }
-
-      // Track files created/modified by previous specialists
-      const availableFiles = {
-        created: [] as string[],
-        modified: [] as string[],
-      };
-
-      // TODO: Extract file paths from trace refs or findings
-      // For now, this is a placeholder - will be implemented when trace verification is added
-
-      const executionContext: ExecutionContext = {
-        workingDir,
-        projectRoot,
-        outputDir,
-        taskDescription: subtask.description,
-        subtaskId: subtask.id,
-        previousResults,
-        findings,
-        availableFiles,
-      };
-
-      // V2: Execute via SpecialistExecutor with ExecutionContext
-      const result = await this.specialistExecutor.execute(context, subtask.description, executionContext);
-
-      // Phase 2: Process findings if specialist returned them
-      let findingsSummary: DelegatedResult['findingsSummary'];
-      let findingsRef: string | undefined;
-
-      if (result.output && typeof result.output === 'object' && 'findings' in result.output) {
-        const findings = (result.output as { findings: SpecialistFinding[] }).findings;
-
-        if (findings && findings.length > 0) {
-          // Store full findings separately (not in orchestrator context)
-          findingsRef = await this.findingsStore.save(this.sessionId, subtask.id, findings);
-
-          // Create compact summary for context (max 3 findings + stats)
-          findingsSummary = this.findingsStore.createSummary(findings);
-
-          this.ctx.platform.logger.debug('Findings processed', {
-            subtaskId: subtask.id,
-            totalFindings: findings.length,
-            findingsRef,
-          });
-        }
-      }
-
-      return {
-        subtaskId: subtask.id,
-        specialistId: subtask.specialistId,
-        success: result.success,
-        output: result.output,
-        error: result.error,
-        tokensUsed: result.tokensUsed,
-        durationMs: Date.now() - startTime,
-        traceRef: result.traceRef,
-        findingsSummary, // Compact summary in context
-        findingsRef, // Reference to full findings
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
-      this.ctx.platform.logger.error('Subtask delegation failed', new Error(
-        `[${subtask.specialistId}] Subtask ${subtask.id}: ${errorMessage}`
-      ));
-
-      return {
-        subtaskId: subtask.id,
-        specialistId: subtask.specialistId,
-        success: false,
-        output: null,
-        error: errorMessage,
-        tokensUsed: 0,
-        durationMs: Date.now() - startTime,
-      };
-    }
+    // Phase 4: Use executeWithEscalation for automatic tier escalation + retry
+    return this.executeWithEscalation(subtask, delegatedResults, 2);
   }
 
   /**

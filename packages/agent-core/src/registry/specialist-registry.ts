@@ -1,7 +1,7 @@
 /**
  * Specialist Registry (V2 Architecture)
  *
- * Discovers and manages specialists from .kb/specialists/ directory
+ * Discovers and manages specialists from .kb/agents/ directory
  */
 
 import { findRepoRoot, type PluginContextV3 } from '@kb-labs/sdk';
@@ -14,8 +14,8 @@ import { join } from 'path';
  * Specialist Registry
  *
  * Manages specialist lifecycle:
- * - Discovery: scan .kb/specialists/ for specialist directories
- * - Loading: load specialist.yml and context files
+ * - Discovery: scan .kb/agents/ for specialist directories
+ * - Loading: load agent.yml and context files
  * - Validation: validate specialist configurations
  */
 export class SpecialistRegistry {
@@ -26,7 +26,7 @@ export class SpecialistRegistry {
     // Lazy initialization - find repo root async
     this.repoRootPromise = findRepoRoot(ctx.cwd);
     this.specialistsDirPromise = this.repoRootPromise.then(root =>
-      join(root, '.kb', 'specialists')
+      join(root, '.kb', 'agents')
     );
   }
 
@@ -38,7 +38,7 @@ export class SpecialistRegistry {
   }
 
   /**
-   * Initialize .kb/specialists/ directory
+   * Initialize .kb/agents/ directory
    */
   async init(): Promise<void> {
     const fs = this.ctx.runtime.fs;
@@ -46,33 +46,33 @@ export class SpecialistRegistry {
 
     try {
       await fs.mkdir(specialistsDir, { recursive: true});
-      this.ctx.platform.logger.info('Initialized .kb/specialists/ directory', {
+      this.ctx.platform.logger.info('Initialized .kb/agents/ directory', {
         path: specialistsDir,
       });
     } catch (error) {
       throw new Error(
-        `Failed to initialize .kb/specialists/: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to initialize .kb/agents/: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
 
   /**
-   * Discover all specialists in .kb/specialists/
+   * Discover all specialists in .kb/agents/
    *
-   * Scans for directories containing specialist.yml files
+   * Scans for directories containing agent.yml files
    */
   async discover(): Promise<SpecialistMetadata[]> {
     const fs = this.ctx.runtime.fs;
     const specialistsDir = await this.getSpecialistsDir();
 
     try {
-      // Check if .kb/specialists/ exists
+      // Check if .kb/agents/ exists
       const exists = await this.directoryExists(specialistsDir);
       if (!exists) {
         return [];
       }
 
-      // Read all entries in .kb/specialists/
+      // Read all entries in .kb/agents/
       const entries = await fs.readdir(specialistsDir);
 
       // Filter for directories only (check with stat)
@@ -94,9 +94,9 @@ export class SpecialistRegistry {
       const metadata: SpecialistMetadata[] = [];
       for (const specialistId of specialistIds) {
         const specialistPath = join(specialistsDir, specialistId);
-        const configPath = join(specialistPath, 'specialist.yml');
+        const configPath = join(specialistPath, 'agent.yml');
 
-        // Check if specialist.yml exists
+        // Check if agent.yml exists
         const configExists = await this.fileExists(configPath);
         if (!configExists) {
           metadata.push({
@@ -108,7 +108,7 @@ export class SpecialistRegistry {
             path: specialistPath,
             configPath,
             valid: false,
-            error: 'specialist.yml not found',
+            error: 'agent.yml not found',
           });
           continue;
         }
@@ -205,7 +205,7 @@ export class SpecialistRegistry {
     const fs = this.ctx.runtime.fs;
     const specialistsDir = await this.getSpecialistsDir();
     const specialistPath = join(specialistsDir, specialistId);
-    const configPath = join(specialistPath, 'specialist.yml');
+    const configPath = join(specialistPath, 'agent.yml');
 
     // Check if specialist directory exists
     const dirExists = await this.directoryExists(specialistPath);
@@ -213,7 +213,7 @@ export class SpecialistRegistry {
       throw new Error(`Specialist not found: ${specialistId}`);
     }
 
-    // Check if specialist.yml exists
+    // Check if agent.yml exists
     const configExists = await this.fileExists(configPath);
     if (!configExists) {
       throw new Error(`Specialist config not found: ${configPath}`);

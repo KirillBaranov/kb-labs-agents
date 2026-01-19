@@ -10,6 +10,7 @@
  */
 
 import type { IAnalytics } from '@kb-labs/sdk';
+import type { LLMTier } from '@kb-labs/agent-contracts';
 import type { SubTask, DelegatedResult, OrchestratorResult } from '../executor/types.js';
 
 /**
@@ -42,6 +43,8 @@ export const ORCHESTRATOR_EVENTS = {
  * Safe to use even if analytics is not configured (no-op).
  */
 export class OrchestratorAnalytics {
+  private totalCostUsd = 0;
+
   constructor(private analytics?: IAnalytics) {}
 
   /**
@@ -240,5 +243,63 @@ export class OrchestratorAnalytics {
       }
     }
     return String(output).length;
+  }
+
+  /**
+   * Estimate cost for LLM usage (Phase 4)
+   *
+   * Based on OpenAI pricing as baseline:
+   * - small (gpt-4o-mini): $0.15/M prompt, $0.60/M completion
+   * - medium (claude-sonnet-4-5): $2.50/M prompt, $10.00/M completion
+   * - large (claude-opus-4-5): $15.00/M prompt, $60.00/M completion
+   *
+   * @param tier - Model tier
+   * @param promptTokens - Tokens in prompt
+   * @param completionTokens - Tokens in completion
+   * @returns Estimated cost in USD
+   */
+  estimateCost(tier: LLMTier, promptTokens: number, completionTokens: number): number {
+    const rates = {
+      small: { prompt: 0.15 / 1_000_000, completion: 0.60 / 1_000_000 },
+      medium: { prompt: 2.50 / 1_000_000, completion: 10.00 / 1_000_000 },
+      large: { prompt: 15.00 / 1_000_000, completion: 60.00 / 1_000_000 },
+    };
+
+    const rate = rates[tier];
+    return promptTokens * rate.prompt + completionTokens * rate.completion;
+  }
+
+  /**
+   * Track specialist run cost (Phase 4)
+   *
+   * Accumulates cost for specialist execution.
+   *
+   * @param tier - Model tier used
+   * @param promptTokens - Tokens in prompt
+   * @param completionTokens - Tokens in completion
+   * @returns Estimated cost in USD
+   */
+  trackSpecialistCost(tier: LLMTier, promptTokens: number, completionTokens: number): number {
+    const cost = this.estimateCost(tier, promptTokens, completionTokens);
+    this.totalCostUsd += cost;
+    return cost;
+  }
+
+  /**
+   * Get total accumulated cost (Phase 4)
+   *
+   * @returns Total cost in USD
+   */
+  getTotalCost(): number {
+    return this.totalCostUsd;
+  }
+
+  /**
+   * Reset cost tracking (Phase 4)
+   *
+   * Called at start of new orchestrator run.
+   */
+  resetCost(): void {
+    this.totalCostUsd = 0;
   }
 }

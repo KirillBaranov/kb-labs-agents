@@ -6,6 +6,8 @@
  */
 
 import type { ToolResult } from '@kb-labs/agent-contracts';
+import { getSchemaLoader } from '../verification/plugin-schema-loader.js';
+import type { z } from 'zod';
 
 /**
  * Schema validator interface
@@ -72,26 +74,80 @@ export class NoOpSchemaValidator implements ISchemaValidator {
 }
 
 /**
- * Zod schema validator (Phase 2 implementation)
+ * Zod schema validator
  *
- * This will validate outputs against Zod schemas from plugin manifests.
- * For now, it's a stub that will be implemented in Phase 2.
+ * Validates plugin tool outputs against Zod schemas from plugin manifests.
+ * Uses PluginSchemaLoader for dynamic schema resolution.
  */
 export class ZodSchemaValidator implements ISchemaValidator {
-  // TODO: Phase 2 - implement schema resolution from plugin manifests
-  // private schemaRegistry: Map<string, ZodSchema>;
+  /**
+   * Schema reference registry
+   *
+   * Maps tool names to schema references (e.g., "mind:rag-query" -> "@kb-labs/mind/schema#QueryResult")
+   * This would be populated from plugin manifests in production.
+   */
+  private schemaRefRegistry = new Map<string, string>();
+
+  /**
+   * Register schema reference for a tool
+   *
+   * @param toolName - Tool name (e.g., "mind:rag-query")
+   * @param schemaRef - Schema reference (e.g., "@kb-labs/mind/schema#QueryResult")
+   */
+  registerSchema(toolName: string, schemaRef: string): void {
+    this.schemaRefRegistry.set(toolName, schemaRef);
+  }
 
   async validate(toolName: string, output: unknown): Promise<ValidationResult> {
-    // TODO: Phase 2 implementation
-    // 1. Look up schema from plugin manifest
-    // 2. Resolve Zod schema reference (e.g., "./schemas/query.ts#QueryResultSchema")
-    // 3. Parse output using schema.safeParse()
-    // 4. Return validation result with errors if any
+    // 1. Look up schema reference from registry
+    const schemaRef = this.schemaRefRegistry.get(toolName);
+    if (!schemaRef) {
+      // No schema registered - pass through (opt-in validation)
+      return {
+        valid: true,
+        output,
+      };
+    }
 
-    // For now, pass everything through
+    // 2. Resolve Zod schema using PluginSchemaLoader
+    const loader = getSchemaLoader();
+    const schema = await loader.loadSchema(schemaRef);
+
+    if (!schema) {
+      // Schema not found - fail validation
+      return {
+        valid: false,
+        errors: [
+          {
+            path: '',
+            message: `Schema not found: ${schemaRef}`,
+          },
+        ],
+      };
+    }
+
+    // 3. Parse output using schema.safeParse()
+    const result = schema.safeParse(output);
+
+    if (!result.success) {
+      // 4. Return validation errors
+      const errors = result.error.errors.map((err) => ({
+        path: err.path.join('.'),
+        message: err.message,
+        expected: 'expected' in err ? String(err.expected) : undefined,
+        actual: 'received' in err ? err.received : undefined,
+      }));
+
+      return {
+        valid: false,
+        errors,
+      };
+    }
+
+    // Validation passed - return coerced output
     return {
       valid: true,
-      output,
+      output: result.data,
     };
   }
 }

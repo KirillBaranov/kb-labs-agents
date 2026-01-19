@@ -10,7 +10,7 @@
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
 import { useLLM, useCache } from '@kb-labs/sdk';
-import type { SpecialistConfigV1, ExecutionContext, SpecialistOutcome, RunMeta, FailureReport } from '@kb-labs/agent-contracts';
+import type { SpecialistConfigV1, ExecutionContext, SpecialistOutcome, RunMeta, FailureReport, LLMTier } from '@kb-labs/agent-contracts';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type {
@@ -56,6 +56,11 @@ export interface SpecialistResult {
    * Points to ToolTrace containing all tool invocations during execution.
    */
   traceRef?: string;
+  /**
+   * Tool trace object (for Level 2 validation)
+   * Contains all tool invocations with inputs/outputs for schema validation.
+   */
+  toolTrace?: import('@kb-labs/agent-contracts').ToolTrace;
 }
 
 /**
@@ -106,21 +111,27 @@ export class SpecialistExecutor {
    * Execute a specialist task (V2 with ExecutionContext)
    *
    * Phase 3: Returns SpecialistOutcome with failure classification and partial results
+   * Phase 4: Supports tier override for model escalation
    *
    * @param context - Specialist context (config, tools)
    * @param task - Task description from orchestrator
    * @param executionContext - Execution context from orchestrator
    * @param progressCallback - Optional progress callback
+   * @param tierOverride - Override LLM tier for escalation (Phase 4)
    * @returns Execution outcome (success with result OR failure with partial result)
    */
   async execute(
     context: SpecialistContext,
     task: string,
     executionContext?: ExecutionContext,
-    progressCallback?: AgentProgressCallback
+    progressCallback?: AgentProgressCallback,
+    tierOverride?: LLMTier
   ): Promise<SpecialistOutcome<SpecialistResult>> {
     const config = context.config;
     const startTime = Date.now();
+
+    // Phase 4: Use tier override if provided (for escalation)
+    const effectiveTier = tierOverride || config.llm.tier;
 
     // Initialize tool executor with tools
     this.toolExecutor = new ToolExecutor(this.ctx, { tools: context.tools });
@@ -173,15 +184,16 @@ export class SpecialistExecutor {
     this.ctx.platform.logger.info('Starting specialist execution', {
       specialistId: config.id,
       task,
-      tier: config.llm.tier,
+      tier: effectiveTier,
       maxSteps: state.maxSteps,
       forcedReasoningInterval,
     });
 
-    // V2: Build system prompt with ExecutionContext
+    // V2: Build system prompt with ExecutionContext (Phase 4: with tier)
     const systemPrompt = await this.buildSystemPromptWithContext(
       config,
       task,
+      effectiveTier,
       executionContext
     );
 
@@ -255,7 +267,7 @@ export class SpecialistExecutor {
         }
 
         // Call LLM
-        const llm = useLLM({ tier: config.llm.tier });
+        const llm = useLLM({ tier: effectiveTier });
         if (!llm || !llm.chatWithTools) {
           throw new Error('LLM not configured or does not support tool calling');
         }
@@ -453,7 +465,16 @@ export class SpecialistExecutor {
 
       // Extract output from last assistant message
       const lastMessage = state.messages.filter(m => m.role === 'assistant').pop();
-      const output = this.extractOutput(lastMessage?.content || '', config);
+      const rawOutput = this.extractOutput(lastMessage?.content || '', config);
+
+      // ADR-0002: Ensure output includes traceRef for verification
+      // If extracted output is an object, inject traceRef. Otherwise wrap in SpecialistOutput structure.
+      const output = typeof rawOutput === 'object' && rawOutput !== null
+        ? { ...rawOutput, traceRef: `trace:${trace.traceId}` }
+        : {
+            summary: typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput),
+            traceRef: `trace:${trace.traceId}`,
+          };
 
       // Log session state metrics
       const sessionTokens = sessionState.getTokenEstimate();
@@ -478,6 +499,9 @@ export class SpecialistExecutor {
       // Complete tool trace
       await this.toolTraceStore.complete(trace.traceId);
 
+      // Retrieve tool trace for verification (ADR-0002 Level 2)
+      const toolTrace = await this.toolTraceStore.load(`trace:${trace.traceId}`);
+
       // Phase 3: Return SpecialistOutcome with success
       const result: SpecialistResult = {
         success: true,
@@ -486,6 +510,7 @@ export class SpecialistExecutor {
         tokensUsed: state.tokensUsed,
         durationMs,
         traceRef: `trace:${trace.traceId}`,
+        toolTrace: toolTrace || undefined,
       };
 
       const meta: RunMeta = {
@@ -495,7 +520,7 @@ export class SpecialistExecutor {
           completion: Math.floor(state.tokensUsed * 0.6),
         },
         toolCalls: state.steps.reduce((sum, step) => sum + (step.toolCalls?.length || 0), 0),
-        modelTier: config.llm.tier,
+        modelTier: effectiveTier,
       };
 
       return {
@@ -515,6 +540,17 @@ export class SpecialistExecutor {
       // Complete tool trace even on error
       await this.toolTraceStore.complete(trace.traceId);
 
+      // Retrieve tool trace for verification (ADR-0002 Level 2)
+      let toolTrace: import('@kb-labs/agent-contracts').ToolTrace | undefined;
+      try {
+        toolTrace = await this.toolTraceStore.load(`trace:${trace.traceId}`);
+      } catch (loadError) {
+        // Trace load failed - not critical in error path
+        this.ctx.platform.logger.warn('Failed to load tool trace in error path', {
+          error: loadError instanceof Error ? loadError.message : String(loadError),
+        });
+      }
+
       // Phase 3: Classify error and build failure report
       const failure: FailureReport = {
         kind: this.classifyError(error),
@@ -532,6 +568,7 @@ export class SpecialistExecutor {
         durationMs,
         error: errorMessage,
         traceRef: `trace:${trace.traceId}`,
+        toolTrace,
       };
 
       const meta: RunMeta = {
@@ -541,7 +578,7 @@ export class SpecialistExecutor {
           completion: Math.floor(state.tokensUsed * 0.6),
         },
         toolCalls: state.steps.reduce((sum, step) => sum + (step.toolCalls?.length || 0), 0),
-        modelTier: config.llm.tier,
+        modelTier: effectiveTier,
       };
 
       // Phase 3: Return SpecialistOutcome with failure + partial result
@@ -556,10 +593,13 @@ export class SpecialistExecutor {
 
   /**
    * Build system prompt with static context
+   *
+   * Phase 4: Accepts tier parameter for context adaptation
    */
   private buildSystemPrompt(
     config: SpecialistConfigV1,
     task: string,
+    tier: LLMTier,
     inputData?: unknown
   ): string {
     let prompt = '';
@@ -611,14 +651,18 @@ export class SpecialistExecutor {
    * Loads context.md and examples.yml from specialist directory.
    * Uses cache with 1 hour TTL for static files.
    *
+   * Phase 4: Accepts tier parameter for context adaptation
+   *
    * @param config - Specialist configuration
    * @param task - Task description
+   * @param tier - Model tier for context adaptation
    * @param executionContext - Execution context from orchestrator
    * @returns System prompt with full context
    */
   private async buildSystemPromptWithContext(
     config: SpecialistConfigV1,
     task: string,
+    tier: LLMTier,
     executionContext?: ExecutionContext
   ): Promise<string> {
     let prompt = '';
@@ -631,8 +675,8 @@ export class SpecialistExecutor {
     // V2: Load context.md from specialist directory
     const contextMd = await this.loadContextMarkdown(config.id);
     if (contextMd) {
-      // V2.5: Adapt context size based on model tier
-      const adaptedContext = this.adaptContextForTier(contextMd, config.llm.tier);
+      // V2.5: Adapt context size based on model tier (Phase 4: uses tier param)
+      const adaptedContext = this.adaptContextForTier(contextMd, tier);
       prompt += `# Specialist Context\n\n${adaptedContext}\n\n`;
     }
 
@@ -739,7 +783,7 @@ export class SpecialistExecutor {
    * @param tier - Model tier
    * @returns Adapted context
    */
-  private adaptContextForTier(contextMd: string, tier: 'small' | 'medium' | 'large'): string {
+  private adaptContextForTier(contextMd: string, tier: LLMTier): string {
     const limits = {
       small: 2048,      // 2KB (~500 tokens)
       medium: 5120,     // 5KB (~1200 tokens)
@@ -779,7 +823,7 @@ export class SpecialistExecutor {
 
     // Load from filesystem
     try {
-      const contextPath = path.join(process.cwd(), '.kb/specialists', specialistId, 'context.md');
+      const contextPath = path.join(process.cwd(), '.kb/agents', specialistId, 'context.md');
       const content = await fs.readFile(contextPath, 'utf-8');
 
       // Cache for 1 hour (3600000ms)
@@ -820,7 +864,7 @@ export class SpecialistExecutor {
 
     // Load from filesystem
     try {
-      const examplesPath = path.join(process.cwd(), '.kb/specialists', specialistId, 'examples.yml');
+      const examplesPath = path.join(process.cwd(), '.kb/agents', specialistId, 'examples.yml');
       const content = await fs.readFile(examplesPath, 'utf-8');
 
       // Simple YAML parsing (examples is an array)
