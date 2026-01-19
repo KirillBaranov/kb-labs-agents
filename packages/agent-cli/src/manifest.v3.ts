@@ -136,7 +136,7 @@ export const manifest = defineManifest({
         id: 'orchestrator:list',
         group: 'orchestrator',
         describe: 'List all available specialists',
-        longDescription: 'Displays all specialists discovered in .kb/specialists/ directory with their capabilities, status, and configuration details.',
+        longDescription: 'Displays all specialists discovered in .kb/agents/ directory with their capabilities, status, and configuration details.',
         flags: defineCommandFlags({
           json: {
             type: 'boolean',
