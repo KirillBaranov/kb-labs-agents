@@ -15,6 +15,18 @@
       "@kb-labs/agent-core/*": [
         "packages/agent-core/src/*"
       ],
+      "@kb-labs/agent-tools": [
+        "packages/agent-tools/src/index.ts"
+      ],
+      "@kb-labs/agent-tools/*": [
+        "packages/agent-tools/src/*"
+      ],
+      "@kb-labs/core-platform": [
+        "../kb-labs-core/packages/core-platform/src/index.ts"
+      ],
+      "@kb-labs/core-platform/*": [
+        "../kb-labs-core/packages/core-platform/src/*"
+      ],
       "@kb-labs/iterative-orchestrator": [
         "packages/iterative-orchestrator/src/index.ts"
       ],

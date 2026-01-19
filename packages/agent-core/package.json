@@ -45,6 +45,7 @@
   "dependencies": {
     "@kb-labs/sdk": "link:../../../kb-labs-sdk/packages/sdk",
     "@kb-labs/agent-contracts": "workspace:*",
+    "@kb-labs/agent-tools": "workspace:*",
     "zod": "^3.23.8",
     "yaml": "^2.3.4",
     "glob": "^11.0.0"
