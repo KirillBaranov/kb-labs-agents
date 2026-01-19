@@ -86,10 +86,10 @@ export interface SpecialistContextConfig {
  */
 export interface SpecialistInputSchema {
   /**
-   * Schema definition (simplified TypeScript-like syntax)
-   * @example { task: "string", context?: "string" }
+   * Schema definition (JSON Schema format)
+   * Can be any valid JSON Schema structure
    */
-  schema: Record<string, string>;
+  schema?: unknown;
 }
 
 /**
@@ -99,10 +99,10 @@ export interface SpecialistInputSchema {
  */
 export interface SpecialistOutputSchema {
   /**
-   * Schema definition (simplified TypeScript-like syntax)
-   * @example { files: "string[]", summary: "string" }
+   * Schema definition (JSON Schema format)
+   * Can be any valid JSON Schema structure
    */
-  schema: Record<string, string>;
+  schema?: unknown;
 }
 
 /**

@@ -52,14 +52,14 @@ export const SpecialistContextConfigSchema = z.object({
  * Input schema
  */
 export const SpecialistInputSchemaSchema = z.object({
-  schema: z.record(z.string()),
+  schema: z.unknown(), // JSON Schema - can be any valid JSON structure
 });
 
 /**
  * Output schema
  */
 export const SpecialistOutputSchemaSchema = z.object({
-  schema: z.record(z.string()),
+  schema: z.unknown(), // JSON Schema - can be any valid JSON structure
 });
 
 /**

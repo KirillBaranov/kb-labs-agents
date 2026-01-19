@@ -94,6 +94,12 @@ export type {
   AgentProgressCallback,
 } from './agent-execution.js';
 
+// Execution Context (V2)
+export type { ExecutionContext } from './context.js';
+
+// Specialist Outcome (V2 - Phase 3)
+export type { RunMeta, FailureReport, SpecialistOutcome } from './outcome.js';
+
 // Zod Schemas and Validators
 export {
   AgentSchemaSchema,
