@@ -5,3 +5,4 @@ export * from './registry/index.js';
 export * from './planning/index.js';
 export * from './analytics/index.js';
 export * from './trace/index.js';
+export * from './verification/index.js';
