@@ -13,6 +13,7 @@ export default defineConfig({
     'src/cli/commands/list.ts',
     'src/cli/commands/run.ts',
     'src/cli/commands/specialist-run.ts', // Specialist command (V2)
+    'src/cli/commands/orchestrator-list.ts', // Orchestrator list command (V2)
     'src/cli/commands/orchestrator-run.ts', // Orchestrator command (V2)
     'src/cli/commands/hello.ts',  // V3 hello command
     'src/cli/commands/test-loader.ts',

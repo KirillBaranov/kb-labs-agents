@@ -27,7 +27,7 @@ const pluginPermissions: PermissionSpec = {
     cache: true,
   },
   quotas: {
-    timeoutMs: 300000, // 5 minutes for agent execution
+    timeoutMs: 3600000, // 1 hour for agent execution (will be background jobs later)
     memoryMb: 512,
   },
 };
@@ -75,7 +75,7 @@ const runPermissions: PermissionSpec = {
     allow: ['*'], // Agents can invoke any plugin
   },
   quotas: {
-    timeoutMs: 300000, // 5 minutes
+    timeoutMs: 3600000, // 1 hour for testing (background jobs in future)
     memoryMb: 512,
   },
 };
@@ -130,6 +130,33 @@ export const manifest = defineManifest({
         ]),
         handler: './cli/commands/list.js#default',
         handlerPath: './cli/commands/list.js',
+        permissions: listPermissions,
+      },
+      {
+        id: 'orchestrator:list',
+        group: 'orchestrator',
+        describe: 'List all available specialists',
+        longDescription: 'Displays all specialists discovered in .kb/specialists/ directory with their capabilities, status, and configuration details.',
+        flags: defineCommandFlags({
+          json: {
+            type: 'boolean',
+            description: 'Output as JSON',
+            default: false,
+          },
+          verbose: {
+            type: 'boolean',
+            description: 'Show detailed information (paths, config)',
+            default: false,
+            alias: 'v',
+          },
+        }),
+        examples: generateExamples('list', 'orchestrator', [
+          { description: 'List all specialists', flags: {} },
+          { description: 'Show detailed info', flags: { verbose: true } },
+          { description: 'Output as JSON', flags: { json: true } },
+        ]),
+        handler: './cli/commands/orchestrator-list.js#default',
+        handlerPath: './cli/commands/orchestrator-list.js',
         permissions: listPermissions,
       },
       {
@@ -195,7 +222,7 @@ export const manifest = defineManifest({
         output: {
           zod: '@kb-labs/agent-contracts#AgentResponseSchema',
         },
-        timeoutMs: 300000, // 5 minutes for agent execution
+        timeoutMs: 3600000, // 1 hour for agent execution (will be background jobs later)
       },
     ],
   },
