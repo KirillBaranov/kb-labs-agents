@@ -23,6 +23,12 @@ import { ExecutionMemory } from './execution-memory.js';
 import { ContextCompressor, type Message } from './context-compressor.js';
 import { SessionStateManager } from './session-state-manager.js';
 import { sanitizeToolName, createToolNameMapping, restoreToolName } from './tool-name-sanitizer.js';
+import {
+  createToolTraceStore,
+  createToolTraceRecorder,
+  createSchemaValidator,
+  type IToolTraceStore,
+} from '../trace/index.js';
 
 /**
  * Specialist execution context
@@ -42,6 +48,12 @@ export interface SpecialistResult {
   tokensUsed: number;
   durationMs: number;
   error?: string;
+  /**
+   * Tool trace reference (for verification)
+   * Format: "trace:<traceId>"
+   * Points to ToolTrace containing all tool invocations during execution.
+   */
+  traceRef?: string;
 }
 
 /**
@@ -77,12 +89,15 @@ export class SpecialistExecutor {
   private toolExecutor: ToolExecutor;
   private contextCompressor: ContextCompressor;
   private executionMemory: ExecutionMemory;
+  private toolTraceStore: IToolTraceStore;
 
   constructor(private ctx: PluginContextV3) {
     this.loopDetector = new LoopDetector();
     this.toolExecutor = new ToolExecutor(ctx);
     this.contextCompressor = new ContextCompressor(ctx);
     this.executionMemory = new ExecutionMemory();
+    // Initialize tool trace store (in-memory for Phase 1)
+    this.toolTraceStore = createToolTraceStore();
   }
 
   /**
@@ -110,6 +125,21 @@ export class SpecialistExecutor {
     // Initialize session state manager
     const sessionId = `${config.id}:${Date.now()}`;
     const sessionState = new SessionStateManager(this.ctx, sessionId);
+
+    // Create tool trace for this specialist execution
+    const trace = await this.toolTraceStore.create(sessionId, config.id);
+
+    // Setup trace recorder and schema validator
+    const traceRecorder = createToolTraceRecorder({
+      traceId: trace.traceId,
+      store: this.toolTraceStore,
+      purpose: 'execution',
+    });
+    const schemaValidator = createSchemaValidator();
+
+    // Inject recorder and validator into tool executor
+    this.toolExecutor.setTraceRecorder(traceRecorder);
+    this.toolExecutor.setSchemaValidator(schemaValidator);
 
     // Get forced reasoning interval from config (default: 3)
     const forcedReasoningInterval = config.limits.forcedReasoningInterval ?? 3;
@@ -177,8 +207,15 @@ export class SpecialistExecutor {
           });
         }
 
-        // Check if we should compress context
-        if (state.messages.length > 5) {
+        // Check if we should compress context (by message count OR estimated tokens)
+        const estimatedTokens = state.messages.reduce((sum, m) => {
+          // Safety: handle undefined/null content (shouldn't happen but defensive)
+          const contentLength = m.content?.length ?? 0;
+          return sum + Math.ceil(contentLength / 4);
+        }, 0);
+        const TOKEN_COMPRESSION_THRESHOLD = 8000; // Compress if context exceeds ~8k tokens
+
+        if (state.messages.length > 5 || estimatedTokens > TOKEN_COMPRESSION_THRESHOLD) {
           const compressed = await this.contextCompressor.compress(
             state.messages,
             task,
@@ -188,9 +225,12 @@ export class SpecialistExecutor {
           state.tokensUsed += compressed.compressedTokens;
 
           this.ctx.platform.logger.info('Context compressed', {
+            reason: state.messages.length > 5 ? 'message count' : 'token count',
+            originalMessages: state.messages.length,
             originalTokens: compressed.originalTokens,
             compressedTokens: compressed.compressedTokens,
             compressionRatio: compressed.compressionRatio,
+            tokensSaved: compressed.originalTokens - compressed.compressedTokens,
           });
         }
 
@@ -222,11 +262,14 @@ export class SpecialistExecutor {
         const tokensUsed = llmResponse.usage.promptTokens + llmResponse.usage.completionTokens;
         state.tokensUsed += tokensUsed;
 
-        // Add assistant message to history
-        state.messages.push({
-          role: 'assistant',
-          content: llmResponse.content || '',
-        });
+        // Add assistant message to history (only if has content - empty content breaks some APIs)
+        const assistantContent = llmResponse.content || '';
+        if (assistantContent.trim()) {
+          state.messages.push({
+            role: 'assistant',
+            content: assistantContent,
+          });
+        }
 
         // Create step record
         const step: AgentExecutionStep = {
@@ -313,10 +356,20 @@ export class SpecialistExecutor {
             error: result.error ? (typeof result.error === 'string' ? result.error : result.error.message) : undefined,
           });
 
-          // Add tool result to messages
+          // Add tool result to messages (with aggressive truncation to prevent context explosion)
+          const rawOutput = JSON.stringify(result.output ?? null, null, 2) ?? ''; // Safety: handle undefined output
+          const MAX_TOOL_RESULT_LENGTH = 800; // Aggressive limit - prevents 77k token explosions
+
+          let truncatedOutput = rawOutput;
+          if (rawOutput && rawOutput.length > MAX_TOOL_RESULT_LENGTH) {
+            truncatedOutput = rawOutput.slice(0, MAX_TOOL_RESULT_LENGTH) +
+              `\n\n...[truncated ${rawOutput.length - MAX_TOOL_RESULT_LENGTH} chars to save ~${Math.floor((rawOutput.length - MAX_TOOL_RESULT_LENGTH) / 4)} tokens]\n\n` +
+              `💡 Full result stored in session artifacts. Use findings and context from previous messages.`;
+          }
+
           state.messages.push({
             role: 'user',
-            content: `Tool result (${toolCall.name}):\n${JSON.stringify(result.output, null, 2)}`,
+            content: `Tool result (${toolCall.name}):\n${truncatedOutput}`,
           });
 
           // Extract findings for memory (legacy)
@@ -343,7 +396,7 @@ export class SpecialistExecutor {
             });
 
             // Store large outputs as artifacts
-            const outputSize = JSON.stringify(result.output).length;
+            const outputSize = (JSON.stringify(result.output ?? null) ?? '').length;
             if (outputSize > 500) {
               // Store as artifact if large
               await sessionState.storeArtifact({
@@ -414,12 +467,16 @@ export class SpecialistExecutor {
       // Cleanup session state (optional - can keep for debugging)
       // await sessionState.clear();
 
+      // Complete tool trace
+      await this.toolTraceStore.complete(trace.traceId);
+
       return {
         success: true,
         output,
         steps: state.steps,
         tokensUsed: state.tokensUsed,
         durationMs,
+        traceRef: `trace:${trace.traceId}`,
       };
     } catch (error) {
       const durationMs = Date.now() - startTime;
@@ -429,6 +486,9 @@ export class SpecialistExecutor {
         `[${config.id}] ${errorMessage} (steps: ${state.currentStep}, duration: ${durationMs}ms)`
       ));
 
+      // Complete tool trace even on error
+      await this.toolTraceStore.complete(trace.traceId);
+
       return {
         success: false,
         output: null,
@@ -436,6 +496,7 @@ export class SpecialistExecutor {
         tokensUsed: state.tokensUsed,
         durationMs,
         error: errorMessage,
+        traceRef: `trace:${trace.traceId}`,
       };
     }
   }

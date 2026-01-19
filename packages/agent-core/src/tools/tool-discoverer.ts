@@ -5,7 +5,7 @@
  */
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
-import type { ToolDefinition } from '@kb-labs/agent-contracts';
+import type { ToolDefinition, ToolStrategyConfig } from '@kb-labs/agent-contracts';
 import { glob } from 'glob';
 import { join, dirname } from 'path';
 import { readFileSync, existsSync } from 'fs';
@@ -92,19 +92,86 @@ export class ToolDiscoverer {
   }
 
   /**
+   * Discover tools using new ToolStrategyConfig format
+   *
+   * @param config - Tool strategy configuration
+   * @returns Array of ToolDefinitions
+   */
+  async discoverWithStrategy(config: ToolStrategyConfig): Promise<ToolDefinition[]> {
+    const tools: ToolDefinition[] = [];
+
+    // Add built-in tools based on builtIn config
+    const builtIn = config.builtIn ?? { fs: true, shell: true, code: true };
+
+    if (builtIn.fs !== false) {
+      const fsTools = this.getFilesystemTools();
+      // Apply fs permissions filtering if specified
+      if (config.permissions?.fs) {
+        // For now, include all fs tools - permissions are checked at execution time
+        tools.push(...fsTools);
+      } else {
+        tools.push(...fsTools);
+      }
+    }
+
+    if (builtIn.shell !== false) {
+      const shellTools = this.getShellTools();
+      tools.push(...shellTools);
+    }
+
+    if (builtIn.code !== false) {
+      const codeTools = this.getCodeTools();
+      tools.push(...codeTools);
+    }
+
+    // Add KB Labs plugin tools based on permissions
+    if (config.permissions?.kbLabs) {
+      const kbLabsTools = await this.discoverKBLabsTools({
+        mode: config.permissions.kbLabs.allow ? 'allowlist' : 'denylist',
+        allow: config.permissions.kbLabs.allow,
+        deny: config.permissions.kbLabs.deny,
+      });
+      tools.push(...kbLabsTools);
+    } else {
+      // Default: discover all KB Labs tools
+      const kbLabsTools = await this.discoverKBLabsTools({
+        mode: 'denylist',
+        deny: [],
+      });
+      tools.push(...kbLabsTools);
+    }
+
+    this.ctx.platform.logger.debug('Discovered tools with strategy', {
+      strategy: config.strategy,
+      count: tools.length,
+      tools: tools.map((t) => t.name),
+    });
+
+    return tools;
+  }
+
+  /**
    * Get built-in filesystem tools
    */
   private getFilesystemTools(): ToolDefinition[] {
     return [
       {
         name: 'fs:read',
-        description: 'Read contents of a file',
+        description: 'Read contents of a file. Large files are automatically truncated. Use startLine/maxLines to read specific sections.',
         inputSchema: {
           type: 'object',
           properties: {
             path: {
               type: 'string',
               description: 'Path to file to read',
+            },
+            startLine: {
+              type: 'number',
+              description: 'Start reading from this line (1-indexed, default: 1)',
+            },
+            maxLines: {
+              type: 'number',
+              description: 'Maximum number of lines to read (default: 2000, max file size: 1MB)',
             },
           },
           required: ['path'],
@@ -194,6 +261,43 @@ export class ToolDiscoverer {
           required: ['pattern', 'text'],
         },
       },
+      {
+        name: 'fs:glob',
+        description: 'Find files matching a glob pattern. Returns file paths only, not contents.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pattern: {
+              type: 'string',
+              description: 'Glob pattern to match (e.g., "**/*.ts", "src/**/index.ts")',
+            },
+            ignore: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Glob patterns to ignore (e.g., ["**/node_modules/**", "**/dist/**"])',
+            },
+            maxResults: {
+              type: 'number',
+              description: 'Maximum number of results to return (default: 100)',
+            },
+          },
+          required: ['pattern'],
+        },
+      },
+      {
+        name: 'fs:exists',
+        description: 'Check if a file or directory exists',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Path to check',
+            },
+          },
+          required: ['path'],
+        },
+      },
     ];
   }
 
@@ -214,6 +318,80 @@ export class ToolDiscoverer {
             },
           },
           required: ['command'],
+        },
+      },
+    ];
+  }
+
+  /**
+   * Get built-in code analysis tools
+   *
+   * These tools provide AST-based code analysis capabilities.
+   * Implementation uses tree-sitter for parsing.
+   */
+  private getCodeTools(): ToolDefinition[] {
+    return [
+      {
+        name: 'code:find-definition',
+        description: 'Find the definition of a symbol (class, function, variable, type) in the codebase',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            symbol: {
+              type: 'string',
+              description: 'Symbol name to find (e.g., "ToolDiscoverer", "useAnalytics")',
+            },
+            type: {
+              type: 'string',
+              enum: ['class', 'function', 'variable', 'type', 'interface', 'any'],
+              description: 'Type of symbol to find (default: any)',
+            },
+            scope: {
+              type: 'string',
+              description: 'Glob pattern to limit search scope (e.g., "src/**/*.ts")',
+            },
+          },
+          required: ['symbol'],
+        },
+      },
+      {
+        name: 'code:find-usages',
+        description: 'Find all usages/references of a symbol in the codebase',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            symbol: {
+              type: 'string',
+              description: 'Symbol name to find usages of',
+            },
+            scope: {
+              type: 'string',
+              description: 'Glob pattern to limit search scope (e.g., "src/**/*.ts")',
+            },
+            includeDefinition: {
+              type: 'boolean',
+              description: 'Include the definition in results (default: false)',
+            },
+          },
+          required: ['symbol'],
+        },
+      },
+      {
+        name: 'code:outline',
+        description: 'Get the structural outline of a file (classes, functions, exports)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Path to file to outline',
+            },
+            depth: {
+              type: 'number',
+              description: 'Maximum depth of outline (default: 2)',
+            },
+          },
+          required: ['path'],
         },
       },
     ];
@@ -434,8 +612,21 @@ export class ToolDiscoverer {
 
   /**
    * Match tool name against pattern (supports wildcards)
+   *
+   * @param toolName - The name of the tool to check
+   * @param pattern - The pattern to match against (supports wildcards with *)
+   * @returns true if the tool name matches the pattern, false otherwise
+   * @throws {Error} If toolName or pattern is an empty string
    */
   private matchesPattern(toolName: string, pattern: string): boolean {
+    // Input validation
+    if (toolName === '') {
+      throw new Error('matchesPattern: toolName cannot be an empty string');
+    }
+    if (pattern === '') {
+      throw new Error('matchesPattern: pattern cannot be an empty string');
+    }
+
     // Convert glob pattern to regex
     // Example: "devkit:*" -> /^devkit:.*$/
     const regexPattern = pattern

@@ -13,4 +13,13 @@ export default defineConfig({
   sourcemap: true,
   splitting: false,
   treeshake: true,
+  // Mark tree-sitter as external (optional dependency)
+  external: [
+    'tree-sitter',
+    'tree-sitter-typescript',
+    'tree-sitter-javascript',
+    'tree-sitter-python',
+    'tree-sitter-go',
+    'tree-sitter-rust',
+  ],
 });

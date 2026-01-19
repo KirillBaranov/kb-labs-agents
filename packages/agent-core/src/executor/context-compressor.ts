@@ -187,7 +187,11 @@ SUMMARY:`;
    * Uses simple heuristic: ~4 characters per token
    */
   private estimateTokens(messages: Message[]): number {
-    const totalChars = messages.reduce((sum, msg) => sum + msg.content.length, 0);
+    const totalChars = messages.reduce((sum, msg) => {
+      // Safety: handle undefined/null content
+      const contentLength = msg.content?.length ?? 0;
+      return sum + contentLength;
+    }, 0);
     return Math.ceil(totalChars / 4);
   }
 

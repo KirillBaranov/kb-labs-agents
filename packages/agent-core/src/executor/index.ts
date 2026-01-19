@@ -29,8 +29,16 @@ export type {
 
 // Orchestrator Executor exports (V2)
 export { OrchestratorExecutor } from './orchestrator-executor.js';
+
+// Phase 2: Adaptive Feedback Loop exports
+export { FindingsStore } from './findings-store.js';
 export type {
   SubTask,
   DelegatedResult,
   OrchestratorResult,
-} from './orchestrator-executor.js';
+  SpecialistFinding,
+  FindingsSummary,
+  AdaptationDecision,
+  StoredFindings,
+  FindingsRegistry,
+} from './types.js';

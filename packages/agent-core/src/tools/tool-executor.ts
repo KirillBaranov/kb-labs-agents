@@ -8,6 +8,10 @@ import type { PluginContextV3 } from '@kb-labs/sdk';
 import type { ToolCall, ToolResult } from '@kb-labs/agent-contracts';
 import { spawn } from 'child_process';
 import { join } from 'path';
+import { getParser, detectLanguage } from './parsers';
+import type { ToolTraceRecorder } from '../trace/tool-trace-recorder.js';
+import type { ISchemaValidator } from '../trace/schema-validator.js';
+import { validateToolResult } from '../trace/schema-validator.js';
 
 /**
  * Tool Executor
@@ -20,6 +24,8 @@ import { join } from 'path';
 export class ToolExecutor {
   private agentId?: string;
   private sessionId: string;
+  private traceRecorder?: ToolTraceRecorder;
+  private schemaValidator?: ISchemaValidator;
 
   constructor(
     private ctx: PluginContextV3,
@@ -38,6 +44,22 @@ export class ToolExecutor {
   }
 
   /**
+   * Set trace recorder for recording tool invocations
+   * Called by AgentExecutor when trace is enabled
+   */
+  setTraceRecorder(recorder: ToolTraceRecorder): void {
+    this.traceRecorder = recorder;
+  }
+
+  /**
+   * Set schema validator for validating plugin tool outputs
+   * Called by AgentExecutor when validation is enabled
+   */
+  setSchemaValidator(validator: ISchemaValidator): void {
+    this.schemaValidator = validator;
+  }
+
+  /**
    * Execute a tool call
    *
    * @param toolCall - Tool call from LLM
@@ -45,6 +67,12 @@ export class ToolExecutor {
    */
   async execute(toolCall: ToolCall): Promise<ToolResult> {
     const startTime = Date.now();
+
+    // Record invocation start (if trace enabled)
+    let invocationId: string | undefined;
+    if (this.traceRecorder) {
+      invocationId = await this.traceRecorder.recordStart(toolCall);
+    }
 
     try {
       this.ctx.platform.logger.debug('Executing tool', {
@@ -70,11 +98,18 @@ export class ToolExecutor {
             durationMs,
           });
 
-          // Return cached result with fromCache flag
-          return {
+          const result = {
             ...cached,
             metadata: { ...cached.metadata, durationMs, fromCache: true },
           };
+
+          // Record invocation result (if trace enabled)
+          if (this.traceRecorder && invocationId) {
+            await this.traceRecorder.recordResult(invocationId, toolCall, result, durationMs);
+          }
+
+          // Return cached result with fromCache flag
+          return result;
         }
       }
 
@@ -86,6 +121,8 @@ export class ToolExecutor {
         output = await this.executeFilesystemTool(toolCall);
       } else if (toolCall.name.startsWith('shell:')) {
         output = await this.executeShellTool(toolCall);
+      } else if (toolCall.name.startsWith('code:')) {
+        output = await this.executeCodeTool(toolCall);
       } else {
         // Assume it's a KB Labs plugin command
         output = await this.executePluginCommand(toolCall);
@@ -98,11 +135,16 @@ export class ToolExecutor {
         durationMs,
       });
 
-      const result: ToolResult = {
+      let result: ToolResult = {
         success: true,
         output,
         metadata: { durationMs, fromCache: false },
       };
+
+      // Validate output against schema (if validator enabled)
+      if (this.schemaValidator) {
+        result = await validateToolResult(this.schemaValidator, toolCall.name, result);
+      }
 
       // Cache successful results for 1 minute (60000ms)
       if (result.success && this.ctx.platform.cache) {
@@ -112,6 +154,11 @@ export class ToolExecutor {
           cacheKey: cacheKey.substring(0, 60) + '...',
           ttl: '60s',
         });
+      }
+
+      // Record invocation result (if trace enabled)
+      if (this.traceRecorder && invocationId) {
+        await this.traceRecorder.recordResult(invocationId, toolCall, result, durationMs);
       }
 
       return result;
@@ -125,7 +172,7 @@ export class ToolExecutor {
         durationMs,
       });
 
-      return {
+      const result: ToolResult = {
         success: false,
         error: {
           code: 'EXECUTION_ERROR',
@@ -133,6 +180,13 @@ export class ToolExecutor {
         },
         metadata: { durationMs, fromCache: false },
       };
+
+      // Record invocation result (if trace enabled)
+      if (this.traceRecorder && invocationId) {
+        await this.traceRecorder.recordResult(invocationId, toolCall, result, durationMs);
+      }
+
+      return result;
     }
   }
 
@@ -146,13 +200,62 @@ export class ToolExecutor {
     switch (toolCall.name) {
       case 'fs:read': {
         const path = input.path as string;
+        const maxLines = (input.maxLines as number) || 2000;
+        const startLine = (input.startLine as number) || 1;
+
         if (!path) {
           throw new Error('Missing required parameter: path');
         }
 
         try {
+          // Check file size first to prevent reading huge files
+          const stat = await fs.stat(path);
+          const MAX_FILE_SIZE = 1024 * 1024; // 1MB limit
+
+          if (stat.size > MAX_FILE_SIZE) {
+            return [
+              `⚠️ File too large: ${path}`,
+              `Size: ${(stat.size / 1024).toFixed(1)} KB (limit: ${MAX_FILE_SIZE / 1024} KB)`,
+              ``,
+              `Use startLine and maxLines parameters to read specific sections:`,
+              `  fs:read with path="${path}", startLine=1, maxLines=500`,
+              ``,
+              `Or use fs:search to find specific content in the file.`,
+            ].join('\n');
+          }
+
           const content = await fs.readFile(path, 'utf-8');
-          return content;
+          const lines = content.split('\n');
+
+          // Apply line limits
+          const endLine = Math.min(startLine + maxLines - 1, lines.length);
+          const selectedLines = lines.slice(startLine - 1, endLine);
+
+          // Build output with line numbers
+          const output: string[] = [];
+
+          // Add header if truncated
+          if (startLine > 1 || endLine < lines.length) {
+            output.push(`📄 ${path} (lines ${startLine}-${endLine} of ${lines.length})`);
+            output.push('');
+          }
+
+          // Add content with line numbers
+          for (let i = 0; i < selectedLines.length; i++) {
+            const lineNum = startLine + i;
+            const line = selectedLines[i] || '';
+            // Truncate very long lines
+            const truncatedLine = line.length > 500 ? line.substring(0, 500) + '...[truncated]' : line;
+            output.push(`${lineNum.toString().padStart(5)}│ ${truncatedLine}`);
+          }
+
+          // Add footer if more content available
+          if (endLine < lines.length) {
+            output.push('');
+            output.push(`... ${lines.length - endLine} more lines. Use startLine=${endLine + 1} to continue.`);
+          }
+
+          return output.join('\n');
         } catch (error: any) {
           // Enhanced error handling for ENOENT (file not found)
           if (error.code === 'ENOENT') {
@@ -208,6 +311,53 @@ export class ToolExecutor {
         }
 
         return entries.join('\n');
+      }
+
+      case 'fs:glob': {
+        const pattern = input.pattern as string;
+        const ignore = input.ignore as string[] | undefined;
+        const maxResults = (input.maxResults as number) || 100;
+
+        if (!pattern) {
+          throw new Error('Missing required parameter: pattern');
+        }
+
+        const { glob } = await import('glob');
+        const files = await glob(pattern, {
+          cwd: this.ctx.cwd,
+          ignore: ignore || [],
+          nodir: true,
+        });
+
+        // Limit results
+        const limited = files.slice(0, maxResults);
+        const hasMore = files.length > maxResults;
+
+        if (limited.length === 0) {
+          return `No files found matching pattern: ${pattern}`;
+        }
+
+        let result = limited.join('\n');
+        if (hasMore) {
+          result += `\n\n... and ${files.length - maxResults} more files (use maxResults to increase limit)`;
+        }
+
+        return result;
+      }
+
+      case 'fs:exists': {
+        const path = input.path as string;
+        if (!path) {
+          throw new Error('Missing required parameter: path');
+        }
+
+        try {
+          const stat = await fs.stat(path);
+          const type = stat.isDirectory() ? 'directory' : 'file';
+          return `EXISTS: ${path} (${type})`;
+        } catch {
+          return `NOT_EXISTS: ${path}`;
+        }
       }
 
       case 'fs:search': {
@@ -384,6 +534,247 @@ export class ToolExecutor {
 
       default:
         throw new Error(`Unknown shell tool: ${toolCall.name}`);
+    }
+  }
+
+  /**
+   * Execute code analysis tool (code:*)
+   *
+   * Provides AST-based code analysis using tree-sitter.
+   * Falls back to regex patterns if tree-sitter is not available.
+   */
+  private async executeCodeTool(toolCall: ToolCall): Promise<string> {
+    const fs = this.ctx.runtime.fs;
+    const input = toolCall.input as Record<string, any>;
+
+    switch (toolCall.name) {
+      case 'code:find-definition': {
+        const symbol = input.symbol as string;
+        const symbolType = (input.type as string) || 'any';
+        const scope = (input.scope as string) || '**/*.ts';
+
+        if (!symbol) {
+          throw new Error('Missing required parameter: symbol');
+        }
+
+        const { glob } = await import('glob');
+        const files = await glob(scope, {
+          cwd: this.ctx.cwd,
+          ignore: ['**/node_modules/**', '**/dist/**', '**/.git/**'],
+          nodir: true,
+        });
+
+        const definitions: Array<{
+          file: string;
+          line: number;
+          type: string;
+          content: string;
+          exported: boolean;
+        }> = [];
+
+        // Search files for definitions using tree-sitter
+        for (const file of files.slice(0, 500)) {
+          try {
+            const filePath = join(this.ctx.cwd, file);
+            const content = await fs.readFile(filePath, 'utf-8');
+            const language = detectLanguage(file);
+            const parser = getParser(language);
+
+            // Try to load parser (async, first time)
+            await parser.loadParser();
+
+            // Find definitions
+            const defs = parser.findDefinitions(content, symbol);
+
+            for (const def of defs) {
+              // Filter by type if specified
+              if (symbolType !== 'any' && def.type !== symbolType) {
+                continue;
+              }
+
+              // Get context (lines around definition)
+              const lines = content.split('\n');
+              const startIdx = Math.max(0, def.startLine - 1);
+              const endIdx = Math.min(lines.length, def.startLine + 5);
+              const contextLines = lines.slice(startIdx, endIdx).join('\n');
+
+              definitions.push({
+                file,
+                line: def.startLine,
+                type: def.type,
+                content: contextLines,
+                exported: def.exported,
+              });
+            }
+          } catch {
+            continue;
+          }
+        }
+
+        if (definitions.length === 0) {
+          return `No definition found for symbol: ${symbol} (type: ${symbolType})`;
+        }
+
+        // Format output
+        const output: string[] = [`Found ${definitions.length} definition(s) for "${symbol}":\n`];
+        for (const def of definitions.slice(0, 10)) {
+          const exportMarker = def.exported ? ' [exported]' : '';
+          output.push(`FILE: ${def.file}:${def.line} (${def.type})${exportMarker}`);
+          output.push('```');
+          output.push(def.content);
+          output.push('```\n');
+        }
+
+        if (definitions.length > 10) {
+          output.push(`... and ${definitions.length - 10} more definitions`);
+        }
+
+        return output.join('\n');
+      }
+
+      case 'code:find-usages': {
+        const symbol = input.symbol as string;
+        const scope = (input.scope as string) || '**/*.ts';
+        const includeDefinition = input.includeDefinition as boolean || false;
+
+        if (!symbol) {
+          throw new Error('Missing required parameter: symbol');
+        }
+
+        const { glob } = await import('glob');
+        const files = await glob(scope, {
+          cwd: this.ctx.cwd,
+          ignore: ['**/node_modules/**', '**/dist/**', '**/.git/**'],
+          nodir: true,
+        });
+
+        const usages: Array<{
+          file: string;
+          line: number;
+          column: number;
+          content: string;
+          isDefinition: boolean;
+        }> = [];
+
+        // Search files for usages using tree-sitter
+        for (const file of files.slice(0, 500)) {
+          try {
+            const filePath = join(this.ctx.cwd, file);
+            const content = await fs.readFile(filePath, 'utf-8');
+            const language = detectLanguage(file);
+            const parser = getParser(language);
+
+            await parser.loadParser();
+
+            const fileUsages = parser.findUsages(content, symbol);
+
+            for (const usage of fileUsages) {
+              if (usage.isDefinition && !includeDefinition) {
+                continue;
+              }
+
+              usages.push({
+                file,
+                line: usage.line,
+                column: usage.column,
+                content: usage.context,
+                isDefinition: usage.isDefinition,
+              });
+            }
+          } catch {
+            continue;
+          }
+        }
+
+        if (usages.length === 0) {
+          return `No usages found for symbol: ${symbol}`;
+        }
+
+        // Group by file
+        const byFile = new Map<string, typeof usages>();
+        for (const usage of usages) {
+          if (!byFile.has(usage.file)) {
+            byFile.set(usage.file, []);
+          }
+          byFile.get(usage.file)!.push(usage);
+        }
+
+        // Format output
+        const output: string[] = [`Found ${usages.length} usage(s) of "${symbol}" in ${byFile.size} file(s):\n`];
+
+        for (const [file, fileUsages] of Array.from(byFile.entries()).slice(0, 15)) {
+          output.push(`FILE: ${file}`);
+          for (const usage of fileUsages.slice(0, 5)) {
+            const marker = usage.isDefinition ? ' [DEF]' : '';
+            output.push(`  ${usage.line}:${usage.column}: ${usage.content}${marker}`);
+          }
+          if (fileUsages.length > 5) {
+            output.push(`  ... and ${fileUsages.length - 5} more in this file`);
+          }
+          output.push('');
+        }
+
+        if (byFile.size > 15) {
+          output.push(`... and ${byFile.size - 15} more files`);
+        }
+
+        return output.join('\n');
+      }
+
+      case 'code:outline': {
+        const path = input.path as string;
+        const depth = (input.depth as number) || 2;
+
+        if (!path) {
+          throw new Error('Missing required parameter: path');
+        }
+
+        const filePath = join(this.ctx.cwd, path);
+        const content = await fs.readFile(filePath, 'utf-8');
+        const language = detectLanguage(path);
+        const parser = getParser(language);
+
+        await parser.loadParser();
+
+        const outline = parser.getOutline(content, depth);
+
+        if (outline.length === 0) {
+          return `No outline items found in: ${path}`;
+        }
+
+        // Format output
+        const output: string[] = [`Outline of ${path}:\n`];
+
+        // Group by type for summary
+        const byType = new Map<string, number>();
+        for (const item of outline) {
+          byType.set(item.type, (byType.get(item.type) || 0) + 1);
+        }
+
+        output.push('Summary:');
+        for (const [type, count] of byType) {
+          output.push(`  ${type}: ${count}`);
+        }
+        output.push('');
+
+        output.push('Items:');
+        for (const item of outline) {
+          const indent = '  '.repeat(item.depth);
+          output.push(`${indent}${item.line}: [${item.type}] ${item.name}`);
+
+          // Show children if any
+          if (item.children && depth > 1) {
+            for (const child of item.children) {
+              output.push(`  ${child.line}: [${child.type}] ${child.name}`);
+            }
+          }
+        }
+
+        return output.join('\n');
+      }
+
+      default:
+        throw new Error(`Unknown code tool: ${toolCall.name}`);
     }
   }
 
