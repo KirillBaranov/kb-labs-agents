@@ -9,8 +9,10 @@
  */
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
-import { useLLM } from '@kb-labs/sdk';
-import type { SpecialistConfigV1 } from '@kb-labs/agent-contracts';
+import { useLLM, useCache } from '@kb-labs/sdk';
+import type { SpecialistConfigV1, ExecutionContext, SpecialistOutcome, RunMeta, FailureReport } from '@kb-labs/agent-contracts';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import type {
   AgentExecutionStep,
   ToolCall,
@@ -101,20 +103,22 @@ export class SpecialistExecutor {
   }
 
   /**
-   * Execute a specialist task
+   * Execute a specialist task (V2 with ExecutionContext)
+   *
+   * Phase 3: Returns SpecialistOutcome with failure classification and partial results
    *
    * @param context - Specialist context (config, tools)
    * @param task - Task description from orchestrator
-   * @param inputData - Input data matching specialist's input schema
+   * @param executionContext - Execution context from orchestrator
    * @param progressCallback - Optional progress callback
-   * @returns Execution result
+   * @returns Execution outcome (success with result OR failure with partial result)
    */
   async execute(
     context: SpecialistContext,
     task: string,
-    inputData?: unknown,
+    executionContext?: ExecutionContext,
     progressCallback?: AgentProgressCallback
-  ): Promise<SpecialistResult> {
+  ): Promise<SpecialistOutcome<SpecialistResult>> {
     const config = context.config;
     const startTime = Date.now();
 
@@ -174,8 +178,12 @@ export class SpecialistExecutor {
       forcedReasoningInterval,
     });
 
-    // Build initial system prompt (static context)
-    const systemPrompt = this.buildSystemPrompt(config, task, inputData);
+    // V2: Build system prompt with ExecutionContext
+    const systemPrompt = await this.buildSystemPromptWithContext(
+      config,
+      task,
+      executionContext
+    );
 
     // Add system message
     state.messages.push({
@@ -186,7 +194,7 @@ export class SpecialistExecutor {
     // Add user message with task
     state.messages.push({
       role: 'user',
-      content: this.buildUserPrompt(task, inputData),
+      content: this.buildUserPrompt(task),
     });
 
     // Main execution loop
@@ -470,7 +478,8 @@ export class SpecialistExecutor {
       // Complete tool trace
       await this.toolTraceStore.complete(trace.traceId);
 
-      return {
+      // Phase 3: Return SpecialistOutcome with success
+      const result: SpecialistResult = {
         success: true,
         output,
         steps: state.steps,
@@ -478,6 +487,23 @@ export class SpecialistExecutor {
         durationMs,
         traceRef: `trace:${trace.traceId}`,
       };
+
+      const meta: RunMeta = {
+        durationMs,
+        tokenUsage: {
+          prompt: Math.floor(state.tokensUsed * 0.4), // Rough estimate (40% prompt, 60% completion)
+          completion: Math.floor(state.tokensUsed * 0.6),
+        },
+        toolCalls: state.steps.reduce((sum, step) => sum + (step.toolCalls?.length || 0), 0),
+        modelTier: config.llm.tier,
+      };
+
+      return {
+        ok: true,
+        result,
+        meta,
+      };
+
     } catch (error) {
       const durationMs = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -489,7 +515,16 @@ export class SpecialistExecutor {
       // Complete tool trace even on error
       await this.toolTraceStore.complete(trace.traceId);
 
-      return {
+      // Phase 3: Classify error and build failure report
+      const failure: FailureReport = {
+        kind: this.classifyError(error),
+        message: errorMessage,
+        lastToolCalls: this.getLastToolCalls(state.steps, 5),
+        suggestedRetry: this.shouldRetry(error),
+      };
+
+      // Phase 3: Build partial result (preserve work done so far!)
+      const partial: SpecialistResult = {
         success: false,
         output: null,
         steps: state.steps,
@@ -497,6 +532,24 @@ export class SpecialistExecutor {
         durationMs,
         error: errorMessage,
         traceRef: `trace:${trace.traceId}`,
+      };
+
+      const meta: RunMeta = {
+        durationMs,
+        tokenUsage: {
+          prompt: Math.floor(state.tokensUsed * 0.4),
+          completion: Math.floor(state.tokensUsed * 0.6),
+        },
+        toolCalls: state.steps.reduce((sum, step) => sum + (step.toolCalls?.length || 0), 0),
+        modelTier: config.llm.tier,
+      };
+
+      // Phase 3: Return SpecialistOutcome with failure + partial result
+      return {
+        ok: false,
+        failure,
+        partial,
+        meta,
       };
     }
   }
@@ -553,16 +606,346 @@ export class SpecialistExecutor {
   }
 
   /**
-   * Build user prompt with task and input data
+   * Build system prompt with ExecutionContext (V2)
+   *
+   * Loads context.md and examples.yml from specialist directory.
+   * Uses cache with 1 hour TTL for static files.
+   *
+   * @param config - Specialist configuration
+   * @param task - Task description
+   * @param executionContext - Execution context from orchestrator
+   * @returns System prompt with full context
    */
-  private buildUserPrompt(task: string, inputData?: unknown): string {
-    let prompt = `Task: ${task}\n`;
+  private async buildSystemPromptWithContext(
+    config: SpecialistConfigV1,
+    task: string,
+    executionContext?: ExecutionContext
+  ): Promise<string> {
+    let prompt = '';
 
-    if (inputData) {
-      prompt += `\nInput Data:\n${JSON.stringify(inputData, null, 2)}\n`;
+    // Add static context from config (backward compatibility)
+    if (config.context?.static?.system) {
+      prompt += config.context.static.system + '\n\n';
+    }
+
+    // V2: Load context.md from specialist directory
+    const contextMd = await this.loadContextMarkdown(config.id);
+    if (contextMd) {
+      // V2.5: Adapt context size based on model tier
+      const adaptedContext = this.adaptContextForTier(contextMd, config.llm.tier);
+      prompt += `# Specialist Context\n\n${adaptedContext}\n\n`;
+    }
+
+    // V2: Add ExecutionContext information
+    if (executionContext) {
+      prompt += `# Execution Context\n\n`;
+      prompt += `**Project Root:** ${executionContext.projectRoot}\n`;
+      prompt += `**Working Directory:** ${executionContext.workingDir}\n`;
+
+      if (executionContext.outputDir) {
+        prompt += `**Output Directory:** ${executionContext.outputDir}\n`;
+        prompt += `*Note: Write generated artifacts to output directory*\n`;
+      } else {
+        prompt += `**Working Mode:** Direct project modification\n`;
+        prompt += `*Note: Edit files directly in projectRoot*\n`;
+      }
+
+      prompt += '\n';
+
+      // Add findings from previous specialists
+      if (executionContext.findings && executionContext.findings.length > 0) {
+        prompt += `## Findings from Previous Specialists\n\n`;
+        for (const finding of executionContext.findings) {
+          prompt += `- ${finding}\n`;
+        }
+        prompt += '\n';
+      }
+
+      // Add available files
+      if (executionContext.availableFiles.created.length > 0) {
+        prompt += `## Files Created by Previous Specialists\n\n`;
+        for (const file of executionContext.availableFiles.created) {
+          prompt += `- ${file}\n`;
+        }
+        prompt += '\n';
+      }
+
+      if (executionContext.availableFiles.modified.length > 0) {
+        prompt += `## Files Modified by Previous Specialists\n\n`;
+        for (const file of executionContext.availableFiles.modified) {
+          prompt += `- ${file}\n`;
+        }
+        prompt += '\n';
+      }
+    }
+
+    // V2: Load examples.yml from specialist directory
+    const examples = await this.loadExamples(config.id);
+    if (examples && examples.length > 0) {
+      prompt += `# Example Approaches\n\n`;
+      for (const example of examples) {
+        prompt += `## Example: ${example.task}\n\n`;
+        prompt += `**Approach:**\n${example.approach}\n\n`;
+        prompt += `**Outcome:** ${example.outcome}\n\n`;
+      }
+    }
+
+    // Add capabilities
+    if (config.capabilities && config.capabilities.length > 0) {
+      prompt += `## Your Capabilities\n`;
+      for (const capability of config.capabilities) {
+        prompt += `- ${capability}\n`;
+      }
+      prompt += '\n';
+    }
+
+    // Add constraints
+    if (config.constraints && config.constraints.length > 0) {
+      prompt += `## Constraints\n`;
+      for (const constraint of config.constraints) {
+        prompt += `${constraint}\n`;
+      }
+      prompt += '\n';
+    }
+
+    // Add output schema requirement
+    if (config.output?.schema) {
+      prompt += `## CRITICAL: Required Output Format\n\n`;
+      prompt += `When you complete the task, you MUST return your final answer as a JSON code block.\n`;
+      prompt += `The JSON must match this exact schema:\n\n`;
+      prompt += `\`\`\`json\n`;
+      prompt += JSON.stringify(config.output.schema, null, 2);
+      prompt += `\n\`\`\`\n\n`;
+      prompt += `**Rules:**\n`;
+      prompt += `1. Return ONLY valid JSON in a markdown code block: \`\`\`json ... \`\`\`\n`;
+      prompt += `2. Include ALL required fields from the schema\n`;
+      prompt += `3. Do NOT add any text before or after the JSON block\n`;
+      prompt += `4. When done, say "TASK COMPLETE" followed by the JSON block\n\n`;
     }
 
     return prompt;
+  }
+
+  /**
+   * Adapt context.md size based on model tier (V2.5)
+   *
+   * - small (haiku): 2KB max (~500 tokens)
+   * - medium (sonnet): 5KB max (~1200 tokens)
+   * - large (opus): unlimited
+   *
+   * Truncates with marker when context exceeds tier limit.
+   *
+   * @param contextMd - Full context markdown
+   * @param tier - Model tier
+   * @returns Adapted context
+   */
+  private adaptContextForTier(contextMd: string, tier: 'small' | 'medium' | 'large'): string {
+    const limits = {
+      small: 2048,      // 2KB (~500 tokens)
+      medium: 5120,     // 5KB (~1200 tokens)
+      large: Infinity,  // No limit
+    } as const;
+
+    const maxChars = limits[tier];
+
+    if (contextMd.length <= maxChars) {
+      return contextMd;
+    }
+
+    // Truncate with marker
+    const truncated = contextMd.slice(0, maxChars - 120);
+    return `${truncated}\n\n...(truncated for ${tier} tier model - full context available on escalation)\n`;
+  }
+
+  /**
+   * Load context.md for specialist (V2)
+   *
+   * Cached with 1 hour TTL using useCache() from SDK.
+   *
+   * @param specialistId - Specialist ID
+   * @returns Context markdown content or undefined
+   */
+  private async loadContextMarkdown(specialistId: string): Promise<string | undefined> {
+    const cache = useCache();
+    const cacheKey = `specialist:${specialistId}:context`;
+
+    // Try cache first
+    if (cache) {
+      const cached = await cache.get<string>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    // Load from filesystem
+    try {
+      const contextPath = path.join(process.cwd(), '.kb/specialists', specialistId, 'context.md');
+      const content = await fs.readFile(contextPath, 'utf-8');
+
+      // Cache for 1 hour (3600000ms)
+      if (cache) {
+        await cache.set(cacheKey, content, 3600000);
+      }
+
+      return content;
+    } catch (error) {
+      // File not found or read error - not critical
+      this.ctx.platform.logger.debug('Failed to load context.md', {
+        specialistId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Load examples.yml for specialist (V2)
+   *
+   * Cached with 1 hour TTL using useCache() from SDK.
+   *
+   * @param specialistId - Specialist ID
+   * @returns Array of examples or undefined
+   */
+  private async loadExamples(specialistId: string): Promise<Array<{ task: string; approach: string; outcome: string }> | undefined> {
+    const cache = useCache();
+    const cacheKey = `specialist:${specialistId}:examples`;
+
+    // Try cache first
+    if (cache) {
+      const cached = await cache.get<Array<{ task: string; approach: string; outcome: string }>>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    // Load from filesystem
+    try {
+      const examplesPath = path.join(process.cwd(), '.kb/specialists', specialistId, 'examples.yml');
+      const content = await fs.readFile(examplesPath, 'utf-8');
+
+      // Simple YAML parsing (examples is an array)
+      const examples = this.parseExamplesYaml(content);
+
+      // Cache for 1 hour (3600000ms)
+      if (cache) {
+        await cache.set(cacheKey, examples, 3600000);
+      }
+
+      return examples;
+    } catch (error) {
+      // File not found or read error - not critical
+      this.ctx.platform.logger.debug('Failed to load examples.yml', {
+        specialistId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Parse examples.yml content (simple parser)
+   *
+   * Format:
+   * examples:
+   *   - task: "..."
+   *     approach: |
+   *       ...
+   *     outcome: "..."
+   *
+   * @param content - YAML content
+   * @returns Parsed examples
+   */
+  private parseExamplesYaml(content: string): Array<{ task: string; approach: string; outcome: string }> {
+    const examples: Array<{ task: string; approach: string; outcome: string }> = [];
+
+    // Simple regex-based parsing for our specific format
+    const exampleBlocks = content.split(/^  - task:/m).slice(1);
+
+    for (const block of exampleBlocks) {
+      const taskMatch = block.match(/^\s*"([^"]+)"/);
+      const approachMatch = block.match(/approach:\s*\|\s*\n((?:(?:      .+|\s*)\n)+)/);
+      const outcomeMatch = block.match(/outcome:\s*"([^"]+)"/);
+
+      if (taskMatch?.[1] && approachMatch?.[1] && outcomeMatch?.[1]) {
+        examples.push({
+          task: taskMatch[1],
+          approach: approachMatch[1].replace(/^      /gm, '').trim(),
+          outcome: outcomeMatch[1],
+        });
+      }
+    }
+
+    return examples;
+  }
+
+  /**
+   * Build user prompt with task
+   */
+  private buildUserPrompt(task: string): string {
+    return `Task: ${task}\n`;
+  }
+
+  /**
+   * Classify error kind (Phase 3)
+   *
+   * Maps error messages to failure kinds for retry logic
+   */
+  private classifyError(error: unknown): FailureReport['kind'] {
+    if (error instanceof Error) {
+      const msg = error.message.toLowerCase();
+
+      if (msg.includes('timeout') || msg.includes('timed out')) return 'timeout';
+      if (msg.includes('tool') || msg.includes('execution failed')) return 'tool_error';
+      if (msg.includes('validation') || msg.includes('schema')) return 'validation_failed';
+      if (msg.includes('stuck') || msg.includes('loop') || msg.includes('infinite')) return 'stuck';
+      if (msg.includes('policy') || msg.includes('denied') || msg.includes('budget')) return 'policy_denied';
+    }
+
+    return 'unknown';
+  }
+
+  /**
+   * Determine if error should trigger retry (Phase 3)
+   *
+   * - Don't retry: validation errors, policy violations
+   * - Retry: timeouts, tool errors, unknown errors
+   */
+  private shouldRetry(error: unknown): boolean {
+    const kind = this.classifyError(error);
+
+    // Don't retry permanent failures
+    if (kind === 'validation_failed') return false;
+    if (kind === 'policy_denied') return false;
+
+    // Retry transient failures
+    if (kind === 'timeout') return true;
+    if (kind === 'tool_error') return true;
+    if (kind === 'stuck') return true;
+
+    // Default: retry unknown errors
+    return true;
+  }
+
+  /**
+   * Get last N tool calls for debugging (Phase 3)
+   */
+  private getLastToolCalls(steps: AgentExecutionStep[], count: number): Array<{ tool: string; args: unknown; error?: string }> {
+    const lastSteps = steps.slice(-count);
+    const calls: Array<{ tool: string; args: unknown; error?: string }> = [];
+
+    for (const step of lastSteps) {
+      if (step.toolCalls) {
+        for (const tc of step.toolCalls) {
+          calls.push({
+            tool: tc.name,
+            args: tc.input,
+            error: tc.error,
+          });
+        }
+      }
+    }
+
+    return calls;
   }
 
   /**

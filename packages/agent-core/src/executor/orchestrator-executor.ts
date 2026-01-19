@@ -5,7 +5,7 @@
  * - Breaks complex tasks into subtasks
  * - Delegates subtasks to specialists
  * - Synthesizes results into coherent answer
- * - Uses smart tier LLM (e.g., GPT-4) for planning/synthesis
+ * - Uses LARGE tier LLM for planning/synthesis (specialists use small tier)
  *
  * Phase 2: Adaptive Feedback Loop
  * - Analyzes specialist findings
@@ -14,13 +14,32 @@
  */
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
-import { useLLM, useAnalytics } from '@kb-labs/sdk';
-import type { SpecialistConfigV1 } from '@kb-labs/agent-contracts';
+import { useLLM, useAnalytics, useCache, findRepoRoot } from '@kb-labs/sdk';
+import type { SpecialistConfigV1, ExecutionContext } from '@kb-labs/agent-contracts';
 import { SpecialistExecutor, type SpecialistContext, type SpecialistResult } from './specialist-executor.js';
 import { SpecialistRegistry } from '../registry/specialist-registry.js';
 import { ToolDiscoverer } from '../tools/tool-discoverer.js';
 import { OrchestratorAnalytics } from '../analytics/orchestrator-analytics.js';
 import { FindingsStore } from './findings-store.js';
+import * as path from 'path';
+import {
+  createExecutionPlanTool,
+  createReviseExecutionPlanTool,
+  createEstimateComplexityTool,
+  createDelegateSubtaskTool,
+  createRequestFeedbackTool,
+  createMergeResultsTool,
+  createUpdateSubtaskStatusTool,
+  createReportProgressTool,
+  createIdentifyBlockerTool,
+  createValidateOutputTool,
+  createRequestRevisionTool,
+  createApproveResultTool,
+  createShareFindingTool,
+  createRequestContextTool,
+  createSummarizeLearningsTool,
+  type ExecutionPlan,
+} from '@kb-labs/agent-tools';
 import type {
   SubTask,
   DelegatedResult,
@@ -57,6 +76,41 @@ export class OrchestratorExecutor {
 
     // Generate unique session ID for this orchestrator run
     this.sessionId = `orch-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+  }
+
+  /**
+   * Get all orchestrator management tools
+   *
+   * @param specialistIds - Array of valid specialist IDs
+   * @returns Array of LLM tools for orchestration
+   */
+  private getOrchestratorTools(specialistIds: string[]) {
+    return {
+      // Planning tools
+      planning: createExecutionPlanTool(specialistIds),
+      revise: createReviseExecutionPlanTool(specialistIds),
+      estimateComplexity: createEstimateComplexityTool(),
+
+      // Coordination tools
+      delegate: createDelegateSubtaskTool(specialistIds),
+      requestFeedback: createRequestFeedbackTool(specialistIds),
+      mergeResults: createMergeResultsTool(),
+
+      // Progress tracking tools
+      updateStatus: createUpdateSubtaskStatusTool(),
+      reportProgress: createReportProgressTool(),
+      identifyBlocker: createIdentifyBlockerTool(),
+
+      // Quality control tools
+      validateOutput: createValidateOutputTool(),
+      requestRevision: createRequestRevisionTool(specialistIds),
+      approveResult: createApproveResultTool(),
+
+      // Knowledge sharing tools
+      shareFinding: createShareFindingTool(),
+      requestContext: createRequestContextTool(),
+      summarizeLearnings: createSummarizeLearningsTool(),
+    };
   }
 
   /**
@@ -111,15 +165,35 @@ export class OrchestratorExecutor {
           }
         }
 
+        // Phase 2: Update status to in-progress
+        this.ctx.platform.logger.info('📋 Subtask starting', {
+          subtaskId: subtask.id,
+          specialist: subtask.specialistId,
+          progress: `${delegatedResults.length}/${plan.length}`,
+        });
+
         // Execute subtask
         this.analytics.trackSpecialistDelegated(subtask);
-        const result = await this.delegateTask(subtask);
+        const result = await this.delegateTask(subtask, delegatedResults);
         delegatedResults.push(result);
         totalTokens += result.tokensUsed;
+
+        // Phase 2: Update status after completion
+        const progressPercent = Math.round((delegatedResults.length / plan.length) * 100);
+        this.ctx.platform.logger.info(result.success ? '✅ Subtask completed' : '❌ Subtask failed', {
+          subtaskId: subtask.id,
+          specialist: subtask.specialistId,
+          progress: `${delegatedResults.length}/${plan.length} (${progressPercent}%)`,
+          tokensUsed: result.tokensUsed,
+        });
 
         // Track specialist result
         if (result.success) {
           this.analytics.trackSpecialistCompleted(subtask, result);
+
+          // Phase 2: Quality validation (optional - can be enabled later)
+          // For now, we trust specialist output and check findings only
+          // Future: Add LLM-based validation using validateOutput tool
 
           // Phase 2: Check for findings and potentially adapt plan
           if (result.findingsSummary && result.findingsSummary.actionable > 0) {
@@ -352,13 +426,23 @@ export class OrchestratorExecutor {
   private async planExecution(
     task: string
   ): Promise<{ plan: SubTask[]; tokensUsed: number }> {
-    const llm = useLLM();
+    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier
     if (!llm) {
       throw new Error('LLM not available for orchestrator planning');
     }
 
     // Load available specialists
     const specialists = await this.registry.list();
+
+    // DEBUG: Log discovered specialists
+    console.log('\n🔍 DEBUG: Discovered specialists:');
+    console.log(`   Total: ${specialists.length}`);
+    console.log(`   IDs: ${specialists.map(s => s.id).join(', ') || '(none)'}`);
+    specialists.forEach(s => {
+      console.log(`   - ${s.id}: valid=${s.valid}, error=${s.error || 'none'}`);
+    });
+
+    const specialistIds = specialists.map(s => s.id);
     const specialistDescriptions = specialists
       .map(
         (s) =>
@@ -366,51 +450,30 @@ export class OrchestratorExecutor {
       )
       .join('\n');
 
-    // Get first specialist ID for example (or fallback)
-    const exampleSpecialistId = specialists.length > 0 ? specialists[0]!.id : 'coding-agent';
+    // Get all orchestrator tools
+    const tools = this.getOrchestratorTools(specialistIds);
+    const planningTool = tools.planning;
 
-    const systemPrompt = `You are an AI orchestrator that breaks complex tasks into subtasks.
+    const systemPrompt = `You are an AI orchestrator that plans execution by delegating to specialist team members.
 
 # Available Specialists:
 ${specialistDescriptions}
 
-**CRITICAL: You MUST use specialist IDs from the list above. Do NOT invent new specialist IDs!**
+# Your Task:
+1. Think about the user's request
+2. Break it into logical subtasks (2-4 recommended)
+3. Call the create_execution_plan tool with your plan
 
-# Your Role:
-1. Analyze the task
-2. Break it into logical subtasks (keep it simple - prefer 2-3 subtasks over many)
-3. Assign each subtask to the most appropriate specialist **from the list above**
-4. Define dependencies between subtasks
-5. Assign priority (1-10, higher = more critical)
+**Important:**
+- You MUST call the create_execution_plan tool (it's mandatory)
+- Do NOT return text/markdown - call the tool instead
+- The tool has JSON schema validation (prevents empty array, invalid IDs, etc.)`;
 
-# Output Format:
-Return a JSON array of subtasks in this exact format:
+    const userPrompt = `User task: ${task}\n\nAnalyze this task and create an execution plan by calling the create_execution_plan tool.`;
 
-\`\`\`json
-[
-  {
-    "id": "subtask-1",
-    "description": "Clear description of what to do",
-    "specialistId": "${exampleSpecialistId}",
-    "dependencies": [],
-    "priority": 8,
-    "estimatedComplexity": "medium"
-  }
-]
-\`\`\`
-
-**Rules:**
-1. Each subtask must have a unique id (subtask-1, subtask-2, etc.)
-2. **CRITICAL**: Use ONLY specialist IDs from the "Available Specialists" list - never invent IDs!
-3. Keep plans simple - prefer fewer, well-defined subtasks
-4. Keep subtask descriptions clear and actionable
-5. Priority: 10 = critical, 1 = optional
-6. Dependencies: array of subtask IDs that must complete first
-7. Return ONLY the JSON array, no extra text
-
-**Available specialist IDs**: ${specialists.map(s => s.id).join(', ')}`;
-
-    const userPrompt = `Task: ${task}\n\nCreate an execution plan by breaking this task into subtasks and assigning them to specialists.`;
+    console.log('[DEBUG] About to call LLM with planning tool...');
+    console.log('[DEBUG] Tool name:', planningTool.name);
+    console.log('[DEBUG] Valid specialist IDs:', specialistIds);
 
     const response = await llm.chatWithTools!(
       [
@@ -418,15 +481,31 @@ Return a JSON array of subtasks in this exact format:
         { role: 'user', content: userPrompt },
       ],
       {
-        tools: [], // No tools needed for planning
+        tools: [planningTool],
+        toolChoice: { type: 'function', function: { name: 'create_execution_plan' } }, // FORCE tool call
       }
     );
 
-    const content = response.content || '';
+    console.log('[DEBUG] LLM response received');
+    console.log('[DEBUG] Tool calls:', response.toolCalls?.length || 0);
+    console.log('[DEBUG] Token usage:', response.usage);
+
     const tokensUsed = (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0);
 
-    // Extract JSON from response
-    const plan = this.extractPlan(content);
+    // Extract plan from tool call
+    if (!response.toolCalls || response.toolCalls.length === 0) {
+      throw new Error('LLM did not call create_execution_plan tool');
+    }
+
+    const toolCall = response.toolCalls.find(tc => tc.name === 'create_execution_plan');
+    if (!toolCall) {
+      throw new Error('create_execution_plan tool call not found');
+    }
+
+    const executionPlan = toolCall.input as ExecutionPlan;
+    const plan = executionPlan.subtasks;
+
+    console.log('[DEBUG] Extracted plan from tool:', JSON.stringify(plan, null, 2));
 
     return { plan, tokensUsed };
   }
@@ -484,14 +563,117 @@ Return a JSON array of subtasks in this exact format:
   }
 
   /**
+   * Extract output directory from task description (V2)
+   *
+   * Looks for patterns like:
+   * - "output to ./results"
+   * - "save in /path/to/output"
+   * - "write to directory X"
+   *
+   * @param taskDescription - Task description
+   * @param projectRoot - Project root directory
+   * @returns Output directory path or undefined (use projectRoot)
+   */
+  private extractOutputDir(taskDescription: string, projectRoot: string): string | undefined {
+    const patterns = [
+      /output\s+(?:to|in|at)\s+([^\s]+)/i,
+      /save\s+(?:to|in|at)\s+([^\s]+)/i,
+      /write\s+(?:to|in|at)\s+([^\s]+)/i,
+      /directory[:\s]+([^\s]+)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = taskDescription.match(pattern);
+      if (match && match[1]) {
+        // Return extracted path (can be relative or absolute)
+        return match[1];
+      }
+    }
+
+    // No explicit output directory → specialists work in projectRoot
+    // Orchestrator can optionally create isolated output dir in Phase 2
+    return undefined;
+  }
+
+  /**
+   * Extract key findings from delegated results (V2)
+   *
+   * Creates compact summaries from previous specialists:
+   * - Max 5 findings per specialist
+   * - Focus on actionable/high-severity items
+   * - Formatted for context injection
+   *
+   * @param delegatedResults - Previous specialist results
+   * @returns Array of finding summaries
+   */
+  private async extractFindings(delegatedResults: DelegatedResult[]): Promise<string[]> {
+    const findings: string[] = [];
+
+    for (const result of delegatedResults) {
+      if (!result.success || !result.findingsRef) {
+        continue;
+      }
+
+      // Load full findings from store
+      const fullFindings = await this.findingsStore.load(result.findingsRef);
+      if (!fullFindings || fullFindings.length === 0) {
+        continue;
+      }
+
+      // Filter to actionable/high-severity (max 5 per specialist)
+      const keyFindings = fullFindings
+        .filter((f) => f.severity === 'critical' || f.severity === 'high' || f.actionable)
+        .slice(0, 5);
+
+      // Format as compact summaries
+      for (const finding of keyFindings) {
+        const summary = `[${result.specialistId}] ${finding.title}: ${finding.description}`;
+        findings.push(summary);
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Get project root directory (V2)
+   *
+   * Searches for:
+   * 1. Git root (.git directory)
+   * 2. package.json location
+   * 3. Falls back to working directory
+   *
+   * @returns Project root path
+   */
+  private async getProjectRoot(): Promise<string> {
+    const workingDir = process.cwd();
+
+    try {
+      // Try to find git root (findRepoRoot is async)
+      const gitRoot = await findRepoRoot(workingDir);
+      if (gitRoot) {
+        return gitRoot;
+      }
+    } catch {
+      // Git root not found, continue
+    }
+
+    // Fallback: current working directory
+    return workingDir;
+  }
+
+  /**
    * Delegate a subtask to a specialist
    *
    * Loads specialist configuration, discovers tools, and executes via SpecialistExecutor.
    *
+   * Phase 2: Gathers findings from dependency subtasks and passes them as input.
+   *
    * @param subtask - Subtask to execute
+   * @param delegatedResults - Previously completed subtasks
    * @returns Delegated result
    */
-  private async delegateTask(subtask: SubTask): Promise<DelegatedResult> {
+  private async delegateTask(subtask: SubTask, delegatedResults: DelegatedResult[]): Promise<DelegatedResult> {
     const startTime = Date.now();
 
     try {
@@ -504,8 +686,59 @@ Return a JSON array of subtasks in this exact format:
       // Create specialist context
       const context: SpecialistContext = { config, tools };
 
-      // Execute via SpecialistExecutor
-      const result = await this.specialistExecutor.execute(context, subtask.description);
+      // V2: Build ExecutionContext for specialist
+      const workingDir = process.cwd();
+      const projectRoot = await this.getProjectRoot();
+
+      // Extract output directory ONLY if explicitly specified in task
+      // Otherwise undefined → specialists work directly in projectRoot
+      const outputDir = this.extractOutputDir(subtask.description, projectRoot);
+
+      // Extract findings from dependency subtasks
+      const findings = await this.extractFindings(
+        delegatedResults.filter((r) => subtask.dependencies?.includes(r.subtaskId))
+      );
+
+      // Build previousResults map
+      const previousResults = new Map<string, SpecialistResult>();
+      for (const depId of subtask.dependencies || []) {
+        const depResult = delegatedResults.find((r) => r.subtaskId === depId);
+        if (depResult && depResult.success) {
+          // Convert DelegatedResult to SpecialistResult format
+          // Note: steps field is not available in DelegatedResult, using empty array
+          previousResults.set(depId, {
+            success: depResult.success,
+            output: depResult.output,
+            steps: [], // Not tracked in orchestrator context
+            tokensUsed: depResult.tokensUsed,
+            durationMs: depResult.durationMs,
+            traceRef: depResult.traceRef,
+          });
+        }
+      }
+
+      // Track files created/modified by previous specialists
+      const availableFiles = {
+        created: [] as string[],
+        modified: [] as string[],
+      };
+
+      // TODO: Extract file paths from trace refs or findings
+      // For now, this is a placeholder - will be implemented when trace verification is added
+
+      const executionContext: ExecutionContext = {
+        workingDir,
+        projectRoot,
+        outputDir,
+        taskDescription: subtask.description,
+        subtaskId: subtask.id,
+        previousResults,
+        findings,
+        availableFiles,
+      };
+
+      // V2: Execute via SpecialistExecutor with ExecutionContext
+      const result = await this.specialistExecutor.execute(context, subtask.description, executionContext);
 
       // Phase 2: Process findings if specialist returned them
       let findingsSummary: DelegatedResult['findingsSummary'];
@@ -616,7 +849,7 @@ Return a JSON array of subtasks in this exact format:
     plan: SubTask[],
     delegatedResults: DelegatedResult[]
   ): Promise<{ isSolved: boolean; confidence: number; reason: string }> {
-    const llm = useLLM();
+    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier for reasoning
     if (!llm) {
       return { isSolved: false, confidence: 0, reason: 'LLM not available' };
     }
@@ -738,7 +971,7 @@ Return your assessment as JSON.`;
     delegatedResults: DelegatedResult[],
     remainingSubtasks: SubTask[]
   ): Promise<{ shouldCancel: boolean; confidence: number; reason: string }> {
-    const llm = useLLM();
+    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier for reasoning
     if (!llm) {
       return { shouldCancel: false, confidence: 0, reason: 'LLM not available' };
     }
@@ -970,7 +1203,7 @@ Return your decision as JSON.`;
     plan: SubTask[],
     results: DelegatedResult[]
   ): Promise<{ answer: string; tokensUsed: number }> {
-    const llm = useLLM();
+    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier for synthesis
     if (!llm) {
       throw new Error('LLM not available for result synthesis');
     }
@@ -1057,7 +1290,7 @@ Synthesize these results into a comprehensive answer to the original task.`;
     delegatedResults: DelegatedResult[],
     currentResult: DelegatedResult
   ): Promise<AdaptationDecision> {
-    const llm = useLLM();
+    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier for adaptive planning (Phase 2)
     if (!llm) {
       return {
         shouldAdapt: false,
@@ -1121,47 +1354,29 @@ Findings can be:
 - Any other analysis results
 
 # Decision Criteria:
-**Adapt the plan if:**
+**Call revise_execution_plan tool if:**
 - Critical or high-severity findings that MUST be addressed
 - Findings have clear suggested actions that can be executed
 - Findings would block remaining subtasks
 - Fixing is straightforward and essential
 
-**Do NOT adapt if:**
+**Do NOT call tool if:**
 - Only informational findings (no action needed)
 - Findings are low-priority suggestions
 - Remaining plan already covers these concerns
 - No clear action can be taken
 
-# Response Format:
-Return ONLY a JSON object:
+**If you decide to adapt, call revise_execution_plan with:**
+- action: "add" - to add new subtask for fixing issues
+- subtask.id: "fix-1", "fix-2", etc. (sequential)
+- subtask.description: Specific, actionable description
+- subtask.specialistId: Choose from: ${availableSpecialistIds}
+- subtask.dependencies: ["${currentResult.subtaskId}"] (new tasks depend on current work)
+- subtask.priority: 8-10 for critical fixes, 5-7 for important improvements
+- subtask.estimatedComplexity: "low", "medium", or "high"
+- reason: Clear explanation of why adaptation is needed
 
-\`\`\`json
-{
-  "shouldAdapt": true,
-  "confidence": 0.85,
-  "reason": "Found 3 critical issues that must be addressed before continuing",
-  "newSubtasks": [
-    {
-      "id": "fix-1",
-      "description": "Fix critical type errors in user.ts",
-      "specialistId": "implementer",
-      "dependencies": ["${currentResult.subtaskId}"],
-      "priority": 9,
-      "estimatedComplexity": "low"
-    }
-  ]
-}
-\`\`\`
-
-**Rules:**
-- Only create subtasks for essential actions
-- Use suggested actions from findings when available
-- Set correct dependencies (new tasks depend on current work: ["${currentResult.subtaskId}"])
-- Use appropriate specialist IDs from: ${availableSpecialistIds}
-- Keep descriptions specific and actionable
-- Priority 8-10 for critical fixes, 5-7 for important improvements
-- Return ONLY the JSON, no extra text`;
+**If you decide NOT to adapt, just respond with text explaining why.**`;
 
     const userPrompt = `# Original Task:
 ${task}
@@ -1180,76 +1395,137 @@ Completed: ${delegatedResults.length}/${plan.length} subtasks
 If YES, generate specific subtasks based on suggested actions.
 If NO, explain why findings don't warrant plan changes.`;
 
+    // Get orchestrator tools for plan revision
+    const tools = this.getOrchestratorTools(availableSpecialistIds.split(', '));
+    const reviseTool = tools.revise;
+
     const response = await llm.chatWithTools!(
       [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
       {
-        tools: [],
+        tools: [reviseTool],
+        // Don't force tool call - LLM decides if adaptation is needed
       }
     );
 
-    const content = response.content || '';
-    const parsed = this.parseAdaptationDecision(content);
+    // Check if LLM called revise_execution_plan tool
+    if (!response.toolCalls || response.toolCalls.length === 0) {
+      // LLM decided no adaptation needed
+      return {
+        shouldAdapt: false,
+        reason: response.content || 'No adaptation recommended by LLM',
+        newSubtasks: [],
+        confidence: 0.9,
+      };
+    }
 
-    return parsed;
+    const toolCall = response.toolCalls.find(tc => tc.name === 'revise_execution_plan');
+    if (!toolCall) {
+      // LLM called different tool or no revision
+      return {
+        shouldAdapt: false,
+        reason: 'No plan revision tool called',
+        newSubtasks: [],
+        confidence: 0.8,
+      };
+    }
+
+    const revision = toolCall.input as { action: string; subtask?: SubTask; subtaskId?: string; reason: string };
+
+    // Handle different revision actions
+    if (revision.action === 'add' && revision.subtask) {
+      return {
+        shouldAdapt: true,
+        reason: revision.reason,
+        newSubtasks: [revision.subtask],
+        confidence: 0.85,
+      };
+    } else if (revision.action === 'modify' && revision.subtask) {
+      // Find and replace existing subtask
+      const index = plan.findIndex(s => s.id === revision.subtaskId);
+      if (index !== -1) {
+        plan[index] = revision.subtask;
+      }
+      return {
+        shouldAdapt: false, // Already modified in-place
+        reason: revision.reason,
+        newSubtasks: [],
+        confidence: 0.85,
+      };
+    } else {
+      return {
+        shouldAdapt: false,
+        reason: revision.reason,
+        newSubtasks: [],
+        confidence: 0.8,
+      };
+    }
   }
 
   /**
-   * Parse adaptation decision from LLM response (Phase 2)
+   * Share findings between specialists (Phase 2 - Knowledge Sharing)
    *
-   * @param content - LLM response content
-   * @returns Parsed adaptation decision
+   * Allows specialists to communicate important discoveries that might
+   * affect other subtasks or the overall execution.
+   *
+   * @param subtaskId - Subtask where finding was discovered
+   * @param specialistId - Specialist who made the discovery
+   * @param finding - The finding to share
    */
-  private parseAdaptationDecision(content: string): AdaptationDecision {
-    // Try to extract JSON (similar to parseCompletionCheck)
-    const jsonBlockMatch = content.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (jsonBlockMatch && jsonBlockMatch[1]) {
-      try {
-        const parsed = JSON.parse(jsonBlockMatch[1]);
-        if (typeof parsed.shouldAdapt === 'boolean') {
-          return {
-            shouldAdapt: parsed.shouldAdapt,
-            reason: parsed.reason || 'No reason provided',
-            newSubtasks: parsed.newSubtasks || [],
-            confidence: parsed.confidence || 0.5,
-          };
-        }
-      } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse adaptation JSON', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+  private async shareFinding(
+    subtaskId: string,
+    specialistId: string,
+    finding: {
+      category: 'bug' | 'optimization' | 'requirement' | 'constraint' | 'insight';
+      description: string;
+      impact: string;
+      affectedSubtasks: string[];
     }
+  ): Promise<void> {
+    this.ctx.platform.logger.info('🔗 Knowledge sharing: Finding shared', {
+      subtaskId,
+      specialistId,
+      category: finding.category,
+      affectedSubtasks: finding.affectedSubtasks.length,
+    });
 
-    // Strategy 2: Find JSON object anywhere
-    const objectMatch = content.match(/\{[\s\S]*\}/);
-    if (objectMatch) {
-      try {
-        const parsed = JSON.parse(objectMatch[0]);
-        if (typeof parsed.shouldAdapt === 'boolean') {
-          return {
-            shouldAdapt: parsed.shouldAdapt,
-            reason: parsed.reason || 'No reason provided',
-            newSubtasks: parsed.newSubtasks || [],
-            confidence: parsed.confidence || 0.5,
-          };
-        }
-      } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse adaptation object', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    // Fallback: conservative - don't adapt
-    this.ctx.platform.logger.warn('Failed to parse adaptation decision, assuming no adaptation');
-    return {
-      shouldAdapt: false,
-      reason: 'Failed to parse LLM response',
-      newSubtasks: [],
-      confidence: 0,
-    };
+    // Store finding for potential use by other specialists
+    // For now, just log it - future: store in FindingsStore or context
+    this.ctx.platform.analytics.track('orchestrator.knowledge.shared', {
+      subtaskId,
+      specialistId,
+      category: finding.category,
+      impact: finding.impact.length,
+      affectedCount: finding.affectedSubtasks.length,
+    });
   }
+
+  /**
+   * Request context from previous specialist (Phase 2 - Knowledge Sharing)
+   *
+   * Allows specialist to ask questions about work done by others.
+   *
+   * @param requesterSubtaskId - Current subtask requesting context
+   * @param sourceSubtaskId - Subtask to get context from
+   * @param questions - Specific questions to ask
+   * @returns Context information (for now, returns previous result summary)
+   */
+  private async requestContext(
+    requesterSubtaskId: string,
+    sourceSubtaskId: string,
+    questions: string[]
+  ): Promise<string> {
+    this.ctx.platform.logger.info('🔍 Knowledge sharing: Context requested', {
+      requester: requesterSubtaskId,
+      source: sourceSubtaskId,
+      questionCount: questions.length,
+    });
+
+    // Future: Use LLM to answer questions based on previous specialist's work
+    // For now, return placeholder
+    return `Context from ${sourceSubtaskId}: Previous work completed successfully. ${questions.length} questions noted.`;
+  }
+
 }

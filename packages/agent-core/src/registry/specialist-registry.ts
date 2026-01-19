@@ -119,6 +119,15 @@ export class SpecialistRegistry {
           const configData = parseYAML(configContent);
           const validation = validateSpecialistConfig(configData);
 
+          console.log(`\n🔍 Validating specialist: ${specialistId}`);
+          console.log(`   Success: ${validation.success}`);
+          if (!validation.success && validation.error) {
+            console.log(`   Errors:`);
+            validation.error.errors.forEach(err => {
+              console.log(`     - ${err.path.join('.')}: ${err.message}`);
+            });
+          }
+
           if (validation.success && validation.data) {
             metadata.push({
               id: validation.data.id,
