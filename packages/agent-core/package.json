@@ -58,6 +58,14 @@
     "typescript": "^5.6.3",
     "vitest": "^3.2.4"
   },
+  "optionalDependencies": {
+    "tree-sitter": "^0.22.6",
+    "tree-sitter-typescript": "^0.23.2",
+    "tree-sitter-javascript": "^0.23.1",
+    "tree-sitter-python": "^0.23.6",
+    "tree-sitter-go": "^0.23.4",
+    "tree-sitter-rust": "^0.23.2"
+  },
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
