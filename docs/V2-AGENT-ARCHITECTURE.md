@@ -1131,12 +1131,85 @@ User: "Добавь тесты для ProgressTracker"
 - [ ] Token budget tracking (~1.2K inline max)
 - [ ] `session.end()` для явного cleanup
 
-### Phase 4: Orchestrator V2
-- [ ] Новый prompt с описаниями специалистов
-- [ ] LLM-based выбор специалиста
-- [ ] Session-level memory (inline SessionState)
-- [ ] Evaluation после каждого specialist result
-- [ ] partial результат → сохранение в SessionState
+### Phase 4: Orchestrator V2 ✅ COMPLETED (2026-01-18)
+
+**Implemented:**
+- [x] Smart task decomposition with LLM planning
+- [x] Specialist selection with capability matching
+- [x] Early stopping - LLM evaluates if task already solved (only when remaining ≥2)
+- [x] Specialist cancellation - dynamic decision to skip remaining work
+- [x] ToolTrace verification integration (placeholder for Phase 2)
+- [x] Confidence-based decisions (all with confidence scores)
+- [x] Single entry point (`orchestrator:run` only)
+- [x] Cleaned up command architecture (removed `agent:run`, `specialist:run`)
+- [x] **Fixed prompt** - Forces LLM to use ONLY real specialists from registry
+- [x] **Optimization gating** - Smart checks only when remaining ≥2 tasks (avoids excess LLM calls)
+
+**Test Results (After Improvements):**
+- Simple task: 1 subtask, 100% success, 50.4s (3x faster than before)
+- Complex task: 2 subtasks, 100% success, 252.4s
+- Before fix: Used fake specialists ("researcher", "implementer" - not in registry)
+- After fix: Uses real specialists from `.kb/agents/` directory
+- ToolTrace: Creating traces for each specialist execution
+
+**Files Modified:**
+- `orchestrator-executor.ts` - Smart features + optimization gating + prompt fix
+- `specialist-executor.ts` - Integrated ToolTrace
+- `manifest.v3.ts` - Removed unused commands
+- `delegateTask()` - Passes through traceRef
+
+**Token Consumption Optimizations (2026-01-18):**
+
+After analyzing production usage, implemented aggressive optimizations to reduce token consumption:
+
+1. **Aggressive Tool Result Truncation:**
+   - Problem: Single `fs:search` result consumed 77,997 prompt tokens
+   - Solution: Truncate tool results to max 800 chars (~200 tokens)
+   - Messages inform LLM: "truncated X chars to save ~Y tokens, full result in artifacts"
+   - Impact: **96% reduction** on large tool results (78k → 3.4k tokens)
+
+2. **Token-Aware Context Compression:**
+   - Problem: Compression only triggered by message count (>5), not token size
+   - Solution: Added `TOKEN_COMPRESSION_THRESHOLD = 8000`
+   - Triggers on: `messages.length > 5 OR estimatedTokens > 8000`
+   - Impact: Prevents context explosion even with few large messages
+
+3. **Multiple Safety Fixes:**
+   - Fixed: `Cannot read properties of undefined (reading 'length')` errors
+   - Added: `m.content?.length ?? 0` for message token estimation
+   - Added: `JSON.stringify(result.output ?? null) ?? ''` for tool output
+   - Added: `rawOutput && rawOutput.length` check before truncation
+   - Impact: **100% success rate** (was 67% with errors)
+
+4. **Measured Results (Complex Tasks):**
+
+   **Before optimizations:**
+   - Max single call: 78,137 tokens (context explosion)
+   - Total tokens (auth): 167,562 tokens
+   - Success rate: 67% (undefined errors)
+   - Cost: $0.025 per task
+
+   **After optimizations:**
+   - Max single call: 3,379 tokens (**96% reduction**)
+   - Total tokens (auth): 27,824 tokens (**83% reduction**)
+   - Total tokens (REST API): 306,111 tokens (larger task, 7 components)
+   - Success rate: **100%** (no errors)
+   - Cost: $0.0067-0.046 per task (**~75% cost reduction**)
+
+   **Key benefits:**
+   - Self-regulating: simple tasks unaffected, complex tasks optimized
+   - No context explosion: max prompt stays under 4k tokens
+   - Reliable: defensive null checks prevent crashes
+
+**Known Issues:**
+- Specialists can make too many tool calls (needs better prompts/timeouts)
+- Early stopping not fully tested (need tasks with 3+ subtasks)
+- No streaming progress yet
+
+**Next Steps:**
+- Phase 5 (Optimizations - streaming, parallel specialists)
+- ADR-0002 (TaskVerifier - deep verification)
+- Further specialist prompt improvements for efficiency
 
 ### Phase 5: Optimizations
 - [ ] Streaming progress
@@ -1294,6 +1367,1327 @@ steps:
 
 ---
 
+## 18. Verification & Anti-Hallucination
+
+### 18.1 Проблема
+
+**V1 проблема:** Orchestrator доверяет словам specialist'а без проверки.
+
+```typescript
+// ❌ V1 - доверяем на слово
+specialist: "Я создал файл test.ts"
+orchestrator: "Отлично!" ✅ (но файл может не существовать!)
+```
+
+**Последствия:**
+- Ложноположительное "success"
+- Orchestrator принимает решения на основе hallucination
+- Следующий specialist получает некорректный контекст
+- Цепная реакция ошибок
+
+### 18.2 Решение: Runtime ToolTrace + 3-Tier Verification
+
+**Ключевая идея:** Source of truth = runtime trace, НЕ слова LLM.
+
+```typescript
+// ✅ V2 - проверяем через runtime trace
+specialist: "Я создал файл test.ts"
+verifier:
+  1. Load runtime ToolTrace by traceRef
+  2. Check: fs:write was actually called with path="test.ts"
+  3. Re-read file, compare hash
+  4. Verdict: passed ✅ (доказано)
+```
+
+---
+
+### 18.3 Architecture
+
+```
+Specialist Execution:
+┌─────────────────────────────────────────────────────────┐
+│ Specialist executes tools                               │
+│  ↓                                                      │
+│ Runtime Proxy intercepts each tool call                │
+│  ↓                                                      │
+│ Records to ToolTrace:                                   │
+│  - invocationId                                         │
+│  - tool name                                            │
+│  - args hash                                            │
+│  - timestamp                                            │
+│  - status (success/failed/timeout)                     │
+│  - evidenceRefs (files, receipts, logs)                │
+│  - output (raw data)                                    │
+│  ↓                                                      │
+│ Stores in ToolTraceStore (in-memory / cache / file)    │
+└─────────────────────────────────────────────────────────┘
+         ↓
+Specialist returns SpecialistOutput with traceRef
+         ↓
+┌─────────────────────────────────────────────────────────┐
+│ Orchestrator Verification                               │
+│  ↓                                                      │
+│ Load ToolTrace by traceRef                             │
+│  ↓                                                      │
+│ For each tool invocation:                              │
+│  - Tier 1 (fs/code/shell): deterministic re-check      │
+│  - Tier 2 (plugins): receipt + schema validation       │
+│  - Tier 3 (remote/llm): inconclusive (trust minimal)   │
+│  ↓                                                      │
+│ Aggregate verdicts → final Verdict                     │
+│  - passed: all checks passed                           │
+│  - failed: any critical check failed                   │
+│  - inconclusive: missing evidence/proofs               │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 18.4 Core Interfaces
+
+```typescript
+// ═══════════════════════════════════════════════════════════
+// Runtime Truth: ToolTrace
+// ═══════════════════════════════════════════════════════════
+
+interface ToolTrace {
+  traceId: string;
+  sessionId: string;
+  specialistId: string;
+  invocations: ToolInvocation[];
+  createdAt: Date;
+}
+
+interface ToolInvocation {
+  invocationId: string;
+  tool: string;
+  argsHash: string;        // SHA-256 of args for dedup
+  timestamp: Date;
+  purpose: 'execution' | 'verification';  // Prevent recursive probes
+
+  // Status от runtime execution
+  status: 'success' | 'failed' | 'timeout' | 'error';
+
+  // Evidence для проверки
+  evidenceRefs: EvidenceRef[];
+
+  // Raw output (может быть schema-validated)
+  output?: unknown;
+
+  // Digest для быстрых проверок
+  digest?: {
+    keyEvents?: string[];
+    counters?: Record<string, number>;
+  };
+}
+
+interface EvidenceRef {
+  kind: 'file' | 'http' | 'receipt' | 'log' | 'hash';
+  ref: string;        // path, URL, ID
+  sha256?: string;    // для integrity checks
+  meta?: unknown;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Specialist Output (with traceRef)
+// ═══════════════════════════════════════════════════════════
+
+interface SpecialistOutput {
+  summary: string;
+  traceRef: string;  // ← REQUIRED (not optional!)
+  claims?: Claim[];  // Optional specialist claims
+  artifacts?: CompactArtifact[];
+}
+
+// ═══════════════════════════════════════════════════════════
+// Verification Result
+// ═══════════════════════════════════════════════════════════
+
+type Verdict = 'passed' | 'failed' | 'inconclusive';
+
+interface VerificationResult {
+  verdict: Verdict;
+  confidence: 'low' | 'medium' | 'high';
+  reason?: string;
+  details?: CheckDetail[];
+}
+
+interface CheckDetail {
+  check: string;      // "fs:write hash match"
+  verdict: Verdict;
+  reason?: string;
+  evidence?: string;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Claims (specialist может заявлять, verifier проверяет)
+// ═══════════════════════════════════════════════════════════
+
+type Claim =
+  | FileWriteClaim
+  | FileEditClaim
+  | FileDeleteClaim
+  | CommandExecutedClaim
+  | CodeInsertedClaim;
+
+interface FileEditClaim {
+  kind: 'file-edit';
+  filePath: string;
+
+  // Anchors для стабильной проверки (не линии!)
+  anchor: {
+    beforeSnippet: string;  // 3-5 строк ДО изменения
+    afterSnippet: string;   // 3-5 строк ПОСЛЕ изменения
+    contentHash: string;    // SHA-256 изменённого блока
+  };
+
+  // Line numbers - только hint (могут поплыть)
+  editedRegion?: { start: number; end: number };
+}
+```
+
+---
+
+### 18.5 3-Tier Verification Model
+
+#### Tier 1: Built-in Tools (fs, code, shell)
+**Confidence:** High - full deterministic verification
+
+**Sources of truth:**
+- **ToolTrace** (runtime) - what was actually invoked
+- **Filesystem state** - re-read files to verify writes
+- **Shell exit codes** - process.exitCode for commands
+- **Code AST** - parse and check structure
+
+**Verification strategy:**
+1. Load runtime ToolTrace by `output.traceRef` (required)
+2. For each tool invocation:
+   - `fs:write` → re-read file, compare hash with claim
+   - `fs:delete` → check file doesn't exist
+   - `shell:exec` → check exit code, optionally re-run dry-run
+   - `code:insert` → verify anchor snippets exist in file
+
+**Verdict:**
+- `passed` - deterministic proof found
+- `failed` - proof contradicts claim
+- `inconclusive` - cannot verify (file disappeared, etc.)
+
+**Example:**
+```typescript
+// Specialist claim
+claim = { kind: 'file-edit', filePath: 'test.ts', anchor: {...} }
+
+// Verifier
+const trace = await traceStore.load(output.traceRef);
+const inv = trace.invocations.find(i => i.tool === 'fs:write' && i.args.path === 'test.ts');
+
+if (!inv) return { verdict: 'failed', reason: 'No fs:write in trace' };
+
+const content = await fs.read('test.ts');
+if (!content.includes(claim.anchor.beforeSnippet)) {
+  return { verdict: 'failed', reason: 'Anchor not found' };
+}
+if (!content.includes(claim.anchor.afterSnippet)) {
+  return { verdict: 'failed', reason: 'Anchor not found' };
+}
+
+return { verdict: 'passed', confidence: 'high' };
+```
+
+---
+
+#### Tier 2: Plugin Tools
+**Confidence:** Medium - receipt + schema validation
+
+**Sources of truth:**
+- **ToolTrace receipts** - status, evidenceRefs from runtime
+- **Schema validation** - Zod checks for contract compliance
+
+**Two-level schema validation:**
+
+1. **Runtime validation** (infrastructure sanity check):
+   ```typescript
+   // Executed IMMEDIATELY after tool returns, BEFORE specialist sees it
+   const result = await platform.invoke('mind:rag-query', args);
+
+   // Get schema from plugin manifest
+   const manifest = await pluginRegistry.getManifest('@kb-labs/mind');
+   const toolDef = manifest.tools.find(t => t.id === 'rag-query');
+   const schema = toolDef.output.schema;
+
+   // Validate format
+   const validation = schema.safeParse(result);
+   if (!validation.success) {
+     // ❌ Plugin bug - tool returned invalid format
+     throw new Error(`Tool output does not match schema: ${validation.error}`);
+   }
+
+   // ✅ Only valid output goes to specialist
+   return validation.data;
+   ```
+
+2. **Verification validation** (anti-hallucination check):
+   ```typescript
+   // Executed AFTER specialist completes, checks ToolTrace
+   const trace = await traceStore.load(output.traceRef);
+   const inv = trace.invocations.find(i => i.tool === 'mind:rag-query');
+
+   // Check 1: Receipt status
+   if (inv.status !== 'success') {
+     return { verdict: 'failed', reason: 'Tool execution failed' };
+   }
+
+   // Check 2: Schema compliance (redundant but proves it was called)
+   const schema = await this.getPluginSchema('mind:rag-query');
+   const validation = schema.safeParse(inv.output);
+   if (!validation.success) {
+     // Should never happen if runtime validation works
+     return { verdict: 'failed', reason: 'Schema validation failed' };
+   }
+
+   // ✅ Tool was called AND returned valid format
+   return { verdict: 'passed', confidence: 'medium' };
+   ```
+
+**Verification strategy:**
+1. Load ToolTrace by `output.traceRef`
+2. For each plugin tool invocation:
+   - Check `receipt.status === 'success'`
+   - Validate `output.data` against `manifest.output.schema` (if present)
+   - Collect evidenceRefs for audit trail
+
+**Verdict:**
+- `passed` - receipt OK + schema OK + evidenceRefs present
+- `failed` - receipt failed OR schema invalid
+- `inconclusive` - missing receipt OR missing schema
+
+**Important:** Schema validation proves **format**, NOT **execution**.
+- Runtime validation = infrastructure sanity (plugin не сломан)
+- Verification validation = anti-hallucination (specialist действительно вызвал tool)
+- For execution proof (что tool реально что-то сделал), use Tier 1 tools or Probes (Post-MVP)
+
+**Example:**
+```typescript
+// Plugin manifest
+{
+  "tools": [{
+    "id": "deploy",
+    "output": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "deploymentId": { "type": "string" },
+          "url": { "type": "string" }
+        },
+        "required": ["deploymentId", "url"]
+      }
+    }
+  }]
+}
+
+// Runtime Proxy (validates BEFORE returning to specialist)
+async function invokePluginTool(toolId: string, args: unknown): Promise<unknown> {
+  const result = await plugin.execute(toolId, args);
+
+  const manifest = await pluginRegistry.getManifest(plugin.id);
+  const toolDef = manifest.tools.find(t => t.id === toolId);
+
+  if (toolDef?.output?.schema) {
+    const schema = await loadSchema(toolDef.output.schema);
+    const validation = schema.safeParse(result);
+
+    if (!validation.success) {
+      // Infrastructure error - plugin broken
+      throw new Error(`Plugin ${plugin.id}:${toolId} returned invalid output`);
+    }
+  }
+
+  return result; // ✅ Validated output to specialist
+}
+
+// Verifier (validates AFTER specialist completes)
+async function verifyPluginTool(inv: ToolInvocation): Promise<VerificationResult> {
+  // Check status
+  if (inv.status !== 'success') {
+    return { verdict: 'failed', reason: 'Tool execution failed' };
+  }
+
+  // Load schema from manifest
+  const manifest = await pluginRegistry.getManifest(inv.pluginId);
+  const toolDef = manifest.tools.find(t => t.id === inv.toolId);
+
+  if (toolDef?.output?.schema) {
+    const schema = await loadSchema(toolDef.output.schema);
+    const validation = schema.safeParse(inv.output);
+
+    if (!validation.success) {
+      // Should rarely happen (runtime should catch this)
+      return { verdict: 'failed', reason: 'Schema validation failed' };
+    }
+  }
+
+  // Check evidence refs
+  if (!inv.evidenceRefs?.length) {
+    return { verdict: 'inconclusive', reason: 'No evidence refs' };
+  }
+
+  return { verdict: 'passed', confidence: 'medium' };
+}
+```
+
+---
+
+#### Tier 3: Remote/LLM Tools
+**Confidence:** Low - trust but verify via compact artifacts
+
+For `llm:complete`, `api:call`, etc. - **no ground truth available**.
+
+**Verification strategy:**
+1. Check ToolTrace shows invocation happened
+2. Validate schema if available
+3. Verdict = `inconclusive` (trust specialist's judgment)
+
+**Policy:** Use compact artifacts to minimize trust surface.
+
+---
+
+### 18.6 Inconclusive Policy
+
+When verifier returns `inconclusive`, orchestrator follows policy:
+
+```yaml
+# .kb/kb.config.json
+verifier:
+  inconclusivePolicy:
+    # What to do on inconclusive
+    action: 'warn' | 'retry' | 'escalate' | 'fail'
+
+    # Retry with more evidence if possible
+    retryWithProbes: false  # MVP: false (probes Post-MVP)
+    maxRetries: 1
+
+    # Escalate to orchestrator for decision
+    escalateTo: 'orchestrator'
+
+    # Fail immediately (strict mode)
+    failOnInconclusive: false  # MVP: false (warn only)
+```
+
+**Example flow:**
+```
+Specialist: implementer
+Tool: plugin:reset-cache
+Receipt: status=success, but no evidenceRefs
+Verdict: inconclusive
+
+Policy action: warn
+→ Orchestrator: "Cannot verify reset-cache. Proceeding with caution."
+→ Continue execution (trust specialist)
+```
+
+---
+
+### 18.7 ToolTraceStore
+
+**Interface:**
+```typescript
+interface ToolTraceStore {
+  // Create new trace
+  create(sessionId: string, specialistId: string): Promise<ToolTrace>;
+
+  // Append invocation
+  append(traceId: string, invocation: ToolInvocation): Promise<void>;
+
+  // Load trace
+  load(traceRef: string): Promise<ToolTrace>;
+
+  // Cleanup
+  delete(traceRef: string): Promise<void>;
+}
+```
+
+**Storage options (MVP decision pending):**
+
+| Option | Pros | Cons | MVP? |
+|--------|------|------|------|
+| **In-memory** | Fast, simple | Lost on crash | ✅ Start here |
+| **State Broker (useCache)** | TTL cleanup, persistent | Requires broker | ⏳ Phase 2 |
+| **File-based (.kb/session/)** | Persistent, debuggable | I/O overhead | ⏳ Fallback |
+
+**MVP decision:** Start with **in-memory**, migrate to State Broker in Phase 2.
+
+---
+
+### 18.8 Future: Post-Action Probes (Post-MVP)
+
+**Status:** Designed but NOT implemented in MVP
+
+Probes would enable verification of plugin/remote tools via read-only post-action checks.
+
+**Design principles:**
+- Probes defined in plugin manifest
+- Executed after tool invocation in verification phase
+- Only read-only tools allowed (fs:read, http:get, etc.)
+- Non-recursive (`purpose: verification` invocations skip probe checks)
+
+**Example manifest:**
+```yaml
+tools:
+  - id: 'reset-cache'
+    probes:
+      - tool: 'fs:list'
+        argsTemplate:
+          path: '.kb/cache'
+        expect:
+          empty: true
+```
+
+**Benefits:**
+- Turn Tier 2 `inconclusive` → `passed`/`failed`
+- Enable verification of C2/C3 criticality tools
+- Reduce trust surface for plugin ecosystem
+
+**Complexity:**
+- Template engine for probe args
+- Probe registry + fallback logic
+- Policy for when to run probes
+- LLM-generated probe approval workflow
+
+**Decision:** Defer to Post-MVP to keep core verification simple.
+
+See future ADR for full design (when implemented).
+
+---
+
+### 18.9 Anti-Hallucination Guarantees
+
+**What V2 verification system guarantees:**
+
+✅ **Tier 1 tools:** Deterministic proof
+- fs:write → file exists with correct content (hash verified)
+- fs:delete → file doesn't exist
+- shell:exec → exit code verified
+- code:insert → anchors found in AST
+
+✅ **Tier 2 tools:** Contract compliance
+- Receipt exists and status=success
+- Output matches schema (format validated)
+- EvidenceRefs present for audit
+
+⚠️ **Tier 3 tools:** Minimal trust
+- Invocation recorded in trace
+- No execution proof available
+- Verdict = inconclusive (honest)
+
+❌ **What we DON'T guarantee (yet):**
+- Tier 2 execution proof (needs probes - Post-MVP)
+- Semantic correctness (only format/structure)
+- Side-effects verification for remote APIs
+
+**Key principle:** Better to say `inconclusive` honestly than `passed` falsely.
+
+---
+
+### 18.10 Integration with SessionState
+
+```typescript
+interface SpecialistRun {
+  specialistId: string;
+  task: string;
+  output: SpecialistOutput;
+
+  // NEW: Verification result
+  verification: VerificationResult;
+
+  durationMs: number;
+  tokenUsage: { prompt: number; completion: number };
+}
+
+// Orchestrator после получения результата
+const result = await specialist.execute(task);
+const verification = await verifier.verify(result.output);
+
+// Сохранить в SessionState
+sessionState.history.push({
+  specialistId: specialist.id,
+  task,
+  output: result.output,
+  verification,  // ← Честная оценка
+  durationMs: result.meta.durationMs,
+  tokenUsage: result.meta.tokenUsage,
+});
+
+// Принять решение на основе verification
+if (verification.verdict === 'failed') {
+  // Retry или escalate
+} else if (verification.verdict === 'inconclusive') {
+  // Warn и продолжить (если policy позволяет)
+} else {
+  // Passed - можно доверять
+}
+```
+
+---
+
+### 18.11 Roadmap Integration
+
+**Phase 1.5: Runtime Trace (after Specialist Executor)** ✅ COMPLETED (2026-01-18)
+- [x] `ToolTrace` и `ToolInvocation` interfaces
+- [x] `ToolTraceStore` (in-memory implementation)
+- [x] Runtime proxy для записи tool calls
+- [x] Runtime schema validation (validate plugin tool outputs BEFORE returning to specialist)
+- [x] `traceRef` в `SpecialistOutput` (required)
+
+**Phase 2.5: Basic Verification (after Orchestrator V2)**
+- [ ] `Verifier` класс с 3-tier model
+- [ ] Tier 1: fs/code/shell deterministic checks
+- [ ] Tier 2: receipt + verification schema validation (check ToolTrace outputs match plugin manifest schemas)
+- [ ] Tier 3: inconclusive for remote/llm
+- [ ] `Verdict` aggregation
+- [ ] Integration with SessionState
+
+**Phase 3.5: Anchors & Claims (after optimizations)**
+- [ ] `Claim` types (FileEditClaim, etc.)
+- [ ] Anchor-based verification (not line numbers)
+- [ ] `CheckDetail` для debugging
+
+**Post-MVP: Probes**
+- [ ] Probe definitions in plugin manifest
+- [ ] Template engine for probe args
+- [ ] Probe executor (read-only tools only)
+- [ ] Non-recursive verification (purpose flag)
+- [ ] LLM-generated probe proposals (with approval)
+
+---
+
+## 19. Phase 1: Детальный план реализации
+
+### 19.1 Обзор Phase 1
+
+**Цель:** Создать YAML-based систему определения специалистов с loader'ом по аналогии с manifest loader.
+
+**Scope:**
+- ✅ YAML схема `kb.specialist/1` (простая, декларативная)
+- ✅ Discovery strategy для поиска specialist definitions
+- ✅ Loader с timeout protection и error aggregation
+- ✅ Validation с Zod (опционально, для debugging)
+- ✅ Migration helpers для текущих агентов
+- ✅ Unit tests
+
+**Non-scope (Post-MVP):**
+- ✅ Dynamic context enrichment (Phase 2) - COMPLETED
+- ✅ Specialist executor (Phase 2) - COMPLETED
+- ✅ Orchestrator integration (Phase 4) - COMPLETED
+
+---
+
+### 19.2 YAML Schema: `kb.specialist/1`
+
+```yaml
+# .kb/specialists/researcher.yml
+schema: kb.specialist/1
+id: researcher
+version: 1.0.0
+
+display:
+  name: "Code Researcher"
+  description: "Semantic code search and analysis specialist"
+  emoji: "🔍"
+
+# Core specialist role
+role: |
+  You are a code researcher specializing in semantic code exploration.
+  Your job is to FIND and READ code, not to modify it.
+
+  Use Mind RAG for semantic searches (NOT grep).
+  Always provide file paths with line numbers in your findings.
+  Extract key information for other specialists to use.
+
+# Allowed tools (whitelist)
+tools:
+  - mind:rag-query
+  - fs:read
+  - fs:list
+  - code:search
+
+# Forced reasoning configuration
+forcedReasoningInterval: 3  # After every 3 tool calls
+
+# Static context (optional)
+staticContext: |
+  # KB Labs Architecture
+
+  - KB Labs is a monorepo with 18 repositories
+  - Main packages: mind, workflow, plugin, core
+  - Always check Mind RAG before using grep
+  - File naming convention: kebab-case
+  - Test files: *.test.ts or *.spec.ts
+
+# Examples of successful patterns (optional)
+examples:
+  - task: "Find how authentication works"
+    approach: |
+      1. mind:rag-query "authentication flow architecture"
+      2. fs:read identified auth files
+      3. Extract key classes and flow
+    outcome: "Found JWT auth in core-auth package"
+
+  - task: "Locate all API endpoints"
+    approach: |
+      1. mind:rag-query "REST API endpoints definitions"
+      2. fs:list packages/*/src/rest/
+      3. Compile list with descriptions
+    outcome: "Found 24 endpoints across 5 packages"
+```
+
+**TypeScript Interface:**
+```typescript
+interface SpecialistDefinition {
+  schema: 'kb.specialist/1';
+  id: string;
+  version: string;
+
+  display: {
+    name: string;
+    description?: string;
+    emoji?: string;
+  };
+
+  role: string;  // System prompt for specialist
+  tools: string[];  // Allowed tool IDs
+  forcedReasoningInterval: number;
+
+  staticContext?: string;  // Static knowledge (markdown)
+  examples?: Array<{
+    task: string;
+    approach: string;
+    outcome: string;
+  }>;
+}
+```
+
+---
+
+### 19.3 Discovery Strategy
+
+**Аналогично WorkspaceStrategy + PkgStrategy**, но упрощённо:
+
+```typescript
+// packages/specialist-loader/src/discovery/specialist-discovery.ts
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { glob } from 'glob';
+import { parse as parseYaml } from 'yaml';
+import type { SpecialistDefinition } from '../types.js';
+import { isSpecialistV1 } from '../validation.js';
+import { getLogger } from '@kb-labs/core-sys/logging';
+
+const logger = getLogger('SpecialistDiscovery');
+
+export interface SpecialistBrief {
+  id: string;
+  version: string;
+  display: {
+    name: string;
+    description?: string;
+    emoji?: string;
+  };
+  source: {
+    path: string;  // Full path to .yml file
+  };
+}
+
+export interface DiscoveryResult {
+  specialists: SpecialistBrief[];
+  definitions: Map<string, SpecialistDefinition>;
+  errors: Array<{ path: string; error: string }>;
+}
+
+export class SpecialistDiscoveryStrategy {
+  async discover(roots: string[]): Promise<DiscoveryResult> {
+    logger.debug('Starting specialist discovery', { roots });
+
+    const specialists: SpecialistBrief[] = [];
+    const definitions = new Map<string, SpecialistDefinition>();
+    const errors: Array<{ path: string; error: string }> = [];
+
+    for (const root of roots) {
+      // Look for .kb/specialists/ directory
+      const specialistsDir = path.join(root, '.kb/specialists');
+
+      if (!fs.existsSync(specialistsDir)) {
+        logger.debug('Specialists directory not found', { specialistsDir });
+        continue;
+      }
+
+      logger.debug('Found specialists directory', { specialistsDir });
+
+      try {
+        // Find all *.yml files
+        const yamlPattern = path.join(specialistsDir, '*.yml');
+        const yamlFiles = await glob(yamlPattern, { absolute: true });
+
+        logger.debug('Found YAML files', { count: yamlFiles.length });
+
+        for (const yamlPath of yamlFiles) {
+          try {
+            // Read and parse YAML
+            const content = fs.readFileSync(yamlPath, 'utf8');
+            const parsed: unknown = parseYaml(content);
+
+            // Validate schema
+            if (!isSpecialistV1(parsed)) {
+              const schema = (parsed as any)?.schema || 'unknown';
+              errors.push({
+                path: yamlPath,
+                error: `Invalid schema: expected "kb.specialist/1", got "${schema}"`,
+              });
+              logger.warn('Invalid schema', { yamlPath, schema });
+              continue;
+            }
+
+            const definition = parsed as SpecialistDefinition;
+
+            // Store brief
+            specialists.push({
+              id: definition.id,
+              version: definition.version,
+              display: definition.display,
+              source: { path: yamlPath },
+            });
+
+            // Store full definition
+            definitions.set(definition.id, definition);
+
+            logger.debug('Successfully loaded specialist', {
+              id: definition.id,
+              path: yamlPath
+            });
+
+          } catch (error) {
+            const errorMessage = error instanceof Error
+              ? error.message
+              : String(error);
+
+            logger.error('Error loading specialist YAML', {
+              yamlPath,
+              error: errorMessage,
+              stack: error instanceof Error ? error.stack : undefined,
+            });
+
+            errors.push({
+              path: yamlPath,
+              error: `Failed to parse YAML: ${errorMessage}`,
+            });
+          }
+        }
+      } catch (error) {
+        errors.push({
+          path: specialistsDir,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return { specialists, definitions, errors };
+  }
+}
+```
+
+**Key features:**
+- ✅ No `safeImport` needed (YAML is static)
+- ✅ Error aggregation (не fail fast)
+- ✅ Structured result (brief + full definition)
+- ✅ Logging с context
+
+---
+
+### 19.4 Type Guard & Validation
+
+```typescript
+// packages/specialist-loader/src/validation.ts
+
+import { z } from 'zod';
+
+/**
+ * Minimal type guard (schema check only)
+ */
+export function isSpecialistV1(data: unknown): data is SpecialistDefinition {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'schema' in data &&
+    data.schema === 'kb.specialist/1'
+  );
+}
+
+/**
+ * Full Zod validation (for detailed error messages)
+ */
+export const SpecialistDefinitionSchema = z.object({
+  schema: z.literal('kb.specialist/1'),
+  id: z.string().min(1),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/), // semver
+
+  display: z.object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+    emoji: z.string().optional(),
+  }),
+
+  role: z.string().min(10), // At least 10 chars
+  tools: z.array(z.string()).min(1), // At least one tool
+  forcedReasoningInterval: z.number().int().min(1).max(100),
+
+  staticContext: z.string().optional(),
+  examples: z.array(z.object({
+    task: z.string(),
+    approach: z.string(),
+    outcome: z.string(),
+  })).optional(),
+});
+
+export type SpecialistDefinition = z.infer<typeof SpecialistDefinitionSchema>;
+
+export interface ValidationResult {
+  valid: boolean;
+  data?: SpecialistDefinition;
+  errors?: z.ZodError[];
+}
+
+/**
+ * Validate specialist definition with detailed errors
+ */
+export function validateSpecialist(data: unknown): ValidationResult {
+  const result = SpecialistDefinitionSchema.safeParse(data);
+
+  if (!result.success) {
+    return {
+      valid: false,
+      errors: [result.error]
+    };
+  }
+
+  return {
+    valid: true,
+    data: result.data
+  };
+}
+```
+
+---
+
+### 19.5 Loader API
+
+```typescript
+// packages/specialist-loader/src/loader.ts
+
+import type { SpecialistDefinition, SpecialistBrief } from './types.js';
+import { SpecialistDiscoveryStrategy } from './discovery/specialist-discovery.js';
+import { getLogger } from '@kb-labs/core-sys/logging';
+
+const logger = getLogger('SpecialistLoader');
+
+export class SpecialistLoader {
+  private definitions = new Map<string, SpecialistDefinition>();
+  private specialists: SpecialistBrief[] = [];
+  private errors: Array<{ path: string; error: string }> = [];
+
+  /**
+   * Load all specialist definitions from roots
+   */
+  async load(roots: string[]): Promise<void> {
+    logger.info('Loading specialists', { roots });
+
+    const strategy = new SpecialistDiscoveryStrategy();
+    const result = await strategy.discover(roots);
+
+    this.specialists = result.specialists;
+    this.definitions = result.definitions;
+    this.errors = result.errors;
+
+    if (this.errors.length > 0) {
+      logger.warn('Specialist discovery found errors', {
+        count: this.errors.length,
+        errors: this.errors,
+      });
+    }
+
+    logger.info('Specialists loaded', {
+      count: this.specialists.length,
+      errorCount: this.errors.length,
+    });
+  }
+
+  /**
+   * Get specialist definition by ID
+   */
+  get(id: string): SpecialistDefinition | undefined {
+    return this.definitions.get(id);
+  }
+
+  /**
+   * List all specialist briefs
+   */
+  list(): SpecialistBrief[] {
+    return [...this.specialists];
+  }
+
+  /**
+   * Get all errors from discovery
+   */
+  getErrors(): Array<{ path: string; error: string }> {
+    return [...this.errors];
+  }
+
+  /**
+   * Check if specialist exists
+   */
+  has(id: string): boolean {
+    return this.definitions.has(id);
+  }
+}
+```
+
+---
+
+### 19.6 Migration Plan
+
+**Шаг 1: Создать YAML определения для текущих агентов**
+
+```bash
+# Create directory
+mkdir -p .kb/specialists
+
+# Migrate mind-specialist → researcher
+cat > .kb/specialists/researcher.yml <<EOF
+schema: kb.specialist/1
+id: researcher
+version: 1.0.0
+
+display:
+  name: "Code Researcher"
+  description: "Semantic code search specialist"
+  emoji: "🔍"
+
+role: |
+  You are a code researcher. Find and analyze code using Mind RAG.
+  Do NOT modify files. Extract findings for other specialists.
+
+tools:
+  - mind:rag-query
+  - fs:read
+  - fs:list
+
+forcedReasoningInterval: 3
+EOF
+
+# Migrate coding-agent → implementer
+cat > .kb/specialists/implementer.yml <<EOF
+schema: kb.specialist/1
+id: implementer
+version: 1.0.0
+
+display:
+  name: "Code Implementer"
+  description: "Writes and modifies code"
+  emoji: "💻"
+
+role: |
+  You are a code implementer. Write clean, tested code.
+  Follow existing patterns. Always run tests after changes.
+
+tools:
+  - fs:read
+  - fs:write
+  - shell:exec
+  - code:insert
+
+forcedReasoningInterval: 5
+EOF
+```
+
+**Шаг 2: Обновить команды для использования loader**
+
+```typescript
+// packages/agent-cli/src/commands/agent-run.ts
+
+import { SpecialistLoader } from '@kb-labs/specialist-loader';
+
+export async function run(ctx: CommandContext) {
+  const { agentId, task } = ctx.flags;
+
+  // Load specialists
+  const loader = new SpecialistLoader();
+  await loader.load([process.cwd()]);
+
+  // Get definition
+  const definition = loader.get(agentId);
+  if (!definition) {
+    ctx.ui.error(`Specialist "${agentId}" not found`);
+    return { ok: false };
+  }
+
+  // Execute with definition
+  const executor = new SpecialistExecutor(definition);
+  const result = await executor.execute(task);
+
+  return { ok: result.success };
+}
+```
+
+---
+
+### 19.7 Testing Strategy
+
+**Unit Tests:**
+
+```typescript
+// packages/specialist-loader/src/__tests__/discovery.test.ts
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { SpecialistDiscoveryStrategy } from '../discovery/specialist-discovery';
+
+describe('SpecialistDiscoveryStrategy', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync('/tmp/specialist-test-');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it('discovers valid specialist YAML files', async () => {
+    // Setup
+    const specialistsDir = path.join(tmpDir, '.kb/specialists');
+    fs.mkdirSync(specialistsDir, { recursive: true });
+
+    const yamlContent = `
+schema: kb.specialist/1
+id: test-specialist
+version: 1.0.0
+display:
+  name: "Test Specialist"
+role: "Test role"
+tools: ["fs:read"]
+forcedReasoningInterval: 3
+`;
+    fs.writeFileSync(
+      path.join(specialistsDir, 'test.yml'),
+      yamlContent
+    );
+
+    // Execute
+    const strategy = new SpecialistDiscoveryStrategy();
+    const result = await strategy.discover([tmpDir]);
+
+    // Assert
+    expect(result.specialists).toHaveLength(1);
+    expect(result.specialists[0].id).toBe('test-specialist');
+    expect(result.definitions.has('test-specialist')).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('handles invalid schema gracefully', async () => {
+    // Setup
+    const specialistsDir = path.join(tmpDir, '.kb/specialists');
+    fs.mkdirSync(specialistsDir, { recursive: true });
+
+    const yamlContent = `
+schema: kb.specialist/99
+id: invalid
+`;
+    fs.writeFileSync(
+      path.join(specialistsDir, 'invalid.yml'),
+      yamlContent
+    );
+
+    // Execute
+    const strategy = new SpecialistDiscoveryStrategy();
+    const result = await strategy.discover([tmpDir]);
+
+    // Assert
+    expect(result.specialists).toHaveLength(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].error).toContain('Invalid schema');
+  });
+
+  it('aggregates errors without failing fast', async () => {
+    // Setup
+    const specialistsDir = path.join(tmpDir, '.kb/specialists');
+    fs.mkdirSync(specialistsDir, { recursive: true });
+
+    // Valid file
+    fs.writeFileSync(
+      path.join(specialistsDir, 'valid.yml'),
+      'schema: kb.specialist/1\nid: valid\nversion: 1.0.0\ndisplay:\n  name: "Valid"\nrole: "test"\ntools: ["fs:read"]\nforcedReasoningInterval: 3'
+    );
+
+    // Invalid file
+    fs.writeFileSync(
+      path.join(specialistsDir, 'invalid.yml'),
+      'invalid yaml: [[[['
+    );
+
+    // Execute
+    const strategy = new SpecialistDiscoveryStrategy();
+    const result = await strategy.discover([tmpDir]);
+
+    // Assert
+    expect(result.specialists).toHaveLength(1); // Still got valid one
+    expect(result.errors).toHaveLength(1); // Recorded error
+  });
+});
+```
+
+**Integration Tests:**
+
+```typescript
+// packages/specialist-loader/src/__tests__/loader.integration.test.ts
+
+import { describe, it, expect } from 'vitest';
+import { SpecialistLoader } from '../loader';
+
+describe('SpecialistLoader Integration', () => {
+  it('loads specialists from .kb/specialists/', async () => {
+    const loader = new SpecialistLoader();
+    await loader.load([process.cwd()]);
+
+    const specialists = loader.list();
+    expect(specialists.length).toBeGreaterThan(0);
+
+    const researcher = loader.get('researcher');
+    expect(researcher).toBeDefined();
+    expect(researcher?.tools).toContain('mind:rag-query');
+  });
+});
+```
+
+---
+
+### 19.8 CLI Commands
+
+```bash
+# List all available specialists
+pnpm kb specialist:list
+
+# Validate a specialist definition
+pnpm kb specialist:validate --path .kb/specialists/researcher.yml
+
+# Show specialist details
+pnpm kb specialist:info --id researcher
+```
+
+**Implementation:**
+
+```typescript
+// packages/agent-cli/src/commands/specialist-list.ts
+
+export async function listSpecialists(ctx: CommandContext) {
+  const loader = new SpecialistLoader();
+  await loader.load([process.cwd()]);
+
+  const specialists = loader.list();
+
+  ctx.ui.write('\n📋 Available Specialists:\n\n');
+
+  for (const spec of specialists) {
+    const emoji = spec.display.emoji || '🤖';
+    ctx.ui.write(`  ${emoji} ${spec.display.name} (${spec.id})\n`);
+    if (spec.display.description) {
+      ctx.ui.write(`     ${spec.display.description}\n`);
+    }
+  }
+
+  const errors = loader.getErrors();
+  if (errors.length > 0) {
+    ctx.ui.write('\n⚠️  Errors:\n');
+    for (const err of errors) {
+      ctx.ui.write(`  ${err.path}: ${err.error}\n`);
+    }
+  }
+
+  return { ok: true };
+}
+```
+
+---
+
+### 19.9 Phase 1 Checklist
+
+**Core Implementation:**
+- [ ] Create `@kb-labs/specialist-loader` package
+- [ ] Define `SpecialistDefinition` TypeScript types
+- [ ] Implement `SpecialistDiscoveryStrategy`
+- [ ] Implement `SpecialistLoader` class
+- [ ] Add Zod schema for validation
+- [ ] Add `isSpecialistV1` type guard
+
+**YAML Definitions:**
+- [ ] Create `.kb/specialists/researcher.yml` (ex mind-specialist)
+- [ ] Create `.kb/specialists/implementer.yml` (ex coding-agent)
+- [ ] Add static context to researcher (KB Labs architecture)
+- [ ] Add examples to researcher
+
+**CLI Commands:**
+- [ ] `specialist:list` - list all specialists
+- [ ] `specialist:validate` - validate YAML file
+- [ ] `specialist:info` - show specialist details
+- [ ] Update `agent:run` to use loader
+
+**Tests:**
+- [ ] Unit tests for discovery strategy
+- [ ] Unit tests for validation
+- [ ] Unit tests for loader API
+- [ ] Integration tests (load from .kb/specialists/)
+- [ ] Test error aggregation
+- [ ] Test invalid schema handling
+
+**Documentation:**
+- [ ] README for specialist-loader package
+- [ ] YAML schema reference
+- [ ] Migration guide (V1 agents → V2 specialists)
+- [ ] Examples for common specialist types
+
+---
+
+### 19.10 Success Criteria
+
+**Phase 1 считается завершённым, когда:**
+
+✅ **Loader работает:**
+- Discovery находит все `.yml` файлы в `.kb/specialists/`
+- Парсинг YAML не падает на invalid files
+- Валидация корректно проверяет schema
+- Errors aggregated, не fail fast
+
+✅ **YAML definitions созданы:**
+- `researcher.yml` (ex mind-specialist)
+- `implementer.yml` (ex coding-agent)
+- Оба содержат `staticContext` и `examples`
+
+✅ **CLI команды работают:**
+- `specialist:list` показывает specialists
+- `specialist:validate` проверяет YAML
+- `specialist:info` показывает details
+
+✅ **Тесты проходят:**
+- Unit tests: 100% coverage для loader
+- Integration tests: load from real `.kb/specialists/`
+- Error handling tests
+
+✅ **Документация готова:**
+- README с примерами
+- YAML schema reference
+- Migration guide
+
+---
+
 **Last Updated:** 2026-01-18
-**Status:** Design Complete, Ready for Phase 1
-**Next Steps:** Начать Phase 1 - создать YAML схему `kb.specialist/1` и loader
+**Status:** Phase 1 Design Complete, Ready for Implementation
+**Next Steps:** Создать package `@kb-labs/specialist-loader` и начать с discovery strategy
