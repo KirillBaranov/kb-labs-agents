@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { validateSpecialistOutput, SpecialistOutputSchema } from '../specialist-output-schema.js';
+import { validateSpecialistOutput, SpecialistOutputSchema } from '../agent-output-schema.js';
 
 describe('SpecialistOutput Schema Validation', () => {
   describe('validateSpecialistOutput()', () => {

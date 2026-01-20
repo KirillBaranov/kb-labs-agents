@@ -17,7 +17,7 @@ export interface Subtask {
   complexity: LLMTier;
   /** Dependencies (IDs of subtasks that must complete first) */
   dependencies?: number[];
-  /** Optional: Specialist agent to handle this subtask */
+  /** Optional: Agent agent to handle this subtask */
   agentId?: string;
   /** Optional: Reasoning for agent selection */
   reasoning?: string;

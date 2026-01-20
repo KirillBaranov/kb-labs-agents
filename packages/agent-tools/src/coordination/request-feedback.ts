@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/coordination
- * Tool for requesting feedback from specialists.
+ * Tool for requesting feedback from agents.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -11,8 +11,8 @@ import type { LLMTool } from '@kb-labs/core-platform';
 export interface FeedbackRequest {
   /** Subtask ID to get feedback on */
   subtaskId: string;
-  /** Specialist to request feedback from */
-  specialistId: string;
+  /** Agent to request feedback from */
+  agentId: string;
   /** Specific questions to answer */
   questions: string[];
   /** Reason for feedback request */
@@ -20,38 +20,38 @@ export interface FeedbackRequest {
 }
 
 /**
- * Create LLM tool for requesting specialist feedback.
+ * Create LLM tool for requesting agent feedback.
  *
- * Allows orchestrator to ask specialists for clarification or additional info.
+ * Allows orchestrator to ask agents for clarification or additional info.
  *
- * @param validSpecialistIds - Array of valid specialist IDs
+ * @param validSpecialistIds - Array of valid agent IDs
  * @returns LLM tool definition
  */
 export function createRequestFeedbackTool(validSpecialistIds: string[]): LLMTool {
   return {
     name: 'request_feedback',
-    description: `Request feedback or clarification from a specialist about their work.
+    description: `Request feedback or clarification from an agent about their work.
 
-**Available specialists:**
+**Available agents:**
 ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 
 **Use this tool when:**
-- Specialist output needs clarification
+- Agent output needs clarification
 - Additional information is needed before proceeding
 - Validation of approach or findings is required`,
 
     inputSchema: {
       type: 'object',
-      required: ['subtaskId', 'specialistId', 'questions', 'reason'],
+      required: ['subtaskId', 'agentId', 'questions', 'reason'],
       properties: {
         subtaskId: {
           type: 'string',
           description: 'Subtask ID to get feedback on',
           pattern: '^subtask-\\d+$',
         },
-        specialistId: {
+        agentId: {
           type: 'string',
-          description: 'Specialist to request feedback from',
+          description: 'Agent to request feedback from',
           enum: validSpecialistIds,
         },
         questions: {

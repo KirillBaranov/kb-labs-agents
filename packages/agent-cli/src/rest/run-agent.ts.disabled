@@ -41,7 +41,7 @@ export default defineHandler({
     try {
       // Discover agent configuration
       const registry = new AgentRegistry(ctx);
-      const config = await registry.loadConfig(agentId);
+      const config = await registry.load(agentId);
 
       if (!config) {
         return {
@@ -56,7 +56,7 @@ export default defineHandler({
       }
 
       // Load agent context
-      const agentContext = await registry.loadContext(agentId, config);
+      const agentContext = await registry.getContext(agentId, config);
 
       // Discover tools
       const toolDiscoverer = new ToolDiscoverer(ctx);

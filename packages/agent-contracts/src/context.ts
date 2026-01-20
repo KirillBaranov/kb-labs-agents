@@ -1,20 +1,20 @@
 /**
  * @module @kb-labs/agent-contracts/context
- * Execution context for specialist agents
+ * Execution context for agent agents
  *
- * Provides context passing from orchestrator to specialists including:
+ * Provides context passing from orchestrator to agents including:
  * - Working directories and output paths
- * - Previous results from dependency specialists
+ * - Previous results from dependency agents
  * - Findings to reuse
- * - Available files created by previous specialists
+ * - Available files created by previous agents
  */
 
 import type { DelegatedResult } from './callbacks.js';
 
 /**
- * Execution context passed from orchestrator to specialist
+ * Execution context passed from orchestrator to agent
  *
- * Contains all necessary information for specialist to execute
+ * Contains all necessary information for agent to execute
  * its task with full awareness of previous work and environment.
  */
 export interface ExecutionContext {
@@ -32,10 +32,10 @@ export interface ExecutionContext {
    * Optional output directory for generated artifacts
    *
    * If specified (extracted from task like "output to ./reports"):
-   * - Specialist should write artifacts here
+   * - Agent should write artifacts here
    *
    * If undefined:
-   * - Specialist works directly in projectRoot
+   * - Agent works directly in projectRoot
    * - Modifies files in place (implementer, reviewer, etc.)
    */
   outputDir?: string;
@@ -51,19 +51,19 @@ export interface ExecutionContext {
   subtaskId: string;
 
   /**
-   * Results from dependency specialists
+   * Results from dependency agents
    * Key: subtask ID, Value: delegated result
    */
   previousResults: Map<string, DelegatedResult>;
 
   /**
-   * Key findings extracted from previous specialists
+   * Key findings extracted from previous agents
    * (summaries, facts, insights)
    */
   findings: string[];
 
   /**
-   * Files created or modified by previous specialists
+   * Files created or modified by previous agents
    */
   availableFiles: {
     /**

@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/adaptive-orchestrator/agent-execution-helper
- * Helper for executing specialist agents with full tool integration.
+ * Helper for executing agent agents with full tool integration.
  *
  * Uses AgentExecutor for real agent execution with tools.
  */
@@ -15,7 +15,7 @@ import { ToolDiscoverer } from '@kb-labs/agent-core';
 import { AgentRegistry } from '@kb-labs/agent-core';
 
 /**
- * Execute subtask with a specialist agent using full AgentExecutor.
+ * Execute subtask with an agent agent using full AgentExecutor.
  *
  * This implementation:
  * - Loads agent config and context using AgentRegistry

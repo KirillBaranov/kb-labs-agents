@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/planning
- * Tool for dynamically revising execution plans based on specialist findings.
+ * Tool for dynamically revising execution plans based on agent findings.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -39,11 +39,11 @@ export interface RevisedPlan {
  * Create LLM tool for revising execution plans.
  *
  * Allows orchestrator to dynamically adapt plan based on:
- * - Specialist findings (Phase 2 adaptive feedback)
+ * - Agent findings (Phase 2 adaptive feedback)
  * - Discovered blockers or issues
  * - New requirements or context
  *
- * @param validSpecialistIds - Array of valid specialist IDs
+ * @param validSpecialistIds - Array of valid agent IDs
  * @returns LLM tool definition
  *
  * @example
@@ -62,16 +62,16 @@ export function createReviseExecutionPlanTool(validSpecialistIds: string[]): LLM
     description: `Revise the current execution plan by adding, removing, modifying, or reordering subtasks.
 
 **Use this tool when:**
-- Specialist findings reveal need for additional subtasks (e.g., bug found → add fix subtask)
+- Agent findings reveal need for additional subtasks (e.g., bug found → add fix subtask)
 - A subtask is no longer needed (e.g., feature already exists)
 - Subtask priorities or dependencies need adjustment
 - Execution order needs to change based on new information
 
-**Available specialists:**
+**Available agents:**
 ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 
 **Guidelines:**
-- Add subtasks when specialist findings require follow-up work
+- Add subtasks when agent findings require follow-up work
 - Remove subtasks that are redundant or no longer applicable
 - Modify subtasks to update description, priority, or dependencies
 - Provide clear reasons for each revision`,
@@ -96,11 +96,11 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
               subtask: {
                 type: 'object',
                 description: 'Subtask to add or modify (required for add/modify actions)',
-                required: ['id', 'description', 'specialistId', 'dependencies', 'priority', 'estimatedComplexity'],
+                required: ['id', 'description', 'agentId', 'dependencies', 'priority', 'estimatedComplexity'],
                 properties: {
                   id: { type: 'string', pattern: '^subtask-\\d+$' },
                   description: { type: 'string', minLength: 10, maxLength: 500 },
-                  specialistId: { type: 'string', enum: validSpecialistIds },
+                  agentId: { type: 'string', enum: validSpecialistIds },
                   dependencies: { type: 'array', items: { type: 'string' } },
                   priority: { type: 'number', minimum: 1, maximum: 10 },
                   estimatedComplexity: { type: 'string', enum: ['low', 'medium', 'high'] },

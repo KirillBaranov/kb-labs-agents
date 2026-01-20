@@ -2,7 +2,7 @@
  * Tool Trace Types
  *
  * Runtime truth system for verification and anti-hallucination.
- * Records every tool invocation during specialist execution.
+ * Records every tool invocation during agent execution.
  */
 
 /**
@@ -27,7 +27,7 @@ export interface EvidenceRef {
 /**
  * Tool invocation record
  *
- * Complete record of a single tool execution during specialist run
+ * Complete record of a single tool execution during agent run
  */
 export interface ToolInvocation {
   /** Unique invocation ID */
@@ -48,7 +48,7 @@ export interface ToolInvocation {
   /**
    * Purpose of invocation
    *
-   * - execution: Normal tool call by specialist
+   * - execution: Normal tool call by agent
    * - verification: Probe/check by verifier (prevents recursion)
    */
   purpose: 'execution' | 'verification';
@@ -103,7 +103,7 @@ export interface ToolInvocation {
 }
 
 /**
- * Complete tool trace for a specialist execution
+ * Complete tool trace for an agent execution
  *
  * Source of truth for verification - records everything that actually happened
  */
@@ -114,8 +114,8 @@ export interface ToolTrace {
   /** Session ID (links to orchestrator session) */
   sessionId: string;
 
-  /** Specialist ID that generated this trace */
-  specialistId: string;
+  /** Agent ID that generated this trace */
+  agentId: string;
 
   /** All tool invocations in order */
   invocations: ToolInvocation[];
@@ -123,16 +123,16 @@ export interface ToolTrace {
   /** Trace creation timestamp */
   createdAt: Date;
 
-  /** Trace completion timestamp (when specialist finished) */
+  /** Trace completion timestamp (when agent finished) */
   completedAt?: Date;
 }
 
 /**
- * Specialist output (includes trace reference)
+ * Agent output (includes trace reference)
  *
  * Extended from base AgentResult to include verification data
  */
-export interface SpecialistOutput {
+export interface AgentOutput {
   /** Summary of what was accomplished */
   summary: string;
 
@@ -145,9 +145,9 @@ export interface SpecialistOutput {
   traceRef: string;
 
   /**
-   * Optional claims made by specialist
+   * Optional claims made by agent
    *
-   * Specialist can explicitly claim what it did (e.g., "I created file X").
+   * Agent can explicitly claim what it did (e.g., "I created file X").
    * Verifier checks claims against ToolTrace.
    */
   claims?: Claim[];
@@ -162,9 +162,9 @@ export interface SpecialistOutput {
 }
 
 /**
- * Claim made by specialist
+ * Claim made by agent
  *
- * Explicit statement about what the specialist did.
+ * Explicit statement about what the agent did.
  * Verifier validates claims against ToolTrace and filesystem state.
  */
 export type Claim =

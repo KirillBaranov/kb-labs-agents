@@ -2,7 +2,7 @@
  * Schema Validator - Runtime Validation for Plugin Tool Outputs
  *
  * Validates plugin tool outputs against their declared schemas before
- * returning to the specialist. This is part of the anti-hallucination system.
+ * returning to the agent. This is part of the anti-hallucination system.
  */
 
 import type { ToolResult } from '@kb-labs/agent-contracts';
@@ -13,7 +13,7 @@ import type { z } from 'zod';
  * Schema validator interface
  *
  * Validates tool outputs against plugin manifest schemas.
- * This runs BEFORE returning results to specialist to prevent hallucinated outputs.
+ * This runs BEFORE returning results to agent to prevent hallucinated outputs.
  */
 export interface ISchemaValidator {
   /**

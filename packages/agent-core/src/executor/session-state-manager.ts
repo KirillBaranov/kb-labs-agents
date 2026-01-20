@@ -1,7 +1,7 @@
 /**
  * Session State Manager (V2 Architecture)
  *
- * Manages specialist session state with hybrid lazy-loading:
+ * Manages agent session state with hybrid lazy-loading:
  * - Fixed ~1.2K token inline state (summary, findings)
  * - Large artifacts lazy-loaded from cache via useCache()
  * - Prevents token explosion while maintaining context
@@ -56,7 +56,7 @@ export interface Artifact {
 /**
  * Session State Manager
  *
- * Manages specialist memory with token-efficient design:
+ * Manages agent memory with token-efficient design:
  * - Keeps inline state under ~1.2K tokens
  * - Stores large data in cache (via useCache)
  * - Provides lazy loading for artifacts

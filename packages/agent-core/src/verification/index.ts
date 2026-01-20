@@ -1,19 +1,19 @@
 /**
  * Verification System - Anti-Hallucination Verification
  *
- * 3-level validation system for specialist outputs:
- * - Level 1: SpecialistOutput structure validation (Zod)
+ * 3-level validation system for agent outputs:
+ * - Level 1: AgentOutput structure validation (Zod)
  * - Level 2: Plugin tool output schema validation
  * - Level 3: Filesystem state validation for built-in tools
  *
- * Part of ADR-0002: Specialist Output Verification System
+ * Part of ADR-0002: Agent Output Verification System
  */
 
 // Level 1: Structure validation
 export {
-  validateSpecialistOutput,
-  type SpecialistOutputValidationResult,
-  SpecialistOutputSchema,
+  validateAgentOutput,
+  type AgentOutputValidationResult,
+  AgentOutputSchema,
   ClaimSchema,
   CompactArtifactSchema,
   EvidenceRefSchema,
@@ -22,8 +22,8 @@ export {
   FileDeleteClaimSchema,
   CommandExecutedClaimSchema,
   CodeInsertedClaimSchema,
-  type SpecialistOutputValidated,
-} from './specialist-output-schema.js';
+  type AgentOutputValidated,
+} from './agent-output-schema.js';
 
 // Level 2: Plugin schema validation
 export {

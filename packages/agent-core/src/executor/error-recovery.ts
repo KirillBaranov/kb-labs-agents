@@ -226,7 +226,7 @@ Output JSON:
    */
   private getSystemPrompt(): string {
     return `
-You are an error recovery specialist for an AI agent.
+You are an error recovery agent for an AI agent.
 
 Your job is to:
 1. Analyze why the agent is stuck or failing

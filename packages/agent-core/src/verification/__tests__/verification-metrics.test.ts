@@ -30,7 +30,7 @@ describe('VerificationMetrics', () => {
   describe('record()', () => {
     it('should record successful Level 1 validation', () => {
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         subtaskId: 'subtask-1',
         level: 1,
         status: 'passed',
@@ -49,7 +49,7 @@ describe('VerificationMetrics', () => {
 
     it('should record failed Level 1 validation', () => {
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 1,
         status: 'failed',
         errorCategory: 'missing_field',
@@ -68,7 +68,7 @@ describe('VerificationMetrics', () => {
 
     it('should record Level 3 validation', () => {
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 3,
         status: 'passed',
         durationMs: 45,
@@ -84,7 +84,7 @@ describe('VerificationMetrics', () => {
 
     it('should track multiple events', () => {
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 1,
         status: 'passed',
         durationMs: 10,
@@ -92,7 +92,7 @@ describe('VerificationMetrics', () => {
       });
 
       metrics.record({
-        specialistId: 'tester',
+        agentId: 'tester',
         level: 1,
         status: 'passed',
         durationMs: 12,
@@ -100,7 +100,7 @@ describe('VerificationMetrics', () => {
       });
 
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 3,
         status: 'failed',
         errorCategory: 'hash_mismatch',
@@ -116,9 +116,9 @@ describe('VerificationMetrics', () => {
       expect(aggregates.passRate).toBe(2 / 3);
     });
 
-    it('should track metrics by specialist', () => {
+    it('should track metrics by agent', () => {
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 1,
         status: 'passed',
         durationMs: 10,
@@ -126,7 +126,7 @@ describe('VerificationMetrics', () => {
       });
 
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 3,
         status: 'failed',
         errorCategory: 'hash_mismatch',
@@ -135,7 +135,7 @@ describe('VerificationMetrics', () => {
       });
 
       metrics.record({
-        specialistId: 'tester',
+        agentId: 'tester',
         level: 1,
         status: 'passed',
         durationMs: 8,
@@ -159,7 +159,7 @@ describe('VerificationMetrics', () => {
 
     it('should calculate average duration per level', () => {
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 1,
         status: 'passed',
         durationMs: 10,
@@ -167,7 +167,7 @@ describe('VerificationMetrics', () => {
       });
 
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 1,
         status: 'passed',
         durationMs: 20,
@@ -183,7 +183,7 @@ describe('VerificationMetrics', () => {
       // Add 1100 events
       for (let i = 0; i < 1100; i++) {
         metrics.record({
-          specialistId: 'test',
+          agentId: 'test',
           level: 1,
           status: 'passed',
           durationMs: 10,
@@ -210,7 +210,7 @@ describe('VerificationMetrics', () => {
 
     it('should aggregate error categories correctly', () => {
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 1,
         status: 'failed',
         errorCategory: 'missing_field',
@@ -219,7 +219,7 @@ describe('VerificationMetrics', () => {
       });
 
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 3,
         status: 'failed',
         errorCategory: 'hash_mismatch',
@@ -228,7 +228,7 @@ describe('VerificationMetrics', () => {
       });
 
       metrics.record({
-        specialistId: 'tester',
+        agentId: 'tester',
         level: 3,
         status: 'failed',
         errorCategory: 'hash_mismatch',
@@ -247,7 +247,7 @@ describe('VerificationMetrics', () => {
   describe('clear()', () => {
     it('should clear all events', () => {
       metrics.record({
-        specialistId: 'implementer',
+        agentId: 'implementer',
         level: 1,
         status: 'passed',
         durationMs: 10,
@@ -266,7 +266,7 @@ describe('VerificationMetrics', () => {
     it('should return recent events with limit', () => {
       for (let i = 0; i < 10; i++) {
         metrics.record({
-          specialistId: 'test',
+          agentId: 'test',
           level: 1,
           status: 'passed',
           durationMs: i,

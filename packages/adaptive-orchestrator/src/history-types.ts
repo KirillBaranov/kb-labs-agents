@@ -94,7 +94,7 @@ export interface OrchestrationHistory {
   classificationMethod: 'llm' | 'heuristic' | 'hybrid';
   /** Execution plan created */
   plan: ExecutionPlan;
-  /** Number of specialist agents loaded */
+  /** Number of agent agents loaded */
   agentsLoadedCount: number;
   /** Agent IDs that were available */
   availableAgents: string[];

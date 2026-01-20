@@ -12,16 +12,15 @@ export default defineConfig({
     'src/cli/commands/init.ts',   // Agent commands
     'src/cli/commands/list.ts',
     'src/cli/commands/run.ts',
-    'src/cli/commands/specialist-run.ts', // Specialist command (V2)
-    'src/cli/commands/orchestrator-list.ts', // Orchestrator list command (V2)
-    'src/cli/commands/orchestrator-run.ts', // Orchestrator command (V2)
+    'src/cli/commands/agent-run.ts', // Agent orchestrator command
+    'src/cli/commands/inspect.ts', // Agent inspect command
     'src/cli/commands/hello.ts',  // V3 hello command
     'src/cli/commands/test-loader.ts',
     'src/cli/commands/hello-v3.ts',
     'src/rest/handlers/hello-handler.ts',
     'src/rest/schemas/hello-schema.ts',
-    'src/rest/run-agent.ts',      // REST API handlers
-    'src/rest/list-agents.ts',
+    // 'src/rest/run-agent.ts',      // REST API handlers (disabled - needs AgentOutcome update)
+    // 'src/rest/list-agents.ts',
     'src/studio/widgets/hello-widget.tsx',
     // 'src/jobs/hello.ts' // TODO: Jobs not supported in V3 SDK yet
   ],

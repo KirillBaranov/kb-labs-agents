@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/quality
- * Tool for validating specialist output quality.
+ * Tool for validating agent output quality.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -23,8 +23,8 @@ export interface ValidationCriterion {
 export interface OutputValidation {
   /** Subtask ID being validated */
   subtaskId: string;
-  /** Specialist who produced the output */
-  specialistId: string;
+  /** Agent who produced the output */
+  agentId: string;
   /** Overall validation status */
   isValid: boolean;
   /** Individual criteria results */
@@ -36,7 +36,7 @@ export interface OutputValidation {
 }
 
 /**
- * Create LLM tool for validating specialist output.
+ * Create LLM tool for validating agent output.
  *
  * Checks output against quality criteria and requirements.
  *
@@ -45,7 +45,7 @@ export interface OutputValidation {
 export function createValidateOutputTool(): LLMTool {
   return {
     name: 'validate_output',
-    description: `Validate specialist output against quality criteria and requirements.
+    description: `Validate agent output against quality criteria and requirements.
 
 **Common validation criteria:**
 - Completeness: All required deliverables present
@@ -55,22 +55,22 @@ export function createValidateOutputTool(): LLMTool {
 - Functionality: Works as expected (tests pass)
 
 **Use this tool to:**
-- Verify specialist output meets requirements
+- Verify agent output meets requirements
 - Identify quality issues before proceeding
 - Document validation evidence`,
 
     inputSchema: {
       type: 'object',
-      required: ['subtaskId', 'specialistId', 'isValid', 'criteria', 'assessment'],
+      required: ['subtaskId', 'agentId', 'isValid', 'criteria', 'assessment'],
       properties: {
         subtaskId: {
           type: 'string',
           description: 'ID of subtask being validated',
           pattern: '^subtask-\\d+$',
         },
-        specialistId: {
+        agentId: {
           type: 'string',
-          description: 'Specialist who produced the output',
+          description: 'Agent who produced the output',
         },
         isValid: {
           type: 'boolean',

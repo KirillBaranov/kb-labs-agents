@@ -2,7 +2,7 @@
  * Built-In Tool Verifier - Filesystem State Validation
  *
  * Level 3 validation: Verifies filesystem state for built-in tools (fs:*, shell:*, code:*)
- * by checking actual files against claims made by specialists.
+ * by checking actual files against claims made by agents.
  *
  * Part of the anti-hallucination verification system (ADR-0002).
  */

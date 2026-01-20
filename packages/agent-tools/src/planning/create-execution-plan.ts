@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/planning
- * Tool for creating structured execution plans with specialist delegation.
+ * Tool for creating structured execution plans with agent delegation.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -13,8 +13,8 @@ export interface SubTask {
   id: string;
   /** Clear, actionable description of what to do */
   description: string;
-  /** ID of specialist to delegate to */
-  specialistId: string;
+  /** ID of agent to delegate to */
+  agentId: string;
   /** Array of subtask IDs that must complete first */
   dependencies: string[];
   /** Priority 1-10 (10 = critical, 1 = optional) */
@@ -36,7 +36,7 @@ export interface ExecutionPlan {
  *
  * Forces LLM to return a valid JSON schema with at least 1 subtask.
  *
- * @param validSpecialistIds - Array of valid specialist IDs
+ * @param validSpecialistIds - Array of valid agent IDs
  * @returns LLM tool definition
  *
  * @example
@@ -55,21 +55,21 @@ export interface ExecutionPlan {
 export function createExecutionPlanTool(validSpecialistIds: string[]): LLMTool {
   return {
     name: 'create_execution_plan',
-    description: `Create a structured execution plan by delegating tasks to specialist team members.
+    description: `Create a structured execution plan by delegating tasks to agent team members.
 
 **Your role as orchestrator:**
 - Analyze the user's task requirements
 - Break down complex tasks into logical subtasks (2-4 subtasks recommended)
-- Assign each subtask to the most appropriate specialist
+- Assign each subtask to the most appropriate agent
 - Define dependencies between subtasks
 - Set priorities (higher number = more critical)
 
-**Available specialists:**
+**Available agents:**
 ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 
 **Guidelines:**
 - ALWAYS create at least 1 subtask (NEVER return empty array)
-- Use ONLY specialists from the available list above
+- Use ONLY agents from the available list above
 - Keep subtask descriptions clear and actionable
 - Define dependencies carefully (e.g., reviewer depends on implementer)
 - Assign realistic priorities (10 = critical blocker, 1 = nice-to-have)
@@ -90,7 +90,7 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
           minItems: 1, // CRITICAL: Prevents empty array
           items: {
             type: 'object',
-            required: ['id', 'description', 'specialistId', 'dependencies', 'priority', 'estimatedComplexity'],
+            required: ['id', 'description', 'agentId', 'dependencies', 'priority', 'estimatedComplexity'],
             properties: {
               id: {
                 type: 'string',
@@ -103,9 +103,9 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
                 minLength: 10,
                 maxLength: 500,
               },
-              specialistId: {
+              agentId: {
                 type: 'string',
-                description: 'ID of specialist to delegate this subtask to',
+                description: 'ID of agent to delegate this subtask to',
                 enum: validSpecialistIds,
               },
               dependencies: {

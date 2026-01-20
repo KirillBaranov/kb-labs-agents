@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/quality
- * Tool for requesting revisions to specialist output.
+ * Tool for requesting revisions to agent output.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -11,8 +11,8 @@ import type { LLMTool } from '@kb-labs/core-platform';
 export interface RevisionRequest {
   /** Subtask ID needing revision */
   subtaskId: string;
-  /** Specialist to revise */
-  specialistId: string;
+  /** Agent to revise */
+  agentId: string;
   /** Issues requiring revision */
   issues: string[];
   /** Specific changes requested */
@@ -26,17 +26,17 @@ export interface RevisionRequest {
 /**
  * Create LLM tool for requesting output revisions.
  *
- * Asks specialist to fix issues or make improvements.
+ * Asks agent to fix issues or make improvements.
  *
- * @param validSpecialistIds - Array of valid specialist IDs
+ * @param validSpecialistIds - Array of valid agent IDs
  * @returns LLM tool definition
  */
 export function createRequestRevisionTool(validSpecialistIds: string[]): LLMTool {
   return {
     name: 'request_revision',
-    description: `Request revision to specialist output due to issues or needed improvements.
+    description: `Request revision to agent output due to issues or needed improvements.
 
-**Available specialists:**
+**Available agents:**
 ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 
 **Use this tool when:**
@@ -52,16 +52,16 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 
     inputSchema: {
       type: 'object',
-      required: ['subtaskId', 'specialistId', 'issues', 'requestedChanges', 'priority', 'reason'],
+      required: ['subtaskId', 'agentId', 'issues', 'requestedChanges', 'priority', 'reason'],
       properties: {
         subtaskId: {
           type: 'string',
           description: 'ID of subtask needing revision',
           pattern: '^subtask-\\d+$',
         },
-        specialistId: {
+        agentId: {
           type: 'string',
-          description: 'Specialist to revise',
+          description: 'Agent to revise',
           enum: validSpecialistIds,
         },
         issues: {

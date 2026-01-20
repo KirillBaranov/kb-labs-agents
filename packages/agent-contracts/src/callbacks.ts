@@ -11,7 +11,7 @@
  * - Final completion with stats
  */
 
-import type { SpecialistOutcome } from './outcome.js';
+import type { AgentOutcome } from './outcome.js';
 
 /**
  * Subtask definition
@@ -21,8 +21,8 @@ import type { SpecialistOutcome } from './outcome.js';
 export interface SubTask {
   /** Unique subtask ID */
   id: string;
-  /** Specialist ID to execute this subtask */
-  specialistId: string;
+  /** Agent ID to execute this subtask */
+  agentId: string;
   /** Task description */
   description: string;
   /** Priority (1-10, lower = higher priority) */
@@ -59,7 +59,7 @@ export interface ExecutionStats {
   failedSubtasks: number;
   /** Total execution duration in milliseconds */
   totalDurationMs: number;
-  /** Total tokens used across all specialists */
+  /** Total tokens used across all agents */
   totalTokensUsed: number;
   /** Total estimated cost in USD */
   totalCostUsd: number;
@@ -78,16 +78,16 @@ export interface Progress {
 }
 
 /**
- * Delegated result from specialist execution
+ * Delegated result from agent execution
  *
- * This is what orchestrator receives from specialists.
- * Note: Full SpecialistResult includes steps, but orchestrator only needs summary.
+ * This is what orchestrator receives from agents.
+ * Note: Full AgentResult includes steps, but orchestrator only needs summary.
  */
 export interface DelegatedResult {
   /** Subtask ID */
   subtaskId: string;
-  /** Specialist ID */
-  specialistId: string;
+  /** Agent ID */
+  agentId: string;
   /** Whether execution was successful */
   success: boolean;
   /** Structured output (if schema defined) */
@@ -130,7 +130,7 @@ export interface DelegatedResult {
  *     console.log(`📋 Plan created: ${plan.subtasks.length} subtasks`);
  *   },
  *   onSubtaskStart: (subtask, progress) => {
- *     console.log(`⏳ [${progress.current}/${progress.total}] Starting ${subtask.specialistId}...`);
+ *     console.log(`⏳ [${progress.current}/${progress.total}] Starting ${subtask.agentId}...`);
  *   },
  *   onSubtaskComplete: (subtask, result, progress) => {
  *     console.log(`✅ [${progress.current}/${progress.total}] Completed in ${result.durationMs}ms`);
@@ -166,7 +166,7 @@ export interface OrchestratorCallbacks {
    * Called when subtask completes successfully
    *
    * @param subtask - Subtask that completed
-   * @param result - Delegated result from specialist
+   * @param result - Delegated result from agent
    * @param progress - Current progress (current/total)
    */
   onSubtaskComplete?: (subtask: SubTask, result: DelegatedResult, progress: Progress) => void;

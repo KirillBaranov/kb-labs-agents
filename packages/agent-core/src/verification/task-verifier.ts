@@ -1,8 +1,8 @@
 /**
- * Task Verifier - 3-Level Specialist Output Validation
+ * Task Verifier - 3-Level Agent Output Validation
  *
  * Main verification component that orchestrates all 3 validation levels:
- * - Level 1: SpecialistOutput structure validation (Zod)
+ * - Level 1: AgentOutput structure validation (Zod)
  * - Level 2: Plugin tool output schema validation
  * - Level 3: Filesystem state validation for built-in tools
  *
@@ -11,14 +11,14 @@
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
 import type {
-  SpecialistOutput,
+  AgentOutput,
   ToolTrace,
   Claim,
 } from '@kb-labs/agent-contracts';
 import {
-  validateSpecialistOutput,
-  type SpecialistOutputValidationResult,
-} from './specialist-output-schema.js';
+  validateAgentOutput,
+  type AgentOutputValidationResult,
+} from './agent-output-schema.js';
 import { BuiltInToolVerifier, type ClaimVerificationResult } from './built-in-verifier.js';
 import { VerificationMetrics } from './verification-metrics.js';
 
@@ -33,7 +33,7 @@ export interface VerificationResult {
   level: 1 | 2 | 3;
 
   /** Level 1 validation result */
-  structureValidation?: SpecialistOutputValidationResult;
+  structureValidation?: AgentOutputValidationResult;
 
   /** Level 2 validation results (plugin tool outputs) */
   pluginValidation?: {
@@ -58,8 +58,8 @@ export interface VerificationResult {
 /**
  * Task Verifier
  *
- * Performs 3-level validation of specialist outputs:
- * 1. Structure: Validates SpecialistOutput shape using Zod
+ * Performs 3-level validation of agent outputs:
+ * 1. Structure: Validates AgentOutput shape using Zod
  * 2. Plugin schemas: Validates plugin tool outputs (opt-in)
  * 3. Filesystem: Validates claims against actual filesystem state
  */
@@ -73,14 +73,14 @@ export class TaskVerifier {
   }
 
   /**
-   * Verify specialist output
+   * Verify agent output
    *
    * Performs all 3 levels of validation.
    *
-   * @param output - Specialist output to verify
+   * @param output - Agent output to verify
    * @param trace - Tool trace (optional, for Level 2 validation)
    * @param basePath - Base path for filesystem verification
-   * @param specialistId - Specialist ID (for metrics)
+   * @param agentId - Agent ID (for metrics)
    * @param subtaskId - Subtask ID (for metrics)
    * @returns Verification result
    */
@@ -88,7 +88,7 @@ export class TaskVerifier {
     output: unknown,
     trace?: ToolTrace,
     basePath: string = process.cwd(),
-    specialistId?: string,
+    agentId?: string,
     subtaskId?: string
   ): Promise<VerificationResult> {
     const errors: string[] = [];
@@ -101,7 +101,7 @@ export class TaskVerifier {
     });
 
     const level1Start = Date.now();
-    const structureValidation = validateSpecialistOutput(output);
+    const structureValidation = validateAgentOutput(output);
     const level1Duration = Date.now() - level1Start;
 
     if (!structureValidation.valid) {
@@ -110,9 +110,9 @@ export class TaskVerifier {
       });
 
       // Record metrics
-      if (specialistId) {
+      if (agentId) {
         this.metrics.record({
-          specialistId,
+          agentId,
           subtaskId,
           level: 1,
           status: 'failed',
@@ -137,9 +137,9 @@ export class TaskVerifier {
     }
 
     // Record success metrics
-    if (specialistId) {
+    if (agentId) {
       this.metrics.record({
-        specialistId,
+        agentId,
         subtaskId,
         level: 1,
         status: 'passed',
@@ -208,9 +208,9 @@ export class TaskVerifier {
       });
 
       // Record metrics
-      if (specialistId) {
+      if (agentId) {
         this.metrics.record({
-          specialistId,
+          agentId,
           subtaskId,
           level: 3,
           status: 'failed',
@@ -240,9 +240,9 @@ export class TaskVerifier {
     }
 
     // Record success metrics
-    if (specialistId) {
+    if (agentId) {
       this.metrics.record({
-        specialistId,
+        agentId,
         subtaskId,
         level: 3,
         status: 'passed',
@@ -273,7 +273,7 @@ export class TaskVerifier {
   /**
    * Verify specific claims (Level 3 only)
    *
-   * Useful for verifying claims without full SpecialistOutput structure.
+   * Useful for verifying claims without full AgentOutput structure.
    *
    * @param claims - Claims to verify
    * @param basePath - Base path for filesystem verification

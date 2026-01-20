@@ -38,8 +38,8 @@ export type VerificationErrorCategory =
  * Verification metrics event
  */
 export interface VerificationMetricsEvent {
-  /** Specialist ID */
-  specialistId: string;
+  /** Agent ID */
+  agentId: string;
 
   /** Subtask ID (if available) */
   subtaskId?: string;
@@ -80,7 +80,7 @@ export interface VerificationMetricsAggregates {
     };
   };
 
-  /** Checks by specialist */
+  /** Checks by agent */
   bySpecialist: Record<string, {
     total: number;
     passed: number;
@@ -120,7 +120,7 @@ export class VerificationMetrics {
 
     // Log as analytics event
     this.ctx.platform.logger.info('Verification metrics', {
-      specialistId: event.specialistId,
+      agentId: event.agentId,
       subtaskId: event.subtaskId,
       level: event.level,
       status: event.status,
@@ -170,16 +170,16 @@ export class VerificationMetrics {
         byLevel[event.level].failed++;
       }
 
-      // By specialist
-      if (!bySpecialist[event.specialistId]) {
-        bySpecialist[event.specialistId] = { total: 0, passed: 0, failed: 0 };
+      // By agent
+      if (!bySpecialist[event.agentId]) {
+        bySpecialist[event.agentId] = { total: 0, passed: 0, failed: 0 };
       }
-      const specialistStats = bySpecialist[event.specialistId]!;
-      specialistStats.total++;
+      const agentStats = bySpecialist[event.agentId]!;
+      agentStats.total++;
       if (event.status === 'passed') {
-        specialistStats.passed++;
+        agentStats.passed++;
       } else {
-        specialistStats.failed++;
+        agentStats.failed++;
       }
 
       // Errors by category

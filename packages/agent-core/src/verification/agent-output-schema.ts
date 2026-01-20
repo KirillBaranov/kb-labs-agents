@@ -1,7 +1,7 @@
 /**
- * Specialist Output Schema - Zod Validation
+ * Agent Output Schema - Zod Validation
  *
- * Level 1 validation: Validates SpecialistOutput structure
+ * Level 1 validation: Validates AgentOutput structure
  * before checking plugin schemas or content.
  *
  * Part of the anti-hallucination verification system (ADR-0002).
@@ -98,12 +98,12 @@ export const CompactArtifactSchema = z.object({
 });
 
 /**
- * Specialist output schema (Level 1 validation)
+ * Agent output schema (Level 1 validation)
  *
- * Validates the structure of specialist output before
+ * Validates the structure of agent output before
  * checking plugin schemas or filesystem state.
  */
-export const SpecialistOutputSchema = z.object({
+export const AgentOutputSchema = z.object({
   /** Summary of what was accomplished */
   summary: z.string().min(1, 'Summary is required'),
 
@@ -115,7 +115,7 @@ export const SpecialistOutputSchema = z.object({
   traceRef: z.string().regex(/^trace:/, 'traceRef must start with "trace:"'),
 
   /**
-   * Optional claims made by specialist
+   * Optional claims made by agent
    */
   claims: z.array(ClaimSchema).optional(),
 
@@ -128,17 +128,17 @@ export const SpecialistOutputSchema = z.object({
 /**
  * TypeScript type inferred from schema
  */
-export type SpecialistOutputValidated = z.infer<typeof SpecialistOutputSchema>;
+export type AgentOutputValidated = z.infer<typeof AgentOutputSchema>;
 
 /**
  * Validation result
  */
-export interface SpecialistOutputValidationResult {
+export interface AgentOutputValidationResult {
   /** Whether validation passed */
   valid: boolean;
 
   /** Validated output (if successful) */
-  output?: SpecialistOutputValidated;
+  output?: AgentOutputValidated;
 
   /** Validation errors (if failed) */
   errors?: Array<{
@@ -148,15 +148,15 @@ export interface SpecialistOutputValidationResult {
 }
 
 /**
- * Validate specialist output (Level 1)
+ * Validate agent output (Level 1)
  *
  * Checks structure only, not content or plugin schemas.
  *
- * @param output - Raw specialist output
+ * @param output - Raw agent output
  * @returns Validation result
  */
-export function validateSpecialistOutput(output: unknown): SpecialistOutputValidationResult {
-  const result = SpecialistOutputSchema.safeParse(output);
+export function validateAgentOutput(output: unknown): AgentOutputValidationResult {
+  const result = AgentOutputSchema.safeParse(output);
 
   if (result.success) {
     return {

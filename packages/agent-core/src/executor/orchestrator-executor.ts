@@ -3,12 +3,12 @@
  *
  * Smart orchestrator that:
  * - Breaks complex tasks into subtasks
- * - Delegates subtasks to specialists
+ * - Delegates subtasks to agents
  * - Synthesizes results into coherent answer
- * - Uses LARGE tier LLM for planning/synthesis (specialists use small tier)
+ * - Uses LARGE tier LLM for planning/synthesis (agents use small tier)
  *
  * Phase 2: Adaptive Feedback Loop
- * - Analyzes specialist findings
+ * - Analyzes agent findings
  * - Adapts execution plan dynamically
  * - Injects fix/review subtasks when needed
  */
@@ -16,13 +16,13 @@
 import type { PluginContextV3 } from '@kb-labs/sdk';
 import { useLLM, useAnalytics, useCache, findRepoRoot } from '@kb-labs/sdk';
 import type {
-  SpecialistConfigV1,
+  AgentConfigV1,
   ExecutionContext,
   LLMTier,
   OrchestratorCallbacks,
 } from '@kb-labs/agent-contracts';
-import { SpecialistExecutor, type SpecialistContext } from './specialist-executor.js';
-import { SpecialistRegistry } from '../registry/specialist-registry.js';
+import { AgentExecutor, type AgentContext } from './agent-executor.js';
+import { AgentRegistry } from '../registry/agent-registry.js';
 import { ToolDiscoverer } from '../tools/tool-discoverer.js';
 import { OrchestratorAnalytics } from '../analytics/orchestrator-analytics.js';
 import { FindingsStore } from './findings-store.js';
@@ -50,7 +50,7 @@ import type {
   SubTask,
   DelegatedResult,
   OrchestratorResult,
-  SpecialistFinding,
+  AgentFinding,
   AdaptationDecision,
 } from './types.js';
 
@@ -59,16 +59,16 @@ import type {
 /**
  * Orchestrator Executor
  *
- * Manages task delegation to specialists:
+ * Manages task delegation to agents:
  * 1. planExecution() - Break task into subtasks using smart LLM
- * 2. selectSpecialist() - Match subtasks to specialist capabilities
- * 3. delegateTask() - Execute subtask via SpecialistExecutor
- * 4. synthesizeResults() - Combine specialist outputs into final answer
+ * 2. selectSpecialist() - Match subtasks to agent capabilities
+ * 3. delegateTask() - Execute subtask via AgentExecutor
+ * 4. synthesizeResults() - Combine agent outputs into final answer
  */
 export class OrchestratorExecutor {
-  private registry: SpecialistRegistry;
+  private registry: AgentRegistry;
   private toolDiscoverer: ToolDiscoverer;
-  private specialistExecutor: SpecialistExecutor;
+  private agentExecutor: AgentExecutor;
   private analytics: OrchestratorAnalytics;
   private findingsStore: FindingsStore; // Phase 2: Findings management
   private taskVerifier: TaskVerifier; // ADR-0002: Output verification
@@ -76,9 +76,9 @@ export class OrchestratorExecutor {
   private callbacks?: OrchestratorCallbacks; // Phase 5: Progress tracking callbacks
 
   constructor(private ctx: PluginContextV3) {
-    this.registry = new SpecialistRegistry(ctx);
+    this.registry = new AgentRegistry(ctx);
     this.toolDiscoverer = new ToolDiscoverer(ctx);
-    this.specialistExecutor = new SpecialistExecutor(ctx);
+    this.agentExecutor = new AgentExecutor(ctx);
     this.analytics = new OrchestratorAnalytics(useAnalytics());
     this.findingsStore = new FindingsStore(ctx);
     this.taskVerifier = new TaskVerifier(ctx);
@@ -90,19 +90,19 @@ export class OrchestratorExecutor {
   /**
    * Get all orchestrator management tools
    *
-   * @param specialistIds - Array of valid specialist IDs
+   * @param agentIds - Array of valid agent IDs
    * @returns Array of LLM tools for orchestration
    */
-  private getOrchestratorTools(specialistIds: string[]) {
+  private getOrchestratorTools(agentIds: string[]) {
     return {
       // Planning tools
-      planning: createExecutionPlanTool(specialistIds),
-      revise: createReviseExecutionPlanTool(specialistIds),
+      planning: createExecutionPlanTool(agentIds),
+      revise: createReviseExecutionPlanTool(agentIds),
       estimateComplexity: createEstimateComplexityTool(),
 
       // Coordination tools
-      delegate: createDelegateSubtaskTool(specialistIds),
-      requestFeedback: createRequestFeedbackTool(specialistIds),
+      delegate: createDelegateSubtaskTool(agentIds),
+      requestFeedback: createRequestFeedbackTool(agentIds),
       mergeResults: createMergeResultsTool(),
 
       // Progress tracking tools
@@ -112,7 +112,7 @@ export class OrchestratorExecutor {
 
       // Quality control tools
       validateOutput: createValidateOutputTool(),
-      requestRevision: createRequestRevisionTool(specialistIds),
+      requestRevision: createRequestRevisionTool(agentIds),
       approveResult: createApproveResultTool(),
 
       // Knowledge sharing tools
@@ -123,7 +123,7 @@ export class OrchestratorExecutor {
   }
 
   /**
-   * Execute a complex task via delegation to specialists
+   * Execute a complex task via delegation to agents
    *
    * Phase 5: Accepts optional callbacks for progress tracking
    *
@@ -191,7 +191,7 @@ export class OrchestratorExecutor {
         // Phase 2: Update status to in-progress
         this.ctx.platform.logger.info('📋 Subtask starting', {
           subtaskId: subtask.id,
-          specialist: subtask.specialistId,
+          agent: subtask.agentId,
           progress: `${delegatedResults.length}/${plan.length}`,
         });
 
@@ -211,12 +211,12 @@ export class OrchestratorExecutor {
         const progressPercent = Math.round((delegatedResults.length / plan.length) * 100);
         this.ctx.platform.logger.info(result.success ? '✅ Subtask completed' : '❌ Subtask failed', {
           subtaskId: subtask.id,
-          specialist: subtask.specialistId,
+          agent: subtask.agentId,
           progress: `${delegatedResults.length}/${plan.length} (${progressPercent}%)`,
           tokensUsed: result.tokensUsed,
         });
 
-        // Track specialist result
+        // Track agent result
         if (result.success) {
           this.analytics.trackSpecialistCompleted(subtask, result);
 
@@ -227,14 +227,14 @@ export class OrchestratorExecutor {
           });
 
           // Phase 2: Quality validation (optional - can be enabled later)
-          // For now, we trust specialist output and check findings only
+          // For now, we trust agent output and check findings only
           // Future: Add LLM-based validation using validateOutput tool
 
           // Phase 2: Check for findings and potentially adapt plan
           if (result.findingsSummary && result.findingsSummary.actionable > 0) {
-            this.ctx.platform.logger.info('Specialist reported actionable findings', {
+            this.ctx.platform.logger.info('Agent reported actionable findings', {
               subtaskId: subtask.id,
-              specialistId: subtask.specialistId,
+              agentId: subtask.agentId,
               total: result.findingsSummary.total,
               actionable: result.findingsSummary.actionable,
               critical: result.findingsSummary.bySeverity.critical,
@@ -257,7 +257,7 @@ export class OrchestratorExecutor {
               });
 
               this.ctx.platform.analytics.track('orchestrator.plan.adapted', {
-                trigger: subtask.specialistId,
+                trigger: subtask.agentId,
                 reason: adaptation.reason,
                 confidence: adaptation.confidence,
                 addedCount: adaptation.newSubtasks.length,
@@ -301,7 +301,7 @@ export class OrchestratorExecutor {
             // Track verification failure
             this.ctx.platform.analytics.track('orchestrator.verification.failed', {
               subtaskId: subtask.id,
-              specialistId: subtask.specialistId,
+              agentId: subtask.agentId,
               reason: verificationResult.reason,
             });
           } else {
@@ -314,7 +314,7 @@ export class OrchestratorExecutor {
 
         this.ctx.platform.logger.info('Subtask completed', {
           subtaskId: subtask.id,
-          specialistId: subtask.specialistId,
+          agentId: subtask.agentId,
           success: result.success,
           tokensUsed: result.tokensUsed,
         });
@@ -363,20 +363,20 @@ export class OrchestratorExecutor {
           );
 
           if (cancellationCheck.shouldCancel) {
-            this.ctx.platform.logger.info('🚫 Cancelling remaining specialists', {
+            this.ctx.platform.logger.info('🚫 Cancelling remaining agents', {
               completedSubtasks: delegatedResults.length,
               cancelledSubtasks: remainingSubtasks.length,
               confidence: cancellationCheck.confidence,
               reason: cancellationCheck.reason,
             });
             // Track cancellation in analytics
-            this.ctx.platform.analytics.track('orchestrator.specialists.cancelled', {
+            this.ctx.platform.analytics.track('orchestrator.agents.cancelled', {
               completedCount: delegatedResults.length,
               cancelledCount: remainingSubtasks.length,
               confidence: cancellationCheck.confidence,
               reason: cancellationCheck.reason,
             });
-            break; // Cancel remaining specialists
+            break; // Cancel remaining agents
           }
         }
       }
@@ -439,7 +439,7 @@ export class OrchestratorExecutor {
       this.analytics.trackTaskFailed(task, errorMessage, durationMs, totalTokens);
       this.ctx.platform.logger.error('Orchestrator failed', error instanceof Error ? error : new Error(errorMessage));
 
-      // ADR-0002: Try to recover partial results if specialists completed successfully
+      // ADR-0002: Try to recover partial results if agents completed successfully
       const hasPartialResults = delegatedResults.length > 0;
       let fallbackAnswer = '';
 
@@ -450,16 +450,16 @@ export class OrchestratorExecutor {
         });
 
         try {
-          // Simple fallback: concatenate specialist outputs
+          // Simple fallback: concatenate agent outputs
           const successfulResults = delegatedResults.filter(r => r.success);
           if (successfulResults.length > 0) {
             fallbackAnswer = '# Partial Results\n\n';
-            fallbackAnswer += `**Note**: Full synthesis failed, but ${successfulResults.length} specialist(s) completed successfully.\n\n`;
+            fallbackAnswer += `**Note**: Full synthesis failed, but ${successfulResults.length} agent(s) completed successfully.\n\n`;
 
             for (const result of successfulResults) {
               const subtask = plan.find(s => s.id === result.subtaskId);
               fallbackAnswer += `## ${subtask?.description || result.subtaskId}\n`;
-              fallbackAnswer += `**Specialist**: ${result.specialistId}\n\n`;
+              fallbackAnswer += `**Specialist**: ${result.agentId}\n\n`;
 
               if (typeof result.output === 'string') {
                 fallbackAnswer += result.output + '\n\n';
@@ -483,7 +483,7 @@ export class OrchestratorExecutor {
       await this.cleanupFindings();
 
       return {
-        success: hasPartialResults, // True if at least some specialists completed
+        success: hasPartialResults, // True if at least some agents completed
         answer: fallbackAnswer || `Error during synthesis: ${errorMessage}`,
         plan,
         delegatedResults,
@@ -522,7 +522,7 @@ export class OrchestratorExecutor {
    * Plan execution by decomposing task into subtasks
    *
    * Uses smart tier LLM to analyze task and create execution plan.
-   * Considers available specialists and their capabilities.
+   * Considers available agents and their capabilities.
    *
    * @param task - High-level task description
    * @returns Execution plan with subtasks
@@ -535,19 +535,19 @@ export class OrchestratorExecutor {
       throw new Error('LLM not available for orchestrator planning');
     }
 
-    // Load available specialists
-    const specialists = await this.registry.list();
+    // Load available agents
+    const agents = await this.registry.list();
 
-    // DEBUG: Log discovered specialists
-    console.log('\n🔍 DEBUG: Discovered specialists:');
-    console.log(`   Total: ${specialists.length}`);
-    console.log(`   IDs: ${specialists.map(s => s.id).join(', ') || '(none)'}`);
-    specialists.forEach(s => {
+    // DEBUG: Log discovered agents
+    console.log('\n🔍 DEBUG: Discovered agents:');
+    console.log(`   Total: ${agents.length}`);
+    console.log(`   IDs: ${agents.map(s => s.id).join(', ') || '(none)'}`);
+    agents.forEach(s => {
       console.log(`   - ${s.id}: valid=${s.valid}, error=${s.error || 'none'}`);
     });
 
-    const specialistIds = specialists.map(s => s.id);
-    const specialistDescriptions = specialists
+    const agentIds = agents.map(s => s.id);
+    const agentDescriptions = agents
       .map(
         (s) =>
           `- ${s.id}: ${s.description || 'No description'}\n  Capabilities: ${s.capabilities?.join(', ') || 'None'}`
@@ -555,13 +555,13 @@ export class OrchestratorExecutor {
       .join('\n');
 
     // Get all orchestrator tools
-    const tools = this.getOrchestratorTools(specialistIds);
+    const tools = this.getOrchestratorTools(agentIds);
     const planningTool = tools.planning;
 
-    const systemPrompt = `You are an AI orchestrator that plans execution by delegating to specialist team members.
+    const systemPrompt = `You are an AI orchestrator that plans execution by delegating to agent team members.
 
 # Available Specialists:
-${specialistDescriptions}
+${agentDescriptions}
 
 # Your Task:
 1. Think about the user's request
@@ -577,7 +577,7 @@ ${specialistDescriptions}
 
     console.log('[DEBUG] About to call LLM with planning tool...');
     console.log('[DEBUG] Tool name:', planningTool.name);
-    console.log('[DEBUG] Valid specialist IDs:', specialistIds);
+    console.log('[DEBUG] Valid agent IDs:', agentIds);
 
     const response = await llm.chatWithTools!(
       [
@@ -694,7 +694,7 @@ ${specialistDescriptions}
       }
     }
 
-    // No explicit output directory → specialists work in projectRoot
+    // No explicit output directory → agents work in projectRoot
     // Orchestrator can optionally create isolated output dir in Phase 2
     return undefined;
   }
@@ -702,12 +702,12 @@ ${specialistDescriptions}
   /**
    * Extract key findings from delegated results (V2)
    *
-   * Creates compact summaries from previous specialists:
-   * - Max 5 findings per specialist
+   * Creates compact summaries from previous agents:
+   * - Max 5 findings per agent
    * - Focus on actionable/high-severity items
    * - Formatted for context injection
    *
-   * @param delegatedResults - Previous specialist results
+   * @param delegatedResults - Previous agent results
    * @returns Array of finding summaries
    */
   private async extractFindings(delegatedResults: DelegatedResult[]): Promise<string[]> {
@@ -724,14 +724,14 @@ ${specialistDescriptions}
         continue;
       }
 
-      // Filter to actionable/high-severity (max 5 per specialist)
+      // Filter to actionable/high-severity (max 5 per agent)
       const keyFindings = fullFindings
         .filter((f) => f.severity === 'critical' || f.severity === 'high' || f.actionable)
         .slice(0, 5);
 
       // Format as compact summaries
       for (const finding of keyFindings) {
-        const summary = `[${result.specialistId}] ${finding.title}: ${finding.description}`;
+        const summary = `[${result.agentId}] ${finding.title}: ${finding.description}`;
         findings.push(summary);
       }
     }
@@ -774,13 +774,13 @@ ${specialistDescriptions}
   }
 
   /**
-   * Execute specialist with retry logic (Phase 3)
+   * Execute agent with retry logic (Phase 3)
    *
    * Implements exponential backoff retry:
    * - Retry 1: 1s delay
    * - Retry 2: 2s delay
    *
-   * Only retries if SpecialistOutcome.failure.suggestedRetry === true
+   * Only retries if AgentOutcome.failure.suggestedRetry === true
    *
    * @param subtask - Subtask to execute
    * @param delegatedResults - Previously completed results
@@ -795,20 +795,20 @@ ${specialistDescriptions}
     const startTime = Date.now();
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      this.ctx.platform.logger.info('Executing specialist', {
+      this.ctx.platform.logger.info('Executing agent', {
         subtaskId: subtask.id,
-        specialist: subtask.specialistId,
+        agent: subtask.agentId,
         attempt,
         maxRetries,
       });
 
       try {
-        // Load specialist config and tools
-        const config = await this.registry.load(subtask.specialistId);
+        // Load agent config and tools
+        const config = await this.registry.load(subtask.agentId);
         const tools = await this.toolDiscoverer.discoverWithStrategy(config.tools);
-        const context: SpecialistContext = { config, tools };
+        const context: AgentContext = { config, tools };
 
-        // V2: Build ExecutionContext for specialist
+        // V2: Build ExecutionContext for agent
         const workingDir = process.cwd();
         const projectRoot = await this.getProjectRoot();
         const outputDir = this.extractOutputDir(subtask.description, projectRoot);
@@ -838,12 +838,12 @@ ${specialistDescriptions}
           availableFiles,
         };
 
-        // Execute specialist
-        const outcome = await this.specialistExecutor.execute(context, subtask.description, executionContext);
+        // Execute agent
+        const outcome = await this.agentExecutor.execute(context, subtask.description, executionContext);
 
         // Success!
         if (outcome.ok) {
-          this.ctx.platform.logger.info('Specialist succeeded', {
+          this.ctx.platform.logger.info('Agent succeeded', {
             subtaskId: subtask.id,
             attempt,
             tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
@@ -855,7 +855,7 @@ ${specialistDescriptions}
           let findingsRef: string | undefined;
 
           if (outcome.result.output && typeof outcome.result.output === 'object' && 'findings' in outcome.result.output) {
-            const findings = (outcome.result.output as { findings: SpecialistFinding[] }).findings;
+            const findings = (outcome.result.output as { findings: AgentFinding[] }).findings;
             if (findings && findings.length > 0) {
               findingsRef = await this.findingsStore.save(this.sessionId, subtask.id, findings);
               findingsSummary = this.findingsStore.createSummary(findings);
@@ -864,7 +864,7 @@ ${specialistDescriptions}
 
           return {
             subtaskId: subtask.id,
-            specialistId: subtask.specialistId,
+            agentId: subtask.agentId,
             success: true,
             output: outcome.result.output,
             tokensUsed: outcome.result.tokensUsed,
@@ -876,7 +876,7 @@ ${specialistDescriptions}
         }
 
         // Failed - check if should retry
-        this.ctx.platform.logger.warn('Specialist failed', {
+        this.ctx.platform.logger.warn('Agent failed', {
           subtaskId: subtask.id,
           attempt,
           kind: outcome.failure.kind,
@@ -894,7 +894,7 @@ ${specialistDescriptions}
 
           return {
             subtaskId: subtask.id,
-            specialistId: subtask.specialistId,
+            agentId: subtask.agentId,
             success: false,
             output: outcome.partial?.output || null,
             error: outcome.failure.message,
@@ -913,7 +913,7 @@ ${specialistDescriptions}
 
           return {
             subtaskId: subtask.id,
-            specialistId: subtask.specialistId,
+            agentId: subtask.agentId,
             success: false,
             output: outcome.partial?.output || null,
             error: outcome.failure.message,
@@ -936,15 +936,15 @@ ${specialistDescriptions}
         // Unexpected error during execution
         const errorMessage = error instanceof Error ? error.message : String(error);
 
-        this.ctx.platform.logger.error('Unexpected error in specialist execution', new Error(
-          `[${subtask.specialistId}] ${errorMessage} (attempt ${attempt})`
+        this.ctx.platform.logger.error('Unexpected error in agent execution', new Error(
+          `[${subtask.agentId}] ${errorMessage} (attempt ${attempt})`
         ));
 
         // If last attempt, return error
         if (attempt === maxRetries) {
           return {
             subtaskId: subtask.id,
-            specialistId: subtask.specialistId,
+            agentId: subtask.agentId,
             success: false,
             output: null,
             error: errorMessage,
@@ -963,7 +963,7 @@ ${specialistDescriptions}
   }
 
   /**
-   * Execute specialist with escalation and retry (Phase 4)
+   * Execute agent with escalation and retry (Phase 4)
    *
    * Implements escalation ladder:
    * - Tries each tier in escalationLadder
@@ -981,13 +981,13 @@ ${specialistDescriptions}
     delegatedResults: DelegatedResult[],
     maxRetries = 2
   ): Promise<DelegatedResult> {
-    // Load specialist config to get escalation ladder
-    const config = await this.registry.load(subtask.specialistId);
+    // Load agent config to get escalation ladder
+    const config = await this.registry.load(subtask.agentId);
     const ladder: LLMTier[] = config.llm.escalationLadder || [config.llm.tier];
 
     this.ctx.platform.logger.info('Starting execution with escalation', {
       subtaskId: subtask.id,
-      specialistId: subtask.specialistId,
+      agentId: subtask.agentId,
       escalationLadder: ladder,
       maxRetriesPerTier: maxRetries,
     });
@@ -1012,7 +1012,7 @@ ${specialistDescriptions}
 
       // Success!
       if (result.success) {
-        this.ctx.platform.logger.info('Specialist succeeded with tier', {
+        this.ctx.platform.logger.info('Agent succeeded with tier', {
           subtaskId: subtask.id,
           tier,
           tierIndex: tierIndex + 1,
@@ -1032,7 +1032,7 @@ ${specialistDescriptions}
 
         this.ctx.platform.analytics.track('orchestrator.escalation', {
           subtaskId: subtask.id,
-          specialistId: subtask.specialistId,
+          agentId: subtask.agentId,
           fromTier: tier,
           toTier: nextTier,
           reason: result.error || 'unknown',
@@ -1051,9 +1051,9 @@ ${specialistDescriptions}
   }
 
   /**
-   * Execute specialist with retry for specific tier (Phase 4)
+   * Execute agent with retry for specific tier (Phase 4)
    *
-   * Similar to executeWithRetry but passes tier override to specialist.
+   * Similar to executeWithRetry but passes tier override to agent.
    *
    * @param subtask - Subtask to execute
    * @param delegatedResults - Previously completed results
@@ -1070,21 +1070,21 @@ ${specialistDescriptions}
     const startTime = Date.now();
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      this.ctx.platform.logger.info('Executing specialist with tier', {
+      this.ctx.platform.logger.info('Executing agent with tier', {
         subtaskId: subtask.id,
-        specialist: subtask.specialistId,
+        agent: subtask.agentId,
         tier,
         attempt,
         maxRetries,
       });
 
       try {
-        // Load specialist config and tools
-        const config = await this.registry.load(subtask.specialistId);
+        // Load agent config and tools
+        const config = await this.registry.load(subtask.agentId);
         const tools = await this.toolDiscoverer.discoverWithStrategy(config.tools);
-        const context: SpecialistContext = { config, tools };
+        const context: AgentContext = { config, tools };
 
-        // V2: Build ExecutionContext for specialist
+        // V2: Build ExecutionContext for agent
         const workingDir = process.cwd();
         const projectRoot = await this.getProjectRoot();
         const outputDir = this.extractOutputDir(subtask.description, projectRoot);
@@ -1114,8 +1114,8 @@ ${specialistDescriptions}
           availableFiles,
         };
 
-        // Phase 4: Execute specialist with tier override
-        const outcome = await this.specialistExecutor.execute(
+        // Phase 4: Execute agent with tier override
+        const outcome = await this.agentExecutor.execute(
           context,
           subtask.description,
           executionContext,
@@ -1130,7 +1130,7 @@ ${specialistDescriptions}
           outcome.meta.tokenUsage.completion
         );
 
-        this.ctx.platform.logger.debug('Specialist execution cost', {
+        this.ctx.platform.logger.debug('Agent execution cost', {
           subtaskId: subtask.id,
           tier,
           promptTokens: outcome.meta.tokenUsage.prompt,
@@ -1141,7 +1141,7 @@ ${specialistDescriptions}
 
         // Success!
         if (outcome.ok) {
-          this.ctx.platform.logger.info('Specialist succeeded', {
+          this.ctx.platform.logger.info('Agent succeeded', {
             subtaskId: subtask.id,
             tier,
             attempt,
@@ -1155,14 +1155,14 @@ ${specialistDescriptions}
           let findingsRef: string | undefined;
 
           if (outcome.result.output && typeof outcome.result.output === 'object' && 'findings' in outcome.result.output) {
-            const findings = (outcome.result.output as { findings: SpecialistFinding[] }).findings;
+            const findings = (outcome.result.output as { findings: AgentFinding[] }).findings;
             if (findings && findings.length > 0) {
               findingsRef = await this.findingsStore.save(this.sessionId, subtask.id, findings);
               findingsSummary = this.findingsStore.createSummary(findings);
             }
           }
 
-          // ADR-0002: Verify specialist output (3-level validation)
+          // ADR-0002: Verify agent output (3-level validation)
           this.ctx.platform.logger.debug('Starting output verification', {
             subtaskId: subtask.id,
             hasOutput: !!outcome.result.output,
@@ -1173,7 +1173,7 @@ ${specialistDescriptions}
             outcome.result.output,
             outcome.result.toolTrace, // For Level 2 validation
             workingDir,
-            subtask.specialistId, // For metrics
+            subtask.agentId, // For metrics
             subtask.id // For metrics
           );
 
@@ -1191,7 +1191,7 @@ ${specialistDescriptions}
             if (attempt === maxRetries) {
               return {
                 subtaskId: subtask.id,
-                specialistId: subtask.specialistId,
+                agentId: subtask.agentId,
                 success: false,
                 output: outcome.result.output,
                 error: `Verification failed: ${verification.errors?.join(', ')}`,
@@ -1222,7 +1222,7 @@ ${specialistDescriptions}
 
           return {
             subtaskId: subtask.id,
-            specialistId: subtask.specialistId,
+            agentId: subtask.agentId,
             success: true,
             output: outcome.result.output,
             tokensUsed: outcome.result.tokensUsed,
@@ -1234,7 +1234,7 @@ ${specialistDescriptions}
         }
 
         // Failed - check if should retry
-        this.ctx.platform.logger.warn('Specialist failed', {
+        this.ctx.platform.logger.warn('Agent failed', {
           subtaskId: subtask.id,
           tier,
           attempt,
@@ -1253,7 +1253,7 @@ ${specialistDescriptions}
 
           return {
             subtaskId: subtask.id,
-            specialistId: subtask.specialistId,
+            agentId: subtask.agentId,
             success: false,
             output: outcome.partial?.output || null,
             error: outcome.failure.message,
@@ -1273,7 +1273,7 @@ ${specialistDescriptions}
 
           return {
             subtaskId: subtask.id,
-            specialistId: subtask.specialistId,
+            agentId: subtask.agentId,
             success: false,
             output: outcome.partial?.output || null,
             error: outcome.failure.message,
@@ -1297,15 +1297,15 @@ ${specialistDescriptions}
         // Unexpected error during execution
         const errorMessage = error instanceof Error ? error.message : String(error);
 
-        this.ctx.platform.logger.error('Unexpected error in specialist execution', new Error(
-          `[${subtask.specialistId}] Tier: ${tier}, Attempt: ${attempt}, Error: ${errorMessage}`
+        this.ctx.platform.logger.error('Unexpected error in agent execution', new Error(
+          `[${subtask.agentId}] Tier: ${tier}, Attempt: ${attempt}, Error: ${errorMessage}`
         ));
 
         // If last attempt, return error
         if (attempt === maxRetries) {
           return {
             subtaskId: subtask.id,
-            specialistId: subtask.specialistId,
+            agentId: subtask.agentId,
             success: false,
             output: null,
             error: errorMessage,
@@ -1324,7 +1324,7 @@ ${specialistDescriptions}
   }
 
   /**
-   * Delegate a subtask to a specialist (Phase 4)
+   * Delegate a subtask to an agent (Phase 4)
    *
    * Simplified wrapper around executeWithEscalation.
    *
@@ -1385,7 +1385,7 @@ ${specialistDescriptions}
    *
    * @param task - Original task
    * @param plan - Execution plan
-   * @param delegatedResults - Completed specialist results
+   * @param delegatedResults - Completed agent results
    * @returns Completion assessment
    */
   private async checkTaskCompletion(
@@ -1415,14 +1415,14 @@ ${specialistDescriptions}
           output = `Error: ${r.error}`;
         }
 
-        return `${i + 1}. [${subtask?.id}] ${subtask?.description || '(unknown)'}\n   Status: ${status}\n   Specialist: ${r.specialistId}\n   Output: ${output}`;
+        return `${i + 1}. [${subtask?.id}] ${subtask?.description || '(unknown)'}\n   Status: ${status}\n   Specialist: ${r.agentId}\n   Output: ${output}`;
       })
       .join('\n\n');
 
     // Build list of remaining subtasks
     const remainingSubtasks = plan
       .slice(delegatedResults.length)
-      .map((s) => `- [${s.id}] ${s.description} (assigned to: ${s.specialistId})`)
+      .map((s) => `- [${s.id}] ${s.description} (assigned to: ${s.agentId})`)
       .join('\n');
 
     const systemPrompt = `You are an AI orchestrator evaluating task completion.
@@ -1498,7 +1498,7 @@ Return your assessment as JSON.`;
   }
 
   /**
-   * Check if remaining specialists should be cancelled
+   * Check if remaining agents should be cancelled
    *
    * Uses smart tier LLM to assess whether remaining subtasks
    * add meaningful value or can be safely skipped.
@@ -1525,16 +1525,16 @@ Return your assessment as JSON.`;
       .map((r, i) => {
         const subtask = plan.find((s) => s.id === r.subtaskId);
         const status = r.success ? '✅ SUCCESS' : '❌ FAILED';
-        return `${i + 1}. [${subtask?.id}] ${subtask?.description}\n   Status: ${status}\n   Specialist: ${r.specialistId}`;
+        return `${i + 1}. [${subtask?.id}] ${subtask?.description}\n   Status: ${status}\n   Specialist: ${r.agentId}`;
       })
       .join('\n\n');
 
     // Build list of remaining subtasks with details
     const remainingWork = remainingSubtasks
-      .map((s, i) => `${i + 1}. [${s.id}] ${s.description}\n   Priority: ${s.priority || 5}/10\n   Specialist: ${s.specialistId}`)
+      .map((s, i) => `${i + 1}. [${s.id}] ${s.description}\n   Priority: ${s.priority || 5}/10\n   Specialist: ${s.agentId}`)
       .join('\n\n');
 
-    const systemPrompt = `You are an AI orchestrator deciding whether to cancel remaining specialists.
+    const systemPrompt = `You are an AI orchestrator deciding whether to cancel remaining agents.
 
 # Your Role:
 Determine if the remaining subtasks add MEANINGFUL VALUE or can be safely skipped.
@@ -1592,7 +1592,7 @@ Return your decision as JSON.`;
     const content = response.content || '';
     const tokensUsed = (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0);
 
-    this.ctx.platform.logger.debug('Specialist cancellation check', {
+    this.ctx.platform.logger.debug('Agent cancellation check', {
       tokensUsed,
       responseLength: content.length,
     });
@@ -1732,14 +1732,14 @@ Return your decision as JSON.`;
   }
 
   /**
-   * Synthesize specialist results into final answer
+   * Synthesize agent results into final answer
    *
-   * Uses smart tier LLM to combine outputs from multiple specialists
+   * Uses smart tier LLM to combine outputs from multiple agents
    * into a coherent, comprehensive answer.
    *
    * @param task - Original task
    * @param plan - Execution plan
-   * @param results - Results from specialists
+   * @param results - Results from agents
    * @returns Synthesized answer
    */
   private async synthesizeResults(
@@ -1752,14 +1752,14 @@ Return your decision as JSON.`;
       throw new Error('LLM not available for result synthesis');
     }
 
-    // Build synthesis prompt with all specialist outputs
+    // Build synthesis prompt with all agent outputs
     let resultsText = '';
     for (const result of results) {
       const subtask = plan.find((s) => s.id === result.subtaskId);
       if (!subtask) continue;
 
       resultsText += `## ${subtask.description}\n`;
-      resultsText += `**Specialist**: ${result.specialistId}\n`;
+      resultsText += `**Specialist**: ${result.agentId}\n`;
       resultsText += `**Status**: ${result.success ? 'Success' : 'Failed'}\n`;
 
       if (result.success && result.output) {
@@ -1773,10 +1773,10 @@ Return your decision as JSON.`;
       }
     }
 
-    const systemPrompt = `You are an AI orchestrator synthesizing results from multiple specialists.
+    const systemPrompt = `You are an AI orchestrator synthesizing results from multiple agents.
 
 # Your Role:
-1. Review all specialist outputs
+1. Review all agent outputs
 2. Identify key findings and insights
 3. Combine information into a coherent answer
 4. Resolve any conflicts or inconsistencies
@@ -1785,14 +1785,14 @@ Return your decision as JSON.`;
 # Output Format:
 Provide a clear, well-structured answer that:
 - Directly addresses the original task
-- Incorporates insights from all specialists
+- Incorporates insights from all agents
 - Is easy to understand and actionable
-- Cites which specialist provided which information (when relevant)`;
+- Cites which agent provided which information (when relevant)`;
 
     const userPrompt = `# Original Task:
 ${task}
 
-# Specialist Results:
+# Agent Results:
 ${resultsText}
 
 Synthesize these results into a comprehensive answer to the original task.`;
@@ -1814,10 +1814,10 @@ Synthesize these results into a comprehensive answer to the original task.`;
   }
 
   /**
-   * Analyze specialist result and decide how to adapt plan (Phase 2)
+   * Analyze agent result and decide how to adapt plan (Phase 2)
    *
    * Uses smart tier LLM to:
-   * 1. Review findings from specialist
+   * 1. Review findings from agent
    * 2. Determine if fixes are needed
    * 3. Generate new subtasks for fixes
    * 4. Set up dependencies (e.g., re-review after fixes)
@@ -1880,15 +1880,15 @@ ${i + 1}. [${f.severity.toUpperCase()}] ${f.category}: ${f.title}
   .join('\n')}
 `.trim();
 
-    // Get available specialists for targetSpecialist suggestions
-    const specialists = await this.registry.list();
-    const availableSpecialistIds = specialists.map((s) => s.id).join(', ');
+    // Get available agents for targetAgent suggestions
+    const agents = await this.registry.list();
+    const availableSpecialistIds = agents.map((s) => s.id).join(', ');
 
-    // UNIVERSAL prompt - works for any specialist type
-    const systemPrompt = `You are an AI orchestrator deciding whether to adapt an execution plan based on specialist findings.
+    // UNIVERSAL prompt - works for any agent type
+    const systemPrompt = `You are an AI orchestrator deciding whether to adapt an execution plan based on agent findings.
 
 # Context:
-A specialist (${currentResult.specialistId}) completed a subtask and reported findings.
+A agent (${currentResult.agentId}) completed a subtask and reported findings.
 Findings can be:
 - Code issues (type errors, bugs, security vulnerabilities)
 - Log patterns (errors, warnings, performance issues)
@@ -1914,7 +1914,7 @@ Findings can be:
 - action: "add" - to add new subtask for fixing issues
 - subtask.id: "fix-1", "fix-2", etc. (sequential)
 - subtask.description: Specific, actionable description
-- subtask.specialistId: Choose from: ${availableSpecialistIds}
+- subtask.agentId: Choose from: ${availableSpecialistIds}
 - subtask.dependencies: ["${currentResult.subtaskId}"] (new tasks depend on current work)
 - subtask.priority: 8-10 for critical fixes, 5-7 for important improvements
 - subtask.estimatedComplexity: "low", "medium", or "high"
@@ -1926,7 +1926,7 @@ Findings can be:
 ${task}
 
 # Current Subtask:
-[${currentResult.subtaskId}] Completed by ${currentResult.specialistId}
+[${currentResult.subtaskId}] Completed by ${currentResult.agentId}
 
 # Findings Summary:
 ${findingsSummaryText}
@@ -2009,18 +2009,18 @@ If NO, explain why findings don't warrant plan changes.`;
   }
 
   /**
-   * Share findings between specialists (Phase 2 - Knowledge Sharing)
+   * Share findings between agents (Phase 2 - Knowledge Sharing)
    *
-   * Allows specialists to communicate important discoveries that might
+   * Allows agents to communicate important discoveries that might
    * affect other subtasks or the overall execution.
    *
    * @param subtaskId - Subtask where finding was discovered
-   * @param specialistId - Specialist who made the discovery
+   * @param agentId - Agent who made the discovery
    * @param finding - The finding to share
    */
   private async shareFinding(
     subtaskId: string,
-    specialistId: string,
+    agentId: string,
     finding: {
       category: 'bug' | 'optimization' | 'requirement' | 'constraint' | 'insight';
       description: string;
@@ -2030,16 +2030,16 @@ If NO, explain why findings don't warrant plan changes.`;
   ): Promise<void> {
     this.ctx.platform.logger.info('🔗 Knowledge sharing: Finding shared', {
       subtaskId,
-      specialistId,
+      agentId,
       category: finding.category,
       affectedSubtasks: finding.affectedSubtasks.length,
     });
 
-    // Store finding for potential use by other specialists
+    // Store finding for potential use by other agents
     // For now, just log it - future: store in FindingsStore or context
     this.ctx.platform.analytics.track('orchestrator.knowledge.shared', {
       subtaskId,
-      specialistId,
+      agentId,
       category: finding.category,
       impact: finding.impact.length,
       affectedCount: finding.affectedSubtasks.length,
@@ -2047,9 +2047,9 @@ If NO, explain why findings don't warrant plan changes.`;
   }
 
   /**
-   * Request context from previous specialist (Phase 2 - Knowledge Sharing)
+   * Request context from previous agent (Phase 2 - Knowledge Sharing)
    *
-   * Allows specialist to ask questions about work done by others.
+   * Allows agent to ask questions about work done by others.
    *
    * @param requesterSubtaskId - Current subtask requesting context
    * @param sourceSubtaskId - Subtask to get context from
@@ -2067,7 +2067,7 @@ If NO, explain why findings don't warrant plan changes.`;
       questionCount: questions.length,
     });
 
-    // Future: Use LLM to answer questions based on previous specialist's work
+    // Future: Use LLM to answer questions based on previous agent's work
     // For now, return placeholder
     return `Context from ${sourceSubtaskId}: Previous work completed successfully. ${questions.length} questions noted.`;
   }

@@ -169,7 +169,7 @@ describe('OrchestratorAgentRegistry', () => {
       expect(emptyRegistry.count()).toBe(0);
       expect(emptyRegistry.hasAgents()).toBe(false);
       expect(emptyRegistry.toPromptFormat()).toContain(
-        'No specialist agents available',
+        'No agent agents available',
       );
     });
   });

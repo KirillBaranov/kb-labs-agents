@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/knowledge
- * Tool for requesting context from previous specialists.
+ * Tool for requesting context from previous agents.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -11,11 +11,11 @@ import type { LLMTool } from '@kb-labs/core-platform';
 export interface ContextRequest {
   /** Current subtask ID */
   subtaskId: string;
-  /** Specialist requesting context */
+  /** Agent requesting context */
   requesterId: string;
   /** Subtask ID to get context from */
   sourceSubtaskId: string;
-  /** Specialist to request from */
+  /** Agent to request from */
   sourceSpecialistId: string;
   /** Specific questions or information needed */
   questions: string[];
@@ -24,9 +24,9 @@ export interface ContextRequest {
 }
 
 /**
- * Create LLM tool for requesting context from previous specialists.
+ * Create LLM tool for requesting context from previous agents.
  *
- * Enables specialists to ask questions about work done by others,
+ * Enables agents to ask questions about work done by others,
  * supporting knowledge transfer and informed decision-making.
  *
  * @returns LLM tool definition
@@ -34,10 +34,10 @@ export interface ContextRequest {
 export function createRequestContextTool(): LLMTool {
   return {
     name: 'request_context',
-    description: `Request additional context or information from a previous specialist.
+    description: `Request additional context or information from a previous agent.
 
 **Use this tool when:**
-- Need to understand previous specialist's decisions
+- Need to understand previous agent's decisions
 - Require details not captured in deliverables
 - Want to clarify assumptions or approach
 - Need to understand why something was done a certain way
@@ -65,7 +65,7 @@ export function createRequestContextTool(): LLMTool {
         },
         requesterId: {
           type: 'string',
-          description: 'Specialist requesting context',
+          description: 'Agent requesting context',
         },
         sourceSubtaskId: {
           type: 'string',
@@ -74,7 +74,7 @@ export function createRequestContextTool(): LLMTool {
         },
         sourceSpecialistId: {
           type: 'string',
-          description: 'Specialist to request context from',
+          description: 'Agent to request context from',
         },
         questions: {
           type: 'array',

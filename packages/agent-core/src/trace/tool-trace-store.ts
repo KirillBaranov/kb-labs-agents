@@ -1,7 +1,7 @@
 /**
  * ToolTraceStore - In-Memory Implementation
  *
- * Storage for tool execution traces during specialist runs.
+ * Storage for tool execution traces during agent runs.
  * Provides CRUD operations for ToolTrace records.
  */
 
@@ -15,13 +15,13 @@ import type { ToolTrace, ToolInvocation } from '@kb-labs/agent-contracts';
  */
 export interface IToolTraceStore {
   /**
-   * Create a new trace for a specialist execution
+   * Create a new trace for an agent execution
    *
    * @param sessionId - Session ID (links to orchestrator session)
-   * @param specialistId - Specialist ID that will generate this trace
+   * @param agentId - Agent ID that will generate this trace
    * @returns Newly created ToolTrace with unique traceId
    */
-  create(sessionId: string, specialistId: string): Promise<ToolTrace>;
+  create(sessionId: string, agentId: string): Promise<ToolTrace>;
 
   /**
    * Append a tool invocation to an existing trace
@@ -80,12 +80,12 @@ export interface IToolTraceStore {
 export class InMemoryToolTraceStore implements IToolTraceStore {
   private traces = new Map<string, ToolTrace>();
 
-  async create(sessionId: string, specialistId: string): Promise<ToolTrace> {
+  async create(sessionId: string, agentId: string): Promise<ToolTrace> {
     const traceId = randomUUID();
     const trace: ToolTrace = {
       traceId,
       sessionId,
-      specialistId,
+      agentId,
       invocations: [],
       createdAt: new Date(),
     };

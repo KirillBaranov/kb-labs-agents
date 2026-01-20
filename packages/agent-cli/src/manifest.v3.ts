@@ -6,15 +6,15 @@
 
 import { defineManifest, defineCommandFlags, generateExamples } from '@kb-labs/sdk';
 import type { PermissionSpec } from '@kb-labs/sdk';
-import { AGENTS_BASE_PATH, AGENTS_ROUTES } from '@kb-labs/agent-contracts';
+// import { AGENTS_BASE_PATH, AGENTS_ROUTES } from '@kb-labs/agent-contracts';
 
 /**
  * Plugin permissions - needs full filesystem and shell access for agents
  */
 const pluginPermissions: PermissionSpec = {
   fs: {
-    read: ['.kb/agents/**', '.kb/specialists/**', '.kb/cache/**', '.kb/mind/**', '**'],
-    write: ['.kb/agents/**', '.kb/specialists/**', '.kb/cache/**', '**'],
+    read: ['.kb/agents/**', '.kb/cache/**', '.kb/mind/**', '**'],
+    write: ['.kb/agents/**', '.kb/cache/**', '**'],
   },
   shell: {
     allow: ['*'],
@@ -133,37 +133,31 @@ export const manifest = defineManifest({
         permissions: listPermissions,
       },
       {
-        id: 'orchestrator:list',
-        group: 'orchestrator',
-        describe: 'List all available specialists',
-        longDescription: 'Displays all specialists discovered in .kb/agents/ directory with their capabilities, status, and configuration details.',
+        id: 'agent:inspect',
+        group: 'agent',
+        describe: 'Inspect agent configuration (tools, prompt, output schema)',
+        longDescription: 'Shows the agent configuration including system prompt, available tools (including submit_result), output schema, and execution limits. Useful for debugging agent behavior.',
         flags: defineCommandFlags({
-          json: {
-            type: 'boolean',
-            description: 'Output as JSON',
-            default: false,
-          },
-          verbose: {
-            type: 'boolean',
-            description: 'Show detailed information (paths, config)',
-            default: false,
-            alias: 'v',
+          agentId: {
+            type: 'string',
+            description: 'Agent ID to inspect',
+            required: true,
           },
         }),
-        examples: generateExamples('list', 'orchestrator', [
-          { description: 'List all specialists', flags: {} },
-          { description: 'Show detailed info', flags: { verbose: true } },
-          { description: 'Output as JSON', flags: { json: true } },
+        examples: generateExamples('inspect', 'agent', [
+          { description: 'Inspect implementer agent', flags: { agentId: 'implementer' } },
+          { description: 'Inspect researcher agent', flags: { agentId: 'researcher' } },
+          { description: 'Inspect reviewer agent', flags: { agentId: 'reviewer' } },
         ]),
-        handler: './cli/commands/orchestrator-list.js#default',
-        handlerPath: './cli/commands/orchestrator-list.js',
+        handler: './cli/commands/inspect.js#default',
+        handlerPath: './cli/commands/inspect.js',
         permissions: listPermissions,
       },
       {
-        id: 'orchestrator:run',
-        group: 'orchestrator',
-        describe: 'Execute a complex task via orchestrator with specialist delegation',
-        longDescription: 'Runs an orchestrator that breaks complex tasks into subtasks, delegates them to specialists, and synthesizes results into a coherent answer. Uses smart tier LLM for planning and synthesis.',
+        id: 'agent:run',
+        group: 'agent',
+        describe: 'Execute a complex task via orchestrator with agent delegation',
+        longDescription: 'Runs an orchestrator that breaks complex tasks into subtasks, delegates them to agents, and synthesizes results into a coherent answer. Uses smart tier LLM for planning and synthesis.',
         flags: defineCommandFlags({
           task: {
             type: 'string',
@@ -177,7 +171,7 @@ export const manifest = defineManifest({
             default: false,
           },
         }),
-        examples: generateExamples('run', 'orchestrator', [
+        examples: generateExamples('run', 'agent', [
           {
             description: 'Execute complex multi-step task',
             flags: { task: 'Analyze the V2 agent architecture and create implementation plan' }
@@ -191,41 +185,41 @@ export const manifest = defineManifest({
             flags: { task: 'Explain the plugin system architecture', json: true }
           },
         ]),
-        handler: './cli/commands/orchestrator-run.js#default',
-        handlerPath: './cli/commands/orchestrator-run.js',
+        handler: './cli/commands/agent-run.js#default',
+        handlerPath: './cli/commands/agent-run.js',
         permissions: runPermissions,
       }
     ]
   },
 
-  // REST API routes for Studio integration
-  rest: {
-    basePath: AGENTS_BASE_PATH,
-    routes: [
-      // GET / - List all available agents
-      {
-        method: 'GET',
-        path: AGENTS_ROUTES.LIST,
-        handler: './rest/list-agents.js#default',
-        output: {
-          zod: '@kb-labs/agent-contracts#ListAgentsResponseSchema',
-        },
-      },
-      // POST /run - Execute an agent
-      {
-        method: 'POST',
-        path: AGENTS_ROUTES.RUN,
-        handler: './rest/run-agent.js#default',
-        input: {
-          zod: '@kb-labs/agent-contracts#RunAgentRequestSchema',
-        },
-        output: {
-          zod: '@kb-labs/agent-contracts#AgentResponseSchema',
-        },
-        timeoutMs: 3600000, // 1 hour for agent execution (will be background jobs later)
-      },
-    ],
-  },
+  // REST API routes for Studio integration (TODO: fix to work with new AgentOutcome structure)
+  // rest: {
+  //   basePath: AGENTS_BASE_PATH,
+  //   routes: [
+  //     // GET / - List all available agents
+  //     {
+  //       method: 'GET',
+  //       path: AGENTS_ROUTES.LIST,
+  //       handler: './rest/list-agents.js#default',
+  //       output: {
+  //         zod: '@kb-labs/agent-contracts#ListAgentsResponseSchema',
+  //       },
+  //     },
+  //     // POST /run - Execute an agent
+  //     {
+  //       method: 'POST',
+  //       path: AGENTS_ROUTES.RUN,
+  //       handler: './rest/run-agent.js#default',
+  //       input: {
+  //         zod: '@kb-labs/agent-contracts#RunAgentRequestSchema',
+  //       },
+  //       output: {
+  //         zod: '@kb-labs/agent-contracts#AgentResponseSchema',
+  //       },
+  //       timeoutMs: 3600000, // 1 hour for agent execution (will be background jobs later)
+  //     },
+  //   ],
+  // },
 
   permissions: pluginPermissions
 });

@@ -1,7 +1,7 @@
 /**
- * CLI Command: orchestrator:run
+ * CLI Command: agent:run
  *
- * Execute a complex task via orchestrator with specialist delegation
+ * Execute a complex task via agent orchestrator with agent delegation
  */
 
 import { defineCommand, type CommandResult } from '@kb-labs/sdk';
@@ -30,8 +30,8 @@ interface OrchestratorRunOutput {
 }
 
 export default defineCommand<unknown, OrchestratorRunInput, OrchestratorRunOutput>({
-  id: 'orchestrator:run',
-  description: 'Execute a task via orchestrator with specialist delegation',
+  id: 'agent:run',
+  description: 'Execute a task via agent orchestrator with agent delegation',
 
   handler: {
     async execute(
@@ -55,19 +55,19 @@ export default defineCommand<unknown, OrchestratorRunInput, OrchestratorRunOutpu
 
           onSubtaskStart: (subtask: SubTask, progress: Progress) => {
             if (!jsonOutput) {
-              ctx.ui?.write(`│  ⏳ [${progress.current}/${progress.total}] ${subtask.specialistId}...\n`);
+              ctx.ui?.write(`│  ⏳ [${progress.current}/${progress.total}] ${subtask.agentId}...\n`);
             }
           },
 
           onSubtaskComplete: (subtask: SubTask, result: DelegatedResult, progress: Progress) => {
             if (!jsonOutput) {
-              ctx.ui?.write(`│  ✅ [${progress.current}/${progress.total}] ${subtask.specialistId} (${result.durationMs}ms, ${result.tokensUsed} tokens)\n`);
+              ctx.ui?.write(`│  ✅ [${progress.current}/${progress.total}] ${subtask.agentId} (${result.durationMs}ms, ${result.tokensUsed} tokens)\n`);
             }
           },
 
           onSubtaskFailed: (subtask: SubTask, result: DelegatedResult, progress: Progress) => {
             if (!jsonOutput) {
-              ctx.ui?.write(`│  ❌ [${progress.current}/${progress.total}] ${subtask.specialistId} - ${result.error || 'unknown error'}\n`);
+              ctx.ui?.write(`│  ❌ [${progress.current}/${progress.total}] ${subtask.agentId} - ${result.error || 'unknown error'}\n`);
             }
           },
 
@@ -106,7 +106,7 @@ export default defineCommand<unknown, OrchestratorRunInput, OrchestratorRunOutpu
           console.log(`│  Subtasks: ${result.plan.length}`);
           for (const subtask of result.plan) {
             console.log(`│  - [${subtask.id}] ${subtask.description}`);
-            console.log(`│    → Assigned to: ${subtask.specialistId}`);
+            console.log(`│    → Assigned to: ${subtask.agentId}`);
             if (subtask.dependencies && subtask.dependencies.length > 0) {
               console.log(`│    → Depends on: ${subtask.dependencies.join(', ')}`);
             }
@@ -114,14 +114,14 @@ export default defineCommand<unknown, OrchestratorRunInput, OrchestratorRunOutpu
           }
           console.log('│');
 
-          // Show specialist results
-          console.log('│ Specialist Results');
+          // Show agent results
+          console.log('│ Agent Results');
           for (const delegatedResult of result.delegatedResults) {
             const subtask = result.plan.find((s) => s.id === delegatedResult.subtaskId);
             const status = delegatedResult.success ? '✅' : '❌';
 
             console.log(`│  ${status} [${delegatedResult.subtaskId}] ${subtask?.description || '(unknown)'}`);
-            console.log(`│    → Specialist: ${delegatedResult.specialistId}`);
+            console.log(`│    → Specialist: ${delegatedResult.agentId}`);
             console.log(`│    → Tokens: ${delegatedResult.tokensUsed}`);
             console.log(`│    → Duration: ${delegatedResult.durationMs}ms`);
 

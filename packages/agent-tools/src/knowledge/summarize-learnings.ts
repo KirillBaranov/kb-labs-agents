@@ -28,8 +28,8 @@ export interface Learning {
 export interface SummarizedLearnings {
   /** Subtask ID */
   subtaskId: string;
-  /** Specialist who generated summary */
-  specialistId: string;
+  /** Agent who generated summary */
+  agentId: string;
   /** Key learnings */
   learnings: Learning[];
   /** Recommendations for future similar tasks */
@@ -74,16 +74,16 @@ export function createSummarizeLearningsTool(): LLMTool {
 
     inputSchema: {
       type: 'object',
-      required: ['subtaskId', 'specialistId', 'learnings', 'recommendations', 'summary'],
+      required: ['subtaskId', 'agentId', 'learnings', 'recommendations', 'summary'],
       properties: {
         subtaskId: {
           type: 'string',
           description: 'ID of completed subtask',
           pattern: '^subtask-\\d+$',
         },
-        specialistId: {
+        agentId: {
           type: 'string',
-          description: 'Specialist generating this summary',
+          description: 'Agent generating this summary',
         },
         learnings: {
           type: 'array',

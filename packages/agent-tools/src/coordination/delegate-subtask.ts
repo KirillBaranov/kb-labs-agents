@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/coordination
- * Tool for explicit subtask delegation to specialists.
+ * Tool for explicit subtask delegation to agents.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -11,9 +11,9 @@ import type { LLMTool } from '@kb-labs/core-platform';
 export interface DelegationInstruction {
   /** Subtask ID being delegated */
   subtaskId: string;
-  /** Specialist ID to delegate to */
-  specialistId: string;
-  /** Context/input to provide to specialist */
+  /** Agent ID to delegate to */
+  agentId: string;
+  /** Context/input to provide to agent */
   context: string;
   /** Expected output/deliverable */
   expectedOutput: string;
@@ -26,15 +26,15 @@ export interface DelegationInstruction {
  *
  * Provides explicit delegation instructions with context.
  *
- * @param validSpecialistIds - Array of valid specialist IDs
+ * @param validSpecialistIds - Array of valid agent IDs
  * @returns LLM tool definition
  */
 export function createDelegateSubtaskTool(validSpecialistIds: string[]): LLMTool {
   return {
     name: 'delegate_subtask',
-    description: `Delegate a subtask to a specialist with clear instructions and context.
+    description: `Delegate a subtask to an agent with clear instructions and context.
 
-**Available specialists:**
+**Available agents:**
 ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 
 **Use this tool to:**
@@ -44,21 +44,21 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 
     inputSchema: {
       type: 'object',
-      required: ['subtaskId', 'specialistId', 'context', 'expectedOutput', 'priority'],
+      required: ['subtaskId', 'agentId', 'context', 'expectedOutput', 'priority'],
       properties: {
         subtaskId: {
           type: 'string',
           description: 'ID of subtask being delegated',
           pattern: '^subtask-\\d+$',
         },
-        specialistId: {
+        agentId: {
           type: 'string',
-          description: 'Specialist to delegate to',
+          description: 'Agent to delegate to',
           enum: validSpecialistIds,
         },
         context: {
           type: 'string',
-          description: 'Context and background information for specialist',
+          description: 'Context and background information for agent',
           minLength: 20,
           maxLength: 1000,
         },

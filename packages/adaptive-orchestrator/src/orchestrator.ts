@@ -131,9 +131,9 @@ export class AdaptiveOrchestrator {
         this.agentsLoaded = true;
         this.logger.debug(`Agent registry has ${this.agentRegistry.count()} agents`);
         if (this.agentRegistry.hasAgents()) {
-          this.logger.info(`Loaded ${this.agentRegistry.count()} specialist agents`);
+          this.logger.info(`Loaded ${this.agentRegistry.count()} agent agents`);
         } else {
-          this.logger.warn('No specialist agents found in .kb/agents/');
+          this.logger.warn('No agent agents found in .kb/agents/');
         }
       }
 
@@ -316,9 +316,9 @@ export class AdaptiveOrchestrator {
 
 Task: ${task}
 
-${this.agentRegistry.hasAgents() ? `## Available Specialist Agents
+${this.agentRegistry.hasAgents() ? `## Available Agent Agents
 
-**IMPORTANT:** You MUST assign specialist agents when subtasks require tools (file operations, code search, etc.).
+**IMPORTANT:** You MUST assign agent agents when subtasks require tools (file operations, code search, etc.).
 Generic LLM without agent cannot create files, modify code, or execute tools.
 
 ${agentsList}
@@ -335,7 +335,7 @@ ${agentsList}
 - id: number (1-based)
 - description: string
 - complexity: "small" | "medium" | "large"${this.agentRegistry.hasAgents() ? `
-- agentId: string (REQUIRED if task needs tools; specialist agent ID)
+- agentId: string (REQUIRED if task needs tools; agent agent ID)
 - reasoning: string (REQUIRED if agentId provided: why this agent was chosen)` : ''}
 
 Example:
@@ -483,7 +483,7 @@ Respond with ONLY the JSON array, no markdown.`;
 
     // If agent is specified, execute with full agent + tools
     if (subtask.agentId) {
-      this.logger.info(`Executing subtask ${subtask.id} with specialist agent: ${subtask.agentId}`);
+      this.logger.info(`Executing subtask ${subtask.id} with agent agent: ${subtask.agentId}`);
 
       const { result, toolCalls, llmInteractions } = await executeWithAgent(
         this.ctx,

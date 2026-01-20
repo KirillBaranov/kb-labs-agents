@@ -4,7 +4,7 @@
  * Tracks orchestrator execution events:
  * - Task started/completed/failed
  * - Planning phase
- * - Specialist delegation
+ * - Agent delegation
  * - Result synthesis
  * - Cost and token usage
  */
@@ -26,7 +26,7 @@ export const ORCHESTRATOR_EVENTS = {
   PLANNING_STARTED: 'orchestrator.planning.started',
   PLANNING_COMPLETED: 'orchestrator.planning.completed',
 
-  // Specialist delegation
+  // Agent delegation
   SPECIALIST_DELEGATED: 'orchestrator.specialist.delegated',
   SPECIALIST_COMPLETED: 'orchestrator.specialist.completed',
   SPECIALIST_FAILED: 'orchestrator.specialist.failed',
@@ -66,10 +66,10 @@ export class OrchestratorAnalytics {
   trackTaskCompleted(task: string, result: OrchestratorResult): void {
     if (!this.analytics) return;
 
-    // Calculate specialist distribution
-    const specialistCounts: Record<string, number> = {};
+    // Calculate agent distribution
+    const agentCounts: Record<string, number> = {};
     for (const delegated of result.delegatedResults) {
-      specialistCounts[delegated.specialistId] = (specialistCounts[delegated.specialistId] || 0) + 1;
+      agentCounts[delegated.agentId] = (agentCounts[delegated.agentId] || 0) + 1;
     }
 
     // Calculate success rate
@@ -83,7 +83,7 @@ export class OrchestratorAnalytics {
       subtask_count: result.plan.length,
       delegated_count: result.delegatedResults.length,
       success_rate: successRate,
-      specialist_distribution: specialistCounts,
+      agent_distribution: agentCounts,
       tokens_total: result.tokensUsed,
       duration_ms: result.durationMs,
       answer_length: result.answer.length,
@@ -124,13 +124,13 @@ export class OrchestratorAnalytics {
   trackPlanningCompleted(plan: SubTask[], tokensUsed: number, durationMs: number): void {
     if (!this.analytics) return;
 
-    // Calculate specialist distribution in plan
-    const specialistCounts: Record<string, number> = {};
+    // Calculate agent distribution in plan
+    const agentCounts: Record<string, number> = {};
     const prioritySum = plan.reduce((sum, s) => sum + (s.priority || 5), 0);
     const avgPriority = plan.length > 0 ? prioritySum / plan.length : 0;
 
     for (const subtask of plan) {
-      specialistCounts[subtask.specialistId] = (specialistCounts[subtask.specialistId] || 0) + 1;
+      agentCounts[subtask.agentId] = (agentCounts[subtask.agentId] || 0) + 1;
     }
 
     // Count dependencies
@@ -141,8 +141,8 @@ export class OrchestratorAnalytics {
 
     this.analytics.track(ORCHESTRATOR_EVENTS.PLANNING_COMPLETED, {
       subtask_count: plan.length,
-      specialist_distribution: specialistCounts,
-      specialists_used: Object.keys(specialistCounts).length,
+      agent_distribution: agentCounts,
+      agents_used: Object.keys(agentCounts).length,
       dependency_count: dependencyCount,
       avg_priority: avgPriority,
       tokens_used: tokensUsed,
@@ -152,14 +152,14 @@ export class OrchestratorAnalytics {
   }
 
   /**
-   * Track specialist delegation start
+   * Track agent delegation start
    */
   trackSpecialistDelegated(subtask: SubTask): void {
     if (!this.analytics) return;
 
     this.analytics.track(ORCHESTRATOR_EVENTS.SPECIALIST_DELEGATED, {
       subtask_id: subtask.id,
-      specialist_id: subtask.specialistId,
+      agent_id: subtask.agentId,
       description_length: subtask.description.length,
       priority: subtask.priority || 5,
       complexity: subtask.estimatedComplexity || 'medium',
@@ -169,14 +169,14 @@ export class OrchestratorAnalytics {
   }
 
   /**
-   * Track specialist completion
+   * Track agent completion
    */
   trackSpecialistCompleted(subtask: SubTask, result: DelegatedResult): void {
     if (!this.analytics) return;
 
     this.analytics.track(ORCHESTRATOR_EVENTS.SPECIALIST_COMPLETED, {
       subtask_id: subtask.id,
-      specialist_id: subtask.specialistId,
+      agent_id: subtask.agentId,
       success: result.success,
       tokens_used: result.tokensUsed,
       duration_ms: result.durationMs,
@@ -187,14 +187,14 @@ export class OrchestratorAnalytics {
   }
 
   /**
-   * Track specialist failure
+   * Track agent failure
    */
   trackSpecialistFailed(subtask: SubTask, result: DelegatedResult): void {
     if (!this.analytics) return;
 
     this.analytics.track(ORCHESTRATOR_EVENTS.SPECIALIST_FAILED, {
       subtask_id: subtask.id,
-      specialist_id: subtask.specialistId,
+      agent_id: subtask.agentId,
       error_message: result.error?.substring(0, 200) || 'unknown',
       tokens_used: result.tokensUsed,
       duration_ms: result.durationMs,
@@ -270,9 +270,9 @@ export class OrchestratorAnalytics {
   }
 
   /**
-   * Track specialist run cost (Phase 4)
+   * Track agent run cost (Phase 4)
    *
-   * Accumulates cost for specialist execution.
+   * Accumulates cost for agent execution.
    *
    * @param tier - Model tier used
    * @param promptTokens - Tokens in prompt

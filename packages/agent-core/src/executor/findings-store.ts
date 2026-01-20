@@ -12,7 +12,7 @@
 
 import type { PluginContextV3 } from '@kb-labs/sdk';
 import type {
-  SpecialistFinding,
+  AgentFinding,
   FindingsSummary,
   StoredFindings,
   FindingsRegistry,
@@ -36,7 +36,7 @@ export class FindingsStore {
   async save(
     sessionId: string,
     subtaskId: string,
-    findings: SpecialistFinding[],
+    findings: AgentFinding[],
     options?: {
       customTTL?: number; // Custom TTL in ms (overrides defaults)
       maxDeadline?: number; // Max deadline (default: 7 days)
@@ -76,7 +76,7 @@ export class FindingsStore {
    * @param findingsRef - Reference ID (e.g., "findings:session-123:subtask-2")
    * @returns Findings array (empty if not found or expired)
    */
-  async load(findingsRef: string): Promise<SpecialistFinding[]> {
+  async load(findingsRef: string): Promise<AgentFinding[]> {
     const data = await this.ctx.platform.cache.get<StoredFindings>(findingsRef);
 
     if (!data) {
@@ -98,7 +98,7 @@ export class FindingsStore {
    * @param findings - Full findings array
    * @returns Compact summary
    */
-  createSummary(findings: SpecialistFinding[]): FindingsSummary {
+  createSummary(findings: AgentFinding[]): FindingsSummary {
     const bySeverity = {
       critical: findings.filter((f) => f.severity === 'critical').length,
       high: findings.filter((f) => f.severity === 'high').length,

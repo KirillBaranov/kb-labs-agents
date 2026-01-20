@@ -30,7 +30,7 @@ export default defineHandler({
           .filter((a) => a.valid)
           .map(async (agent) => {
             try {
-              const config = await registry.loadConfig(agent.id);
+              const config = await registry.load(agent.id);
               // Extract tool names from config
               const toolNames: string[] = [];
               if (config.tools?.kbLabs) {

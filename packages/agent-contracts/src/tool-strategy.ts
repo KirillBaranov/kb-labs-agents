@@ -4,7 +4,7 @@
  * Defines how agents discover, prioritize, and use tools.
  * Supports grouped tools with priorities, hints, and gating.
  *
- * @example Researcher specialist config:
+ * @example Researcher agent config:
  * ```yaml
  * tools:
  *   strategy: prioritized

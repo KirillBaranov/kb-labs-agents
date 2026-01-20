@@ -1,11 +1,11 @@
 /**
- * Types for Orchestrator and Specialist execution
+ * Types for Orchestrator and Agent execution
  *
  * Phase 2: Adaptive Feedback Loop
  */
 
 /**
- * Universal finding from any specialist
+ * Universal finding from any agent
  *
  * Can represent:
  * - Code review issue (reviewer)
@@ -17,7 +17,7 @@
  *
  * Note: Renamed from Finding to avoid conflict with execution-memory.ts
  */
-export interface SpecialistFinding {
+export interface AgentFinding {
   // What was found
   category: string; // e.g., "type-error", "exception-pattern", "security-risk", "n+1-query"
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -44,7 +44,7 @@ export interface SpecialistFinding {
     type: 'fix' | 'investigate' | 'optimize' | 'document' | 'monitor' | 'alert';
     description: string;
     estimatedEffort?: 'trivial' | 'small' | 'medium' | 'large';
-    targetSpecialist?: string; // Which specialist should handle this
+    targetSpecialist?: string; // Which agent should handle this
   };
 }
 
@@ -64,7 +64,7 @@ export interface FindingsSummary {
     info: number;
   };
   actionable: number; // How many findings have suggestedAction
-  topFindings: SpecialistFinding[]; // Max 3 most important findings (for context efficiency)
+  topFindings: AgentFinding[]; // Max 3 most important findings (for context efficiency)
 }
 
 /**
@@ -73,22 +73,22 @@ export interface FindingsSummary {
 export interface SubTask {
   id: string; // Unique subtask ID (e.g., "subtask-1")
   description: string; // What needs to be done
-  specialistId: string; // Which specialist should handle this
+  agentId: string; // Which agent should handle this
   dependencies?: string[]; // IDs of subtasks that must complete first
   priority?: number; // Higher = more important (1-10)
   estimatedComplexity?: 'low' | 'medium' | 'high'; // Complexity estimate
 }
 
 /**
- * Result from a specialist execution
+ * Result from an agent execution
  *
  * Phase 2: Enhanced with findings support
  */
 export interface DelegatedResult {
   subtaskId: string;
-  specialistId: string;
+  agentId: string;
   success: boolean;
-  output: unknown; // Full specialist output (stored in artifacts)
+  output: unknown; // Full agent output (stored in artifacts)
   error?: string;
   tokensUsed: number;
   durationMs: number;
@@ -106,8 +106,8 @@ export interface OrchestratorResult {
   success: boolean;
   answer: string; // Final synthesized answer
   plan: SubTask[]; // Original execution plan (may be modified during execution)
-  delegatedResults: DelegatedResult[]; // Results from specialists
-  tokensUsed: number; // Total tokens (planning + specialists + synthesis)
+  delegatedResults: DelegatedResult[]; // Results from agents
+  tokensUsed: number; // Total tokens (planning + agents + synthesis)
   durationMs: number;
   error?: string;
 }
@@ -128,7 +128,7 @@ export interface AdaptationDecision {
 export interface StoredFindings {
   sessionId: string;
   subtaskId: string;
-  findings: SpecialistFinding[];
+  findings: AgentFinding[];
   timestamp: string;
   ttl: number; // TTL in milliseconds
 }

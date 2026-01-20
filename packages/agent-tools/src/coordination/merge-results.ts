@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/coordination
- * Tool for merging results from multiple specialists.
+ * Tool for merging results from multiple agents.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -11,8 +11,8 @@ import type { LLMTool } from '@kb-labs/core-platform';
 export interface ResultToMerge {
   /** Subtask ID */
   subtaskId: string;
-  /** Specialist who produced this result */
-  specialistId: string;
+  /** Agent who produced this result */
+  agentId: string;
   /** Key findings or deliverables */
   keyFindings: string[];
 }
@@ -32,16 +32,16 @@ export interface MergedResults {
 }
 
 /**
- * Create LLM tool for merging specialist results.
+ * Create LLM tool for merging agent results.
  *
- * Synthesizes outputs from multiple specialists into coherent summary.
+ * Synthesizes outputs from multiple agents into coherent summary.
  *
  * @returns LLM tool definition
  */
 export function createMergeResultsTool(): LLMTool {
   return {
     name: 'merge_results',
-    description: `Merge and synthesize results from multiple specialists.
+    description: `Merge and synthesize results from multiple agents.
 
 **Use this tool to:**
 - Combine findings from parallel subtasks
@@ -59,13 +59,13 @@ export function createMergeResultsTool(): LLMTool {
           minItems: 2,
           items: {
             type: 'object',
-            required: ['subtaskId', 'specialistId', 'keyFindings'],
+            required: ['subtaskId', 'agentId', 'keyFindings'],
             properties: {
               subtaskId: {
                 type: 'string',
                 pattern: '^subtask-\\d+$',
               },
-              specialistId: {
+              agentId: {
                 type: 'string',
               },
               keyFindings: {

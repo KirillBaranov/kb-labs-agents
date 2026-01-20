@@ -652,7 +652,7 @@ Implementer → работает с полным контекстом
 
 ```typescript
 interface SpecialistResult {
-  specialistId: string;
+  agentId: string;
   task: string;
   success: boolean;
 
@@ -1154,7 +1154,7 @@ User: "Добавь тесты для ProgressTracker"
 
 **Files Modified:**
 - `orchestrator-executor.ts` - Smart features + optimization gating + prompt fix
-- `specialist-executor.ts` - Integrated ToolTrace
+- `agent-executor.ts` - Integrated ToolTrace
 - `manifest.v3.ts` - Removed unused commands
 - `delegateTask()` - Passes through traceRef
 
@@ -1453,7 +1453,7 @@ Specialist returns SpecialistOutput with traceRef
 interface ToolTrace {
   traceId: string;
   sessionId: string;
-  specialistId: string;
+  agentId: string;
   invocations: ToolInvocation[];
   createdAt: Date;
 }
@@ -1793,7 +1793,7 @@ Policy action: warn
 ```typescript
 interface ToolTraceStore {
   // Create new trace
-  create(sessionId: string, specialistId: string): Promise<ToolTrace>;
+  create(sessionId: string, agentId: string): Promise<ToolTrace>;
 
   // Append invocation
   append(traceId: string, invocation: ToolInvocation): Promise<void>;
@@ -1892,7 +1892,7 @@ See future ADR for full design (when implemented).
 
 ```typescript
 interface SpecialistRun {
-  specialistId: string;
+  agentId: string;
   task: string;
   output: SpecialistOutput;
 
@@ -1909,7 +1909,7 @@ const verification = await verifier.verify(result.output);
 
 // Сохранить в SessionState
 sessionState.history.push({
-  specialistId: specialist.id,
+  agentId: specialist.id,
   task,
   output: result.output,
   verification,  // ← Честная оценка
@@ -2430,7 +2430,7 @@ export async function run(ctx: CommandContext) {
   }
 
   // Execute with definition
-  const executor = new SpecialistExecutor(definition);
+  const executor = new AgentExecutor(definition);
   const result = await executor.execute(task);
 
   return { ok: result.success };

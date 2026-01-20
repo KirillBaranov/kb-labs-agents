@@ -2,7 +2,7 @@
  * Orchestrator Agent Registry
  *
  * Dynamically loads agent metadata from .kb/agents/ directory.
- * Used by AdaptiveOrchestrator to select specialist agents for subtasks.
+ * Used by AdaptiveOrchestrator to select agent agents for subtasks.
  */
 
 import { readFile, readdir } from 'node:fs/promises';
@@ -137,7 +137,7 @@ export class OrchestratorAgentRegistry {
     const agents = this.getAll();
 
     if (agents.length === 0) {
-      return 'No specialist agents available. Use generic LLM for all subtasks.';
+      return 'No agent agents available. Use generic LLM for all subtasks.';
     }
 
     return agents

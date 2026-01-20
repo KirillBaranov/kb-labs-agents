@@ -52,15 +52,15 @@ export default defineCommand<unknown, ListInput, ListResult>({
         const agents = await Promise.all(
           agentMetas.filter(a => a.valid).map(async (agent) => {
             try {
-              const config = await registry.loadConfig(agent.id);
+              const config = await registry.load(agent.id);
               return {
                 id: agent.id,
                 name: agent.name,
                 description: config.description,
                 tools: {
-                  filesystem: config.tools?.filesystem?.enabled,
-                  shell: config.tools?.shell?.enabled,
-                  kbLabs: config.tools?.kbLabs?.allow,
+                  filesystem: config.tools.permissions?.fs?.read || config.tools.permissions?.fs?.write,
+                  shell: config.tools.permissions?.shell?.allow,
+                  kbLabs: config.tools.permissions?.kbLabs?.allow,
                 },
               };
             } catch (error) {

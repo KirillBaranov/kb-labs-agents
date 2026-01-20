@@ -246,7 +246,7 @@ class TaskVerifier {
 
 - **Additional latency**: +50-100ms per verification (re-running tools)
 - **Not 100% accurate**: Light verification can miss issues in plugin outputs
-- **Specialist burden**: Must track metadata (line counts, regions) during execution
+- **Agent burden**: Must track metadata (line counts, regions) during execution
 
 ### Alternatives Considered
 

@@ -8,7 +8,7 @@
 
 Created 5 specialized agents with granular tool filtering, each designed for specific tasks in the hierarchical agent system.
 
-## Specialists Created
+## Agents Created
 
 ### 1. code-reader (Read-Only)
 **Purpose:** Read and examine code files

@@ -229,7 +229,7 @@ private async delegateTask(
   };
 
   // Execute specialist with context
-  const specialist = await this.loadSpecialist(subtask.specialistId);
+  const specialist = await this.loadSpecialist(subtask.agentId);
   return specialist.execute(subtask.description, context);
 }
 
@@ -928,13 +928,13 @@ private async executeWithRetry(
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     this.ctx.platform.logger.info('Executing specialist', {
       subtaskId: subtask.id,
-      specialist: subtask.specialistId,
+      specialist: subtask.agentId,
       attempt,
       maxRetries,
     });
 
     try {
-      const specialist = await this.loadSpecialist(subtask.specialistId);
+      const specialist = await this.loadSpecialist(subtask.agentId);
       const outcome = await specialist.execute(subtask.description, context);
 
       if (outcome.ok) {
@@ -1047,7 +1047,7 @@ private async delegateTask(
   // No partial result, return error
   return {
     subtaskId: subtask.id,
-    specialistId: subtask.specialistId,
+    agentId: subtask.agentId,
     success: false,
     summary: `Failed: ${outcome.failure.message}`,
     tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
@@ -1171,7 +1171,7 @@ private async executeWithEscalation(
   context: ExecutionContext
 ): Promise<SpecialistOutcome> {
 
-  const specialist = await this.loadSpecialist(subtask.specialistId);
+  const specialist = await this.loadSpecialist(subtask.agentId);
   const ladder = specialist.definition.llm?.escalationLadder || ['small'];
 
   for (let tierIndex = 0; tierIndex < ladder.length; tierIndex++) {
@@ -1424,7 +1424,7 @@ export default defineCommand({
       onSubtaskStart: (subtask, progress) => {
         const percentage = Math.round((progress.current / progress.total) * 100);
         process.stdout.write(
-          `📋 [${progress.current}/${progress.total}] ${percentage}% - ${subtask.id} (${subtask.specialistId}): ${subtask.description}\n`
+          `📋 [${progress.current}/${progress.total}] ${percentage}% - ${subtask.id} (${subtask.agentId}): ${subtask.description}\n`
         );
       },
 
@@ -1503,7 +1503,7 @@ export default defineHandler({
           timestamp: Date.now(),
           data: {
             subtaskId: subtask.id,
-            specialist: subtask.specialistId,
+            specialist: subtask.agentId,
             description: subtask.description,
             progress,
           },

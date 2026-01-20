@@ -4,7 +4,7 @@
  *
  * Provides LLM tools for:
  * - Planning: Creating and revising execution plans
- * - Coordination: Delegating tasks and managing specialists
+ * - Coordination: Delegating tasks and managing agents
  * - Progress: Tracking status and identifying blockers
  * - Quality: Validating outputs and requesting revisions
  * - Knowledge: Sharing findings and capturing learnings

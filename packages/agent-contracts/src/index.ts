@@ -5,33 +5,16 @@
 // Agent Configuration Types
 export type {
   AgentSchema,
-  AgentLLMConfig,
-  AgentPromptConfig,
-  AgentContextFile,
-  AgentContextConfig,
-  AgentKBLabsToolsConfig,
-  AgentFilesystemPermissions,
-  AgentFilesystemConfig,
-  AgentShellConfig,
-  AgentToolsConfig,
-  AgentPolicyConfig,
   AgentConfigV1,
   AgentMetadata,
+  AgentLimits,
+  AgentStaticContext,
+  AgentDynamicContext,
+  AgentContextConfig,
+  AgentInputSchema,
+  AgentOutputSchema,
+  AgentCapability,
 } from './agent-config.js';
-
-// Specialist Configuration Types (V2)
-export type {
-  SpecialistSchema,
-  SpecialistLimits,
-  SpecialistStaticContext,
-  SpecialistDynamicContext,
-  SpecialistContextConfig,
-  SpecialistInputSchema,
-  SpecialistOutputSchema,
-  SpecialistCapability,
-  SpecialistConfigV1,
-  SpecialistMetadata,
-} from './specialist-config.js';
 
 // Agent Orchestrator Metadata Types
 export type {
@@ -56,7 +39,7 @@ export type {
   EvidenceRef,
   ToolInvocation,
   ToolTrace,
-  SpecialistOutput,
+  AgentOutput,
   Claim,
   FileWriteClaim,
   FileEditClaim,
@@ -97,8 +80,8 @@ export type {
 // Execution Context (V2)
 export type { ExecutionContext } from './context.js';
 
-// Specialist Outcome (V2 - Phase 3)
-export type { LLMTier, RunMeta, FailureReport, SpecialistOutcome } from './outcome.js';
+// Agent Outcome (V2 - Phase 3)
+export type { LLMTier, RunMeta, FailureReport, AgentOutcome } from './outcome.js';
 
 // Orchestrator Callbacks (V2 - Phase 5)
 export type {
@@ -114,21 +97,16 @@ export type {
 export {
   AgentSchemaSchema,
   AgentLLMConfigSchema,
-  AgentPromptConfigSchema,
-  AgentContextFileSchema,
-  AgentContextConfigSchema,
-  AgentKBLabsToolsConfigSchema,
-  AgentFilesystemPermissionsSchema,
-  AgentFilesystemConfigSchema,
-  AgentShellConfigSchema,
-  AgentToolsConfigSchema,
   AgentPolicyConfigSchema,
+  AgentLimitsSchema,
+  AgentStaticContextSchema,
+  AgentDynamicContextSchema,
+  AgentContextConfigSchema,
+  AgentInputSchemaSchema,
+  AgentOutputSchemaSchema,
+  AgentCapabilitySchema,
+  AgentMetadataInlineSchema,
   AgentConfigV1Schema,
-  ToolInputSchemaSchema,
-  ToolDefinitionSchema,
-  ToolCallSchema,
-  ToolErrorSchema,
-  ToolResultSchema,
   parseAgentConfig,
   validateAgentConfig,
 } from './agent-schemas.js';
@@ -146,21 +124,6 @@ export {
   validateToolStrategyConfig,
 } from './tool-strategy-schemas.js';
 
-// Specialist Zod Schemas and Validators (V2)
-export {
-  SpecialistSchemaSchema,
-  SpecialistLimitsSchema,
-  SpecialistStaticContextSchema,
-  SpecialistDynamicContextSchema,
-  SpecialistContextConfigSchema,
-  SpecialistInputSchemaSchema,
-  SpecialistOutputSchemaSchema,
-  SpecialistCapabilitySchema,
-  SpecialistMetadataInlineSchema,
-  SpecialistConfigV1Schema,
-  parseSpecialistConfig,
-  validateSpecialistConfig,
-} from './specialist-schemas.js';
 
 // REST API Schemas and Types
 export type {

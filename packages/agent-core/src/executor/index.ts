@@ -14,9 +14,8 @@ export type { RecoveryAction, RecoveryResult, RecoveryStrategyType } from './err
 export { parseTerminationSignal, shouldGiveUp } from './termination-parser.js';
 export type { TerminationSignal } from './termination-parser.js';
 
-// Specialist Executor exports (V2)
-export { SpecialistExecutor } from './specialist-executor.js';
-export type { SpecialistContext, SpecialistResult } from './specialist-executor.js';
+// Agent Executor types (V2)
+export type { AgentContext, AgentResult } from './agent-executor.js';
 
 // Session State Manager exports (V2)
 export { SessionStateManager } from './session-state-manager.js';
@@ -36,7 +35,7 @@ export type {
   SubTask,
   DelegatedResult,
   OrchestratorResult,
-  SpecialistFinding,
+  AgentFinding,
   FindingsSummary,
   AdaptationDecision,
   StoredFindings,

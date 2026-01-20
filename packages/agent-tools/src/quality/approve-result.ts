@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/quality
- * Tool for approving specialist results.
+ * Tool for approving agent results.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -11,8 +11,8 @@ import type { LLMTool } from '@kb-labs/core-platform';
 export interface ResultApproval {
   /** Subtask ID being approved */
   subtaskId: string;
-  /** Specialist who produced result */
-  specialistId: string;
+  /** Agent who produced result */
+  agentId: string;
   /** Key deliverables approved */
   approvedDeliverables: string[];
   /** Quality highlights */
@@ -22,7 +22,7 @@ export interface ResultApproval {
 }
 
 /**
- * Create LLM tool for approving specialist results.
+ * Create LLM tool for approving agent results.
  *
  * Formally approves output and allows proceeding to next steps.
  *
@@ -31,7 +31,7 @@ export interface ResultApproval {
 export function createApproveResultTool(): LLMTool {
   return {
     name: 'approve_result',
-    description: `Formally approve specialist result after validation.
+    description: `Formally approve agent result after validation.
 
 **Use this tool when:**
 - Output passes all validation criteria
@@ -46,16 +46,16 @@ export function createApproveResultTool(): LLMTool {
 
     inputSchema: {
       type: 'object',
-      required: ['subtaskId', 'specialistId', 'approvedDeliverables', 'qualityHighlights', 'notes'],
+      required: ['subtaskId', 'agentId', 'approvedDeliverables', 'qualityHighlights', 'notes'],
       properties: {
         subtaskId: {
           type: 'string',
           description: 'ID of subtask being approved',
           pattern: '^subtask-\\d+$',
         },
-        specialistId: {
+        agentId: {
           type: 'string',
-          description: 'Specialist who produced this result',
+          description: 'Agent who produced this result',
         },
         approvedDeliverables: {
           type: 'array',

@@ -27,7 +27,7 @@ export interface ComplexityEstimate {
   estimatedSubtasks: number;
   /** Factors contributing to complexity */
   factors: ComplexityFactor[];
-  /** Recommended specialist types */
+  /** Recommended agent types */
   recommendedSpecialists: string[];
   /** Summary reasoning */
   reasoning: string;
@@ -59,7 +59,7 @@ export function createEstimateComplexityTool(): LLMTool {
 - Assess task difficulty (low/medium/high)
 - Identify complexity factors (multiple files, external deps, etc.)
 - Determine how many subtasks will be needed
-- Recommend which specialists to involve
+- Recommend which agents to involve
 
 **Common complexity factors:**
 - Number of files to modify (1 = low, 3-5 = medium, 10+ = high)
@@ -114,11 +114,11 @@ export function createEstimateComplexityTool(): LLMTool {
         },
         recommendedSpecialists: {
           type: 'array',
-          description: 'Recommended specialist types for this task',
+          description: 'Recommended agent types for this task',
           minItems: 1,
           items: {
             type: 'string',
-            description: 'Specialist type (e.g., implementer, researcher, tester)',
+            description: 'Agent type (e.g., implementer, researcher, tester)',
           },
         },
         reasoning: {

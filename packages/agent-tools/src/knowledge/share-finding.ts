@@ -1,6 +1,6 @@
 /**
  * @module @kb-labs/agent-tools/knowledge
- * Tool for sharing discoveries between specialists.
+ * Tool for sharing discoveries between agents.
  */
 
 import type { LLMTool } from '@kb-labs/core-platform';
@@ -16,8 +16,8 @@ export type FindingCategory = 'bug' | 'optimization' | 'requirement' | 'constrai
 export interface SharedFinding {
   /** Subtask ID where finding was discovered */
   subtaskId: string;
-  /** Specialist who discovered this */
-  specialistId: string;
+  /** Agent who discovered this */
+  agentId: string;
   /** Category of finding */
   category: FindingCategory;
   /** Finding description */
@@ -31,9 +31,9 @@ export interface SharedFinding {
 }
 
 /**
- * Create LLM tool for sharing findings between specialists.
+ * Create LLM tool for sharing findings between agents.
  *
- * Enables Phase 2 adaptive feedback - specialists share discoveries
+ * Enables Phase 2 adaptive feedback - agents share discoveries
  * that might affect other parts of the plan.
  *
  * @returns LLM tool definition
@@ -43,7 +43,7 @@ export function createShareFindingTool(): LLMTool {
     name: 'share_finding',
     description: `Share an important discovery or finding with the team.
 
-**Use this tool when a specialist discovers:**
+**Use this tool when an agent discovers:**
 - Bugs that affect other subtasks
 - Optimization opportunities
 - New requirements or constraints
@@ -59,21 +59,21 @@ export function createShareFindingTool(): LLMTool {
 
 **This enables adaptive feedback loop:**
 - Findings can trigger plan revisions
-- Other specialists can adjust approach
+- Other agents can adjust approach
 - Prevents wasted effort on outdated assumptions`,
 
     inputSchema: {
       type: 'object',
-      required: ['subtaskId', 'specialistId', 'category', 'description', 'impact', 'affectedSubtasks', 'recommendedActions'],
+      required: ['subtaskId', 'agentId', 'category', 'description', 'impact', 'affectedSubtasks', 'recommendedActions'],
       properties: {
         subtaskId: {
           type: 'string',
           description: 'ID of subtask where finding was discovered',
           pattern: '^subtask-\\d+$',
         },
-        specialistId: {
+        agentId: {
           type: 'string',
-          description: 'Specialist who made this discovery',
+          description: 'Agent who made this discovery',
         },
         category: {
           type: 'string',

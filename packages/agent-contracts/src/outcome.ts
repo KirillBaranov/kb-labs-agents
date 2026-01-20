@@ -1,10 +1,10 @@
 /**
  * @module @kb-labs/agent-contracts/outcome
- * Specialist execution outcomes with failure handling
+ * Agent execution outcomes with failure handling
  *
  * Phase 3: Error Handling & Retry
  *
- * Provides structured outcomes for specialist execution:
+ * Provides structured outcomes for agent execution:
  * - Success with result and metadata
  * - Failure with classified error and partial results
  * - Retry suggestions based on failure kind
@@ -21,7 +21,7 @@
 export type LLMTier = 'small' | 'medium' | 'large';
 
 /**
- * Runtime metadata for specialist execution
+ * Runtime metadata for agent execution
  */
 export interface RunMeta {
   /** Total execution duration in milliseconds */
@@ -80,24 +80,24 @@ export interface FailureReport {
 }
 
 /**
- * Specialist execution outcome
+ * Agent execution outcome
  *
  * Phase 3: Discriminated union for success/failure with partial results
  *
  * Success:
  * ```typescript
- * { ok: true, result: SpecialistResult, meta: RunMeta }
+ * { ok: true, result: AgentResult, meta: RunMeta }
  * ```
  *
  * Failure (with partial result):
  * ```typescript
- * { ok: false, failure: FailureReport, partial?: SpecialistResult, meta: RunMeta }
+ * { ok: false, failure: FailureReport, partial?: AgentResult, meta: RunMeta }
  * ```
  *
  * **Key feature:** Partial results preserved even on failure!
- * Prevents loss of work when specialist partially completes task.
+ * Prevents loss of work when agent partially completes task.
  */
-export type SpecialistOutcome<TResult = unknown> =
+export type AgentOutcome<TResult = unknown> =
   | {
       ok: true;
       result: TResult;
