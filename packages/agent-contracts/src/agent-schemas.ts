@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ToolStrategyConfigSchema } from './tool-strategy-schemas.js';
 
 /**
  * Agent schema version
@@ -12,84 +13,18 @@ import { z } from 'zod';
 export const AgentSchemaSchema = z.literal('kb.agent/1');
 
 /**
+ * LLM tier schema
+ */
+const LLMTierSchema = z.enum(['small', 'medium', 'large']);
+
+/**
  * LLM configuration schema
  */
 export const AgentLLMConfigSchema = z.object({
-  tier: z.enum(['small', 'medium', 'large']),
+  tier: LLMTierSchema,
+  escalationLadder: z.array(LLMTierSchema).optional(),
   temperature: z.number().min(0).max(1),
   maxTokens: z.number().int().positive(),
-  maxToolCalls: z.number().int().positive().default(20).optional(),
-});
-
-/**
- * Prompt configuration schema
- */
-export const AgentPromptConfigSchema = z.object({
-  systemPrompt: z.string().optional(),
-  examples: z.string().optional(),
-});
-
-/**
- * Context file schema
- */
-export const AgentContextFileSchema = z.object({
-  path: z.string(),
-  description: z.string().optional(),
-});
-
-/**
- * Context configuration schema
- */
-export const AgentContextConfigSchema = z.object({
-  files: z.array(AgentContextFileSchema).optional(),
-});
-
-/**
- * KB Labs tools configuration schema
- */
-export const AgentKBLabsToolsConfigSchema = z.object({
-  mode: z.enum(['allowlist', 'denylist']),
-  allow: z.array(z.string()).optional(),
-  deny: z.array(z.string()).optional(),
-});
-
-/**
- * Filesystem permissions schema
- */
-export const AgentFilesystemPermissionsSchema = z.object({
-  read: z.array(z.string()),
-  write: z.array(z.string()),
-});
-
-/**
- * Filesystem configuration schema
- */
-export const AgentFilesystemConfigSchema = z.object({
-  enabled: z.boolean(),
-  mode: z.enum(['allowlist', 'denylist']).optional(),
-  allow: z.array(z.string()).optional(),
-  deny: z.array(z.string()).optional(),
-  permissions: AgentFilesystemPermissionsSchema.optional(),
-});
-
-/**
- * Shell configuration schema
- */
-export const AgentShellConfigSchema = z.object({
-  enabled: z.boolean(),
-  mode: z.enum(['allowlist', 'denylist']).optional(),
-  allow: z.array(z.string()).optional(),
-  deny: z.array(z.string()).optional(),
-  allowedCommands: z.array(z.string()).optional(),
-});
-
-/**
- * Tools configuration schema
- */
-export const AgentToolsConfigSchema = z.object({
-  kbLabs: AgentKBLabsToolsConfigSchema.optional(),
-  filesystem: AgentFilesystemConfigSchema.optional(),
-  shell: AgentShellConfigSchema.optional(),
 });
 
 /**
@@ -102,79 +37,116 @@ export const AgentPolicyConfigSchema = z.object({
 });
 
 /**
+ * Execution limits schema
+ */
+export const AgentLimitsSchema = z.object({
+  maxSteps: z.number().int().positive(),
+  maxToolCalls: z.number().int().positive(),
+  timeoutMs: z.number().int().positive(),
+  forcedReasoningInterval: z.number().int().positive().default(3).optional(),
+});
+
+/**
+ * Static context schema
+ */
+export const AgentStaticContextSchema = z.object({
+  system: z.string().optional(),
+  contextFile: z.string().optional(),
+});
+
+/**
+ * Dynamic context schema
+ */
+export const AgentDynamicContextSchema = z.object({
+  enabled: z.boolean(),
+  scope: z.string().optional(),
+  maxChunks: z.number().int().positive().optional(),
+});
+
+/**
+ * Context configuration schema
+ */
+export const AgentContextConfigSchema = z.object({
+  static: AgentStaticContextSchema.optional(),
+  dynamic: AgentDynamicContextSchema.optional(),
+});
+
+/**
+ * Input schema
+ */
+export const AgentInputSchemaSchema = z.object({
+  schema: z.unknown(), // JSON Schema - can be any valid JSON structure
+});
+
+/**
+ * Output schema
+ */
+export const AgentOutputSchemaSchema = z.object({
+  schema: z.unknown(), // JSON Schema - can be any valid JSON structure
+});
+
+/**
+ * Agent capabilities enum
+ */
+export const AgentCapabilitySchema = z.enum([
+  'code-search',
+  'code-reading',
+  'code-writing',
+  'code-editing',
+  'architecture-analysis',
+  'dependency-analysis',
+  'command-execution',
+  'testing',
+  'documentation',
+]);
+
+/**
+ * Agent metadata schema (optional orchestrator hints)
+ */
+export const AgentMetadataInlineSchema = z
+  .object({
+    description: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    examples: z.array(z.string()).optional(),
+  })
+  .optional();
+
+/**
  * Complete agent configuration schema
  */
 export const AgentConfigV1Schema = z.object({
   schema: AgentSchemaSchema,
-  id: z.string().min(1).regex(/^[a-z0-9-]+$/, 'Agent ID must be lowercase alphanumeric with hyphens'),
+  id: z.string().min(1),
   name: z.string().min(1),
-  description: z.string().optional(),
+  description: z.string().min(1),
+  metadata: AgentMetadataInlineSchema,
   llm: AgentLLMConfigSchema,
-  prompt: AgentPromptConfigSchema.optional(),
+  limits: AgentLimitsSchema,
+  capabilities: z.array(AgentCapabilitySchema).optional(),
   context: AgentContextConfigSchema.optional(),
-  tools: AgentToolsConfigSchema,
+  tools: ToolStrategyConfigSchema,
+  constraints: z.array(z.string()).optional(),
+  input: AgentInputSchemaSchema.optional(),
+  output: AgentOutputSchemaSchema.optional(),
   policies: AgentPolicyConfigSchema.optional(),
 });
 
 /**
- * Tool input schema validator
+ * Parse agent config from unknown data
+ *
+ * @param data - Raw data (e.g., from YAML.parse)
+ * @returns Parsed and validated agent config
+ * @throws ZodError if validation fails
  */
-export const ToolInputSchemaSchema = z.object({
-  type: z.literal('object'),
-  properties: z.record(z.unknown()),
-  required: z.array(z.string()).optional(),
-  additionalProperties: z.boolean().optional(),
-});
-
-/**
- * Tool definition schema
- */
-export const ToolDefinitionSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().min(1),
-  inputSchema: ToolInputSchemaSchema,
-});
-
-/**
- * Tool call schema
- */
-export const ToolCallSchema = z.object({
-  name: z.string(),
-  input: z.unknown(),
-  id: z.string().optional(),
-});
-
-/**
- * Tool error schema
- */
-export const ToolErrorSchema = z.object({
-  code: z.string(),
-  message: z.string(),
-  details: z.unknown().optional(),
-});
-
-/**
- * Tool result schema
- */
-export const ToolResultSchema = z.object({
-  success: z.boolean(),
-  output: z.string().optional(),
-  error: ToolErrorSchema.optional(),
-  metadata: z.object({
-    durationMs: z.number().optional(),
-    tokensUsed: z.number().optional(),
-  }).passthrough().optional(),
-});
-
-/**
- * Parse and validate agent configuration
- */
-export function parseAgentConfig(data: unknown): z.infer<typeof AgentConfigV1Schema> {
+export function parseAgentConfig(data: unknown) {
   return AgentConfigV1Schema.parse(data);
 }
 
 /**
- * Validate agent configuration without throwing
+ * Validate agent config (returns success/error)
+ *
+ * @param data - Raw data to validate
+ * @returns Validation result with data or error
  */
 export function validateAgentConfig(data: unknown): {
   success: boolean;
@@ -184,6 +156,7 @@ export function validateAgentConfig(data: unknown): {
   const result = AgentConfigV1Schema.safeParse(data);
   if (result.success) {
     return { success: true, data: result.data };
+  } else {
+    return { success: false, error: result.error };
   }
-  return { success: false, error: result.error };
 }

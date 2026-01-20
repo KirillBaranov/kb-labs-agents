@@ -1,9 +1,16 @@
 /**
- * Agent Configuration Types
+ * Agent Configuration Types (V2 Architecture)
  *
- * Defines the structure for agent configuration stored in .kb/agents/{agent-id}/agent.yml
+ * Specialists are enhanced agents with:
+ * - Deep domain context (static + dynamic via Mind RAG)
+ * - Configurable forced reasoning intervals
+ * - Structured I/O schemas
+ * - Session-aware execution
+ *
+ * Based on kb.agent/1 but extends it for V2 orchestration.
  */
 
+import type { ToolStrategyConfig } from './tool-strategy.js';
 import type { LLMTier } from './outcome.js';
 
 /**
@@ -17,136 +24,18 @@ export type AgentSchema = 'kb.agent/1';
 export interface AgentLLMConfig {
   /**
    * LLM tier (small/medium/large) - resolved to actual model via kb.config.json
-   *
-   * IMPORTANT: Use abstract tiers for flexibility!
-   * DO NOT hardcode model names - platform resolves tier to model.
-   *
-   * @example 'small' - Fast, cheap (resolved to gpt-4o-mini)
-   * @example 'medium' - Balanced (resolved to claude-sonnet-4-5)
-   * @example 'large' - Powerful (resolved to claude-opus-4-5)
    */
   tier: LLMTier;
-
-  /**
-   * Escalation ladder for automatic tier upgrade on failures (Phase 4)
-   *
-   * If specialist fails with initial tier, orchestrator will retry with next tier.
-   * Stops at first success or end of ladder.
-   *
-   * @example ['small', 'medium'] - Researcher (escalate to medium, but not large - too expensive)
-   * @example ['medium', 'large'] - Implementer (start with medium, escalate to large if needed)
-   * @example ['small'] - No escalation (always use small tier)
-   *
-   * Default: Uses tier as single-element ladder (no escalation)
-   */
+  /** Escalation ladder for automatic tier upgrade on failures */
   escalationLadder?: LLMTier[];
-
   /** Temperature (0-1). Lower = more deterministic, higher = more creative */
   temperature: number;
   /** Maximum tokens for LLM response */
   maxTokens: number;
-  /** Maximum tool calls per agent run (default: 20) */
-  maxToolCalls?: number;
 }
 
 /**
- * Custom prompt configuration
- */
-export interface AgentPromptConfig {
-  /** Inline system prompt (directly in YAML) */
-  system?: string;
-  /** Path to system prompt file (relative to agent directory, e.g., "./system-prompt.md") */
-  systemPrompt?: string;
-  /** Path to examples file (relative to agent directory, e.g., "./examples.json") */
-  examples?: string;
-}
-
-/**
- * Context files configuration
- */
-export interface AgentContextFile {
-  /** Path to context file (relative to agent directory) */
-  path: string;
-  /** Description of what this context provides */
-  description?: string;
-}
-
-/**
- * Context configuration
- */
-export interface AgentContextConfig {
-  /** Additional context files to include in agent prompt */
-  files?: AgentContextFile[];
-}
-
-/**
- * KB Labs tools allowlist/denylist configuration
- */
-export interface AgentKBLabsToolsConfig {
-  /** Mode: 'allowlist' (only allow specified) or 'denylist' (allow all except specified) */
-  mode: 'allowlist' | 'denylist';
-  /** Patterns to allow (e.g., ["mind:*", "devkit:check-*"]) */
-  allow?: string[];
-  /** Patterns to deny (e.g., ["workflow:delete"]) */
-  deny?: string[];
-}
-
-/**
- * Filesystem permissions for agent
- */
-export interface AgentFilesystemPermissions {
-  /** Paths allowed for reading (glob patterns, e.g., ["./", "src/**"]) */
-  read: string[];
-  /** Paths allowed for writing (glob patterns, e.g., ["src/**", "!src/config/**"]) */
-  write: string[];
-}
-
-/**
- * Filesystem tools configuration
- */
-export interface AgentFilesystemConfig {
-  /** Enable filesystem tools (fs:read, fs:write, fs:edit, fs:list, fs:search) */
-  enabled: boolean;
-  /** Mode: 'allowlist' (only allow specified tools) or 'denylist' (allow all except specified) */
-  mode?: 'allowlist' | 'denylist';
-  /** Tool names to allow (e.g., ["fs:read", "fs:list"]) */
-  allow?: string[];
-  /** Tool names to deny (e.g., ["fs:delete"]) */
-  deny?: string[];
-  /** Filesystem permissions */
-  permissions?: AgentFilesystemPermissions;
-}
-
-/**
- * Shell tools configuration
- */
-export interface AgentShellConfig {
-  /** Enable shell tools */
-  enabled: boolean;
-  /** Mode: 'allowlist' (only allow specified tools) or 'denylist' (allow all except specified) */
-  mode?: 'allowlist' | 'denylist';
-  /** Tool names/commands to allow (e.g., ["shell:exec"]) or command patterns (e.g., ["git *", "pnpm build"]) */
-  allow?: string[];
-  /** Tool names/commands to deny */
-  deny?: string[];
-  /** @deprecated Use allow/deny with mode instead. Allowed shell commands (e.g., ["git status", "pnpm build"]) */
-  allowedCommands?: string[];
-}
-
-/**
- * Tools configuration
- */
-export interface AgentToolsConfig {
-  /** KB Labs plugin tools (mind:*, devkit:*, etc.) */
-  kbLabs?: AgentKBLabsToolsConfig;
-  /** Filesystem tools (fs:read, fs:write, etc.) */
-  filesystem?: AgentFilesystemConfig;
-  /** Shell command execution */
-  shell?: AgentShellConfig;
-}
-
-/**
- * Policy configuration for agent behavior
+ * Policy configuration for agent
  */
 export interface AgentPolicyConfig {
   /** Allow agent to write files (default: true if filesystem.write is configured) */
@@ -158,34 +47,157 @@ export interface AgentPolicyConfig {
 }
 
 /**
+ * Execution limits for agent
+ */
+export interface AgentLimits {
+  /** Maximum execution steps before timeout */
+  maxSteps: number;
+  /** Maximum tool calls per agent run */
+  maxToolCalls: number;
+  /** Timeout in milliseconds */
+  timeoutMs: number;
+  /**
+   * Force reasoning step after N tool calls
+   * Default: 3
+   *
+   * Prevents tool spamming by requiring reflection after every N tools.
+   * Higher values = more tool calls before reasoning (faster but riskier).
+   *
+   * @example 3 - Researcher (balanced)
+   * @example 5 - Implementer (more autonomy for writing code)
+   */
+  forcedReasoningInterval?: number;
+}
+
+/**
+ * Static context configuration
+ */
+export interface AgentStaticContext {
+  /**
+   * Inline system prompt (agent expertise, guidelines, best practices)
+   */
+  system?: string;
+
+  /**
+   * Path to context file relative to agent directory
+   * @example "./context.md"
+   */
+  contextFile?: string;
+}
+
+/**
+ * Dynamic context via Mind RAG
+ */
+export interface AgentDynamicContext {
+  /** Enable dynamic context enrichment via Mind RAG */
+  enabled: boolean;
+  /** Scope for RAG queries (e.g., "architecture", "tests") */
+  scope?: string;
+  /** Maximum chunks to retrieve per query */
+  maxChunks?: number;
+}
+
+/**
+ * Agent context configuration
+ */
+export interface AgentContextConfig {
+  /** Static context (always included) */
+  static?: AgentStaticContext;
+  /** Dynamic context (loaded via Mind RAG when needed) */
+  dynamic?: AgentDynamicContext;
+}
+
+/**
+ * Input schema for agent
+ *
+ * Defines what the agent expects to receive from orchestrator
+ */
+export interface AgentInputSchema {
+  /**
+   * Schema definition (JSON Schema format)
+   * Can be any valid JSON Schema structure
+   */
+  schema?: unknown;
+}
+
+/**
+ * Output schema for agent
+ *
+ * Defines what the agent will return to orchestrator
+ */
+export interface AgentOutputSchema {
+  /**
+   * Schema definition (JSON Schema format)
+   * Can be any valid JSON Schema structure
+   */
+  schema?: unknown;
+}
+
+/**
+ * Agent capabilities (for orchestrator)
+ */
+export type AgentCapability =
+  | 'code-search'
+  | 'code-reading'
+  | 'code-writing'
+  | 'code-editing'
+  | 'architecture-analysis'
+  | 'dependency-analysis'
+  | 'command-execution'
+  | 'testing'
+  | 'documentation';
+
+/**
  * Complete agent configuration (stored in agent.yml)
  */
 export interface AgentConfigV1 {
   /** Schema version */
   schema: AgentSchema;
+
   /** Unique agent ID (matches directory name) */
   id: string;
-  /** Human-readable agent name */
+
+  /** Human-readable name */
   name: string;
-  /** Agent description */
-  description?: string;
-  /** Orchestrator metadata (NEW - for agent-aware orchestration) */
+
+  /** Brief description for orchestrator (1-2 sentences) */
+  description: string;
+
+  /**
+   * Metadata for orchestrator
+   * Lightweight information for routing decisions
+   */
   metadata?: {
-    /** Brief description for orchestrator (1-2 sentences) */
-    description: string;
-    /** Optional tags for categorization */
+    /** Detailed description (shown to orchestrator) */
+    description?: string;
+    /** Tags for categorization */
     tags?: string[];
-    /** Optional example tasks this agent handles well */
+    /** Example tasks this agent handles */
     examples?: string[];
   };
-  /** LLM configuration */
+
+  /** LLM configuration (tier, temperature, maxTokens) */
   llm: AgentLLMConfig;
-  /** Custom prompt configuration */
-  prompt?: AgentPromptConfig;
-  /** Context configuration */
+
+  /** Execution limits */
+  limits: AgentLimits;
+
+  /** Capabilities (for orchestrator matching) */
+  capabilities?: AgentCapability[];
+
+  /** Context configuration (static + dynamic) */
   context?: AgentContextConfig;
-  /** Tools configuration */
-  tools: AgentToolsConfig;
+
+  /** Tool strategy configuration */
+  tools: ToolStrategyConfig;
+
+  /** Constraints (what agent CANNOT do) */
+  constraints?: string[];
+
+  /** Structured I/O */
+  input?: AgentInputSchema;
+  output?: AgentOutputSchema;
+
   /** Policy configuration */
   policies?: AgentPolicyConfig;
 }
@@ -198,13 +210,17 @@ export interface AgentMetadata {
   id: string;
   /** Agent name */
   name: string;
-  /** Agent description */
-  description?: string;
+  /** Brief description */
+  description: string;
+  /** Capabilities */
+  capabilities: AgentCapability[];
+  /** LLM tier */
+  tier: LLMTier;
   /** Path to agent directory */
   path: string;
   /** Path to agent.yml config file */
   configPath: string;
-  /** Whether agent is valid (config exists and parseable) */
+  /** Whether agent is valid */
   valid: boolean;
   /** Validation error if not valid */
   error?: string;
