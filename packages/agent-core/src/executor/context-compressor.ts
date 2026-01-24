@@ -14,14 +14,14 @@
  * Solution: Periodically compress message history into a summary.
  */
 
-import { useLLM } from '@kb-labs/sdk';
-import type { PluginContextV3 } from '@kb-labs/sdk';
+import { useLLM } from "@kb-labs/sdk";
+import type { PluginContextV3 } from "@kb-labs/sdk";
 
 /**
  * Message format for LLM conversation
  */
 export interface Message {
-  role: 'system' | 'user' | 'assistant' | 'tool';
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
   toolCallId?: string;
 }
@@ -57,8 +57,10 @@ export class ContextCompressor {
     }
 
     // Always keep system message if present
-    const hasSystemMessage = messages[0]?.role === 'system';
-    const conversationMessages = hasSystemMessage ? messages.slice(1) : messages;
+    const hasSystemMessage = messages[0]?.role === "system";
+    const conversationMessages = hasSystemMessage
+      ? messages.slice(1)
+      : messages;
 
     return conversationMessages.length >= this.COMPRESSION_THRESHOLD;
   }
@@ -74,7 +76,7 @@ export class ContextCompressor {
   async compress(
     messages: Message[],
     systemPrompt: string,
-    originalTask: string
+    originalTask: string,
   ): Promise<CompressionResult> {
     const llm = useLLM();
     if (!llm) {
@@ -87,7 +89,7 @@ export class ContextCompressor {
       };
     }
 
-    this.ctx.platform.logger.info('Compressing context', {
+    this.ctx.platform.logger.info("Compressing context", {
       messageCount: messages.length,
       estimatedTokens: this.estimateTokens(messages),
     });
@@ -124,14 +126,17 @@ SUMMARY:`;
 
       // Build compressed message history
       const compressedMessages: Message[] = [
-        { role: 'user', content: `CONTEXT SUMMARY:\n${summary}\n\nORIGINAL TASK: ${originalTask}` },
+        {
+          role: "user",
+          content: `CONTEXT SUMMARY:\n${summary}\n\nORIGINAL TASK: ${originalTask}`,
+        },
       ];
 
       const originalTokens = this.estimateTokens(messages);
       const compressedTokens = this.estimateTokens(compressedMessages);
       const compressionRatio = compressedTokens / originalTokens;
 
-      this.ctx.platform.logger.info('Context compressed', {
+      this.ctx.platform.logger.info("Context compressed", {
         originalMessages: messages.length,
         compressedMessages: compressedMessages.length,
         originalTokens,
@@ -148,8 +153,8 @@ SUMMARY:`;
       };
     } catch (error) {
       this.ctx.platform.logger.error(
-        'Context compression failed',
-        error instanceof Error ? error : undefined
+        "Context compression failed",
+        error instanceof Error ? error : undefined,
       );
 
       // Fallback: return original messages
@@ -173,12 +178,12 @@ SUMMARY:`;
         // Truncate very long messages (e.g., file contents)
         let content = msg.content;
         if (content.length > 1000) {
-          content = content.slice(0, 1000) + '\n...[truncated]...';
+          content = content.slice(0, 1000) + "\n...[truncated]...";
         }
 
         return `[${index + 1}] ${role}:\n${content}`;
       })
-      .join('\n\n');
+      .join("\n\n");
   }
 
   /**
@@ -202,10 +207,12 @@ SUMMARY:`;
    */
   truncateToolResults(messages: Message[], maxLength: number = 500): Message[] {
     return messages.map((msg) => {
-      if (msg.role === 'tool' && msg.content.length > maxLength) {
+      if (msg.role === "tool" && msg.content.length > maxLength) {
         return {
           ...msg,
-          content: msg.content.slice(0, maxLength) + '\n...[truncated to save tokens]...',
+          content:
+            msg.content.slice(0, maxLength) +
+            "\n...[truncated to save tokens]...",
         };
       }
       return msg;

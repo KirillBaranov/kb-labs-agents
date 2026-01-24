@@ -6,8 +6,9 @@
  * Used for real-time progress feedback in CLI and Web UI.
  */
 
-import type { ILogger, LLMTier } from '@kb-labs/sdk';
-import type { ProgressEvent, ProgressCallback } from './types.js';
+import type { ILogger } from "@kb-labs/sdk";
+import type { LLMTier } from "@kb-labs/agent-contracts";
+import type { ProgressEvent, ProgressCallback } from "./types.js";
 
 /**
  * Progress reporter - emits UX-only progress events.
@@ -41,7 +42,7 @@ export class ProgressReporter {
 
   constructor(
     private logger: ILogger,
-    private onProgress?: ProgressCallback
+    private onProgress?: ProgressCallback,
   ) {}
 
   /**
@@ -50,7 +51,7 @@ export class ProgressReporter {
   start(taskDescription: string): void {
     this.startTime = Date.now();
     this.emit({
-      type: 'task_started',
+      type: "task_started",
       timestamp: this.startTime,
       data: { taskDescription },
     });
@@ -62,32 +63,35 @@ export class ProgressReporter {
    */
   classified(
     tier: LLMTier,
-    confidence: 'high' | 'low',
-    method: 'heuristic' | 'llm'
+    confidence: "high" | "low",
+    method: "heuristic" | "llm",
   ): void {
     const emoji = this.getTierEmoji(tier);
     this.emit({
-      type: 'task_classified',
+      type: "task_classified",
       timestamp: Date.now(),
       data: { tier, confidence, method },
     });
     this.logger.info(
-      `${emoji} Classified as '${tier}' tier (${confidence} confidence, ${method})`
+      `${emoji} Classified as '${tier}' tier (${confidence} confidence, ${method})`,
     );
   }
 
   /**
    * Report planning phase status.
    */
-  planning(phase: 'started' | 'completed', data?: { subtaskCount?: number }): void {
+  planning(
+    phase: "started" | "completed",
+    data?: { subtaskCount?: number },
+  ): void {
     this.emit({
-      type: phase === 'started' ? 'planning_started' : 'planning_completed',
+      type: phase === "started" ? "planning_started" : "planning_completed",
       timestamp: Date.now(),
       data: data || {},
     });
 
-    if (phase === 'started') {
-      this.logger.info('📋 Planning subtasks...');
+    if (phase === "started") {
+      this.logger.info("📋 Planning subtasks...");
     } else {
       this.logger.info(`📋 Plan ready: ${data?.subtaskCount || 0} subtasks`);
     }
@@ -100,11 +104,11 @@ export class ProgressReporter {
     subtaskId: number,
     description: string,
     tier: LLMTier,
-    phase: 'started' | 'progress' | 'completed' | 'failed',
-    extra?: { progress?: number; error?: string; agentId?: string }
+    phase: "started" | "progress" | "completed" | "failed",
+    extra?: { progress?: number; error?: string; agentId?: string },
   ): void {
     const emoji = this.getTierEmoji(tier);
-    const agentLabel = extra?.agentId ? ` [Agent: ${extra.agentId}]` : '';
+    const agentLabel = extra?.agentId ? ` [Agent: ${extra.agentId}]` : "";
 
     this.emit({
       type: `subtask_${phase}` as any,
@@ -118,17 +122,25 @@ export class ProgressReporter {
     });
 
     switch (phase) {
-      case 'started':
-        this.logger.info(`${emoji} [${subtaskId}]${agentLabel} Starting: ${description}`);
+      case "started":
+        this.logger.info(
+          `${emoji} [${subtaskId}]${agentLabel} Starting: ${description}`,
+        );
         break;
-      case 'progress':
-        this.logger.info(`${emoji} [${subtaskId}]${agentLabel} Progress: ${extra?.progress || 0}%`);
+      case "progress":
+        this.logger.info(
+          `${emoji} [${subtaskId}]${agentLabel} Progress: ${extra?.progress || 0}%`,
+        );
         break;
-      case 'completed':
-        this.logger.info(`✅ [${subtaskId}]${agentLabel} Completed: ${description}`);
+      case "completed":
+        this.logger.info(
+          `✅ [${subtaskId}]${agentLabel} Completed: ${description}`,
+        );
         break;
-      case 'failed':
-        this.logger.error(`❌ [${subtaskId}]${agentLabel} Failed: ${extra?.error || 'Unknown error'}`);
+      case "failed":
+        this.logger.error(
+          `❌ [${subtaskId}]${agentLabel} Failed: ${extra?.error || "Unknown error"}`,
+        );
         break;
     }
   }
@@ -140,15 +152,15 @@ export class ProgressReporter {
     subtaskId: number,
     fromTier: LLMTier,
     toTier: LLMTier,
-    reason: string
+    reason: string,
   ): void {
     this.emit({
-      type: 'tier_escalated',
+      type: "tier_escalated",
       timestamp: Date.now(),
       data: { subtaskId, fromTier, toTier, reason },
     });
     this.logger.warn(
-      `⚠️  [${subtaskId}] Escalating ${fromTier} → ${toTier}: ${reason}`
+      `⚠️  [${subtaskId}] Escalating ${fromTier} → ${toTier}: ${reason}`,
     );
   }
 
@@ -156,29 +168,29 @@ export class ProgressReporter {
    * Report task completion.
    */
   complete(
-    status: 'success' | 'failed',
+    status: "success" | "failed",
     costBreakdown: {
       total: string;
       small: string;
       medium: string;
       large: string;
-    }
+    },
   ): void {
     const totalDuration = Date.now() - this.startTime;
-    const emoji = status === 'success' ? '✅' : '❌';
+    const emoji = status === "success" ? "✅" : "❌";
 
     this.emit({
-      type: 'task_completed',
+      type: "task_completed",
       timestamp: Date.now(),
       data: { status, totalDuration, costBreakdown },
     });
 
     this.logger.info(
-      `${emoji} Task ${status} in ${(totalDuration / 1000).toFixed(1)}s`
+      `${emoji} Task ${status} in ${(totalDuration / 1000).toFixed(1)}s`,
     );
     this.logger.info(`💰 Cost: ${costBreakdown.total}`);
     this.logger.info(
-      `   🟢 Small:  ${costBreakdown.small} | 🟡 Medium: ${costBreakdown.medium} | 🔴 Large:  ${costBreakdown.large}`
+      `   🟢 Small:  ${costBreakdown.small} | 🟡 Medium: ${costBreakdown.medium} | 🔴 Large:  ${costBreakdown.large}`,
     );
   }
 
@@ -212,12 +224,14 @@ export class ProgressReporter {
    */
   private getTierEmoji(tier: LLMTier): string {
     switch (tier) {
-      case 'small':
-        return '🟢';
-      case 'medium':
-        return '🟡';
-      case 'large':
-        return '🔴';
+      case "small":
+        return "🟢";
+      case "medium":
+        return "🟡";
+      case "large":
+        return "🔴";
+      default:
+        return "⚪";
     }
   }
 }

@@ -3,7 +3,7 @@
  * Tool for reporting overall execution progress.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Progress metric.
@@ -48,7 +48,7 @@ export interface ProgressReport {
  */
 export function createReportProgressTool(): LLMTool {
   return {
-    name: 'report_progress',
+    name: "report_progress",
     description: `Report overall execution progress with metrics and milestones.
 
 **Use this tool to:**
@@ -58,57 +58,64 @@ export function createReportProgressTool(): LLMTool {
 - Identify next steps`,
 
     inputSchema: {
-      type: 'object',
-      required: ['overallProgress', 'completedSubtasks', 'totalSubtasks', 'milestonesAchieved', 'nextMilestone', 'summary'],
+      type: "object",
+      required: [
+        "overallProgress",
+        "completedSubtasks",
+        "totalSubtasks",
+        "milestonesAchieved",
+        "nextMilestone",
+        "summary",
+      ],
       properties: {
         overallProgress: {
-          type: 'number',
-          description: 'Overall progress percentage',
+          type: "number",
+          description: "Overall progress percentage",
           minimum: 0,
           maximum: 100,
         },
         completedSubtasks: {
-          type: 'number',
-          description: 'Number of subtasks completed',
+          type: "number",
+          description: "Number of subtasks completed",
           minimum: 0,
         },
         totalSubtasks: {
-          type: 'number',
-          description: 'Total number of subtasks',
+          type: "number",
+          description: "Total number of subtasks",
           minimum: 1,
         },
         milestonesAchieved: {
-          type: 'array',
-          description: 'Key milestones achieved so far',
+          type: "array",
+          description: "Key milestones achieved so far",
           items: {
-            type: 'string',
+            type: "string",
             minLength: 5,
             maxLength: 100,
           },
         },
         nextMilestone: {
-          type: 'string',
-          description: 'Next milestone to reach',
+          type: "string",
+          description: "Next milestone to reach",
           minLength: 5,
           maxLength: 100,
         },
         metrics: {
-          type: 'array',
-          description: 'Additional progress metrics (optional)',
+          type: "array",
+          description: "Additional progress metrics (optional)",
           items: {
-            type: 'object',
-            required: ['name', 'current', 'target', 'unit'],
+            type: "object",
+            required: ["name", "current", "target", "unit"],
             properties: {
-              name: { type: 'string' },
-              current: { type: 'number' },
-              target: { type: 'number' },
-              unit: { type: 'string' },
+              name: { type: "string" },
+              current: { type: "number" },
+              target: { type: "number" },
+              unit: { type: "string" },
             },
           },
         },
         summary: {
-          type: 'string',
-          description: 'Summary of current progress',
+          type: "string",
+          description: "Summary of current progress",
           minLength: 20,
           maxLength: 500,
         },

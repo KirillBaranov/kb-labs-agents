@@ -11,8 +11,6 @@
  * - Final completion with stats
  */
 
-import type { AgentOutcome } from './outcome.js';
-
 /**
  * Subtask definition
  *
@@ -30,7 +28,7 @@ export interface SubTask {
   /** Dependencies on other subtasks (by ID) */
   dependencies?: string[];
   /** Estimated complexity */
-  estimatedComplexity?: 'low' | 'medium' | 'high';
+  estimatedComplexity?: "low" | "medium" | "high";
 }
 
 /**
@@ -169,7 +167,11 @@ export interface OrchestratorCallbacks {
    * @param result - Delegated result from agent
    * @param progress - Current progress (current/total)
    */
-  onSubtaskComplete?: (subtask: SubTask, result: DelegatedResult, progress: Progress) => void;
+  onSubtaskComplete?: (
+    subtask: SubTask,
+    result: DelegatedResult,
+    progress: Progress,
+  ) => void;
 
   /**
    * Called when subtask fails (after all retries + escalation)
@@ -178,7 +180,11 @@ export interface OrchestratorCallbacks {
    * @param result - Delegated result with error
    * @param progress - Current progress (current/total)
    */
-  onSubtaskFailed?: (subtask: SubTask, result: DelegatedResult, progress: Progress) => void;
+  onSubtaskFailed?: (
+    subtask: SubTask,
+    result: DelegatedResult,
+    progress: Progress,
+  ) => void;
 
   /**
    * Called when plan is adapted (new subtasks added dynamically)
@@ -187,7 +193,11 @@ export interface OrchestratorCallbacks {
    * @param newSubtasks - New subtasks added to plan
    * @param currentProgress - Current progress before adaptation
    */
-  onAdaptation?: (reason: string, newSubtasks: SubTask[], currentProgress: Progress) => void;
+  onAdaptation?: (
+    reason: string,
+    newSubtasks: SubTask[],
+    currentProgress: Progress,
+  ) => void;
 
   /**
    * Called when orchestrator completes execution

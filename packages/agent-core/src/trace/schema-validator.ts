@@ -5,9 +5,9 @@
  * returning to the agent. This is part of the anti-hallucination system.
  */
 
-import type { ToolResult } from '@kb-labs/agent-contracts';
-import { getSchemaLoader } from '../verification/plugin-schema-loader.js';
-import type { z } from 'zod';
+import type { ToolResult } from "@kb-labs/agent-contracts";
+import { getSchemaLoader } from "../verification/plugin-schema-loader.js";
+import type { z } from "zod";
 
 /**
  * Schema validator interface
@@ -64,7 +64,10 @@ export interface ValidationError {
  * - Phase 3 will integrate with verifier
  */
 export class NoOpSchemaValidator implements ISchemaValidator {
-  async validate(_toolName: string, output: unknown): Promise<ValidationResult> {
+  async validate(
+    _toolName: string,
+    output: unknown,
+  ): Promise<ValidationResult> {
     // Always pass validation in Phase 1
     return {
       valid: true,
@@ -119,7 +122,7 @@ export class ZodSchemaValidator implements ISchemaValidator {
         valid: false,
         errors: [
           {
-            path: '',
+            path: "",
             message: `Schema not found: ${schemaRef}`,
           },
         ],
@@ -132,10 +135,10 @@ export class ZodSchemaValidator implements ISchemaValidator {
     if (!result.success) {
       // 4. Return validation errors
       const errors = result.error.errors.map((err) => ({
-        path: err.path.join('.'),
+        path: err.path.join("."),
         message: err.message,
-        expected: 'expected' in err ? String(err.expected) : undefined,
-        actual: 'received' in err ? err.received : undefined,
+        expected: "expected" in err ? String(err.expected) : undefined,
+        actual: "received" in err ? err.received : undefined,
       }));
 
       return {
@@ -176,7 +179,7 @@ export function createSchemaValidator(): ISchemaValidator {
 export async function validateToolResult(
   validator: ISchemaValidator,
   toolName: string,
-  result: ToolResult
+  result: ToolResult,
 ): Promise<ToolResult> {
   // Skip validation if tool failed
   if (!result.success) {
@@ -185,7 +188,11 @@ export async function validateToolResult(
 
   // Skip validation for built-in tools (fs:*, shell:*, code:*)
   // Only validate plugin tools (third-party)
-  if (toolName.startsWith('fs:') || toolName.startsWith('shell:') || toolName.startsWith('code:')) {
+  if (
+    toolName.startsWith("fs:") ||
+    toolName.startsWith("shell:") ||
+    toolName.startsWith("code:")
+  ) {
     return result;
   }
 
@@ -197,7 +204,7 @@ export async function validateToolResult(
     return {
       success: false,
       error: {
-        code: 'SCHEMA_VALIDATION_FAILED',
+        code: "SCHEMA_VALIDATION_FAILED",
         message: `Tool output failed schema validation: ${toolName}`,
         details: validation.errors,
       },

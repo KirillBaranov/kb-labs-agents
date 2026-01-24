@@ -5,9 +5,13 @@
  * Completely data-driven - no hardcoded schemas.
  */
 
-import { z } from 'zod';
-import { jsonSchemaToZod } from './schema-converter.js';
-import type { AgentConfigV1, ToolDefinition, ToolInputSchema } from '@kb-labs/agent-contracts';
+import type { z } from "zod";
+import { jsonSchemaToZod } from "./schema-converter.js";
+import type {
+  AgentConfigV1,
+  ToolDefinition,
+  ToolInputSchema,
+} from "@kb-labs/agent-contracts";
 
 /**
  * Output tool with validation
@@ -26,7 +30,9 @@ export interface OutputToolWithValidation {
  * @param agentConfig - Agent configuration with optional output schema
  * @returns Output tool if schema defined, null if legacy mode
  */
-export function buildOutputTool(agentConfig: AgentConfigV1): OutputToolWithValidation | null {
+export function buildOutputTool(
+  agentConfig: AgentConfigV1,
+): OutputToolWithValidation | null {
   // Legacy mode: no output schema defined
   if (!agentConfig.output?.schema) {
     return null;
@@ -35,9 +41,9 @@ export function buildOutputTool(agentConfig: AgentConfigV1): OutputToolWithValid
   const jsonSchema = agentConfig.output.schema as any;
 
   // Validate that schema is object type
-  if (jsonSchema.type !== 'object') {
+  if (jsonSchema.type !== "object") {
     throw new Error(
-      `Agent ${agentConfig.id} output schema must be type 'object', got '${jsonSchema.type}'`
+      `Agent ${agentConfig.id} output schema must be type 'object', got '${jsonSchema.type}'`,
     );
   }
 
@@ -47,13 +53,13 @@ export function buildOutputTool(agentConfig: AgentConfigV1): OutputToolWithValid
     zodSchema = jsonSchemaToZod(jsonSchema);
   } catch (err) {
     throw new Error(
-      `Failed to build output tool for agent ${agentConfig.id}: ${(err as Error).message}`
+      `Failed to build output tool for agent ${agentConfig.id}: ${(err as Error).message}`,
     );
   }
 
   return {
     definition: {
-      name: 'submit_result',
+      name: "submit_result",
       description: `Submit final results to the orchestrator.
 
 ⚠️ CRITICAL: You MUST call this tool to return your findings!
@@ -79,7 +85,7 @@ Do NOT forget step 3 or your work will be lost!`,
  * @returns True if agent has output schema (structured mode)
  */
 export function usesStructuredOutput(agentConfig: AgentConfigV1): boolean {
-  return !!(agentConfig.output?.schema);
+  return !!agentConfig.output?.schema;
 }
 
 /**
@@ -91,7 +97,7 @@ export function usesStructuredOutput(agentConfig: AgentConfigV1): boolean {
  */
 export function getOutputTypeName(agentConfig: AgentConfigV1): string {
   if (!agentConfig.output?.schema) {
-    return 'free-form text';
+    return "free-form text";
   }
 
   // Try to extract a meaningful name from schema

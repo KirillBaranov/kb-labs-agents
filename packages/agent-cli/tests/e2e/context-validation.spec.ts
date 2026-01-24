@@ -332,16 +332,16 @@ export function validateContext(
   const c = ctx as any;
 
   // Required fields
-  if (!c?.requestId) errors.push('Missing requestId');
-  if (!c?.pluginId) errors.push('Missing pluginId');
-  if (!c?.workdir) errors.push('Missing workdir');
+  if (!c?.requestId) {errors.push('Missing requestId');}
+  if (!c?.pluginId) {errors.push('Missing pluginId');}
+  if (!c?.workdir) {errors.push('Missing workdir');}
 
   // Type-specific validation
   if (expectedType === 'job') {
-    if (!c?.runtime?.fs) errors.push('Missing runtime.fs for job handler');
-    if (!c?.runtime?.fetch) warnings.push('Missing runtime.fetch');
-    if (!c?.runtime?.env) warnings.push('Missing runtime.env');
-    if (!c?.output) warnings.push('Missing output');
+    if (!c?.runtime?.fs) {errors.push('Missing runtime.fs for job handler');}
+    if (!c?.runtime?.fetch) {warnings.push('Missing runtime.fetch');}
+    if (!c?.runtime?.env) {warnings.push('Missing runtime.env');}
+    if (!c?.output) {warnings.push('Missing output');}
   }
 
   return {

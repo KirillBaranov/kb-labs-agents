@@ -11,10 +11,10 @@
  * Termination signal types
  */
 export type TerminationSignal =
-  | { type: 'task_complete'; response: string }
-  | { type: 'need_escalation'; reason: string; response: string }
-  | { type: 'give_up'; reason: string; response: string }
-  | { type: 'none' };
+  | { type: "task_complete"; response: string }
+  | { type: "need_escalation"; reason: string; response: string }
+  | { type: "give_up"; reason: string; response: string }
+  | { type: "none" };
 
 /**
  * Parse LLM response for termination markers
@@ -24,11 +24,11 @@ export type TerminationSignal =
  */
 export function parseTerminationSignal(response: string): TerminationSignal {
   // Check for [TASK_COMPLETE]
-  if (response.includes('[TASK_COMPLETE]')) {
+  if (response.includes("[TASK_COMPLETE]")) {
     // Extract response without marker
-    const cleanResponse = response.replace('[TASK_COMPLETE]', '').trim();
+    const cleanResponse = response.replace("[TASK_COMPLETE]", "").trim();
     return {
-      type: 'task_complete',
+      type: "task_complete",
       response: cleanResponse,
     };
   }
@@ -36,10 +36,10 @@ export function parseTerminationSignal(response: string): TerminationSignal {
   // Check for [NEED_ESCALATION: reason]
   const escalationMatch = response.match(/\[NEED_ESCALATION:\s*([^\]]+)\]/);
   if (escalationMatch) {
-    const reason = escalationMatch[1]?.trim() || 'No reason provided';
-    const cleanResponse = response.replace(escalationMatch[0], '').trim();
+    const reason = escalationMatch[1]?.trim() || "No reason provided";
+    const cleanResponse = response.replace(escalationMatch[0], "").trim();
     return {
-      type: 'need_escalation',
+      type: "need_escalation",
       reason,
       response: cleanResponse,
     };
@@ -48,17 +48,17 @@ export function parseTerminationSignal(response: string): TerminationSignal {
   // Check for [GIVE_UP: reason]
   const giveUpMatch = response.match(/\[GIVE_UP:\s*([^\]]+)\]/);
   if (giveUpMatch) {
-    const reason = giveUpMatch[1]?.trim() || 'No reason provided';
-    const cleanResponse = response.replace(giveUpMatch[0], '').trim();
+    const reason = giveUpMatch[1]?.trim() || "No reason provided";
+    const cleanResponse = response.replace(giveUpMatch[0], "").trim();
     return {
-      type: 'give_up',
+      type: "give_up",
       reason,
       response: cleanResponse,
     };
   }
 
   // No termination marker found
-  return { type: 'none' };
+  return { type: "none" };
 }
 
 /**
@@ -68,6 +68,9 @@ export function parseTerminationSignal(response: string): TerminationSignal {
  * @param maxFailures - Maximum allowed consecutive failures (default: 3)
  * @returns True if agent should give up
  */
-export function shouldGiveUp(consecutiveFailures: number, maxFailures: number = 3): boolean {
+export function shouldGiveUp(
+  consecutiveFailures: number,
+  maxFailures: number = 3,
+): boolean {
   return consecutiveFailures >= maxFailures;
 }

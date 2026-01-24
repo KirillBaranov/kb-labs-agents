@@ -4,14 +4,14 @@
  * Executes tools discovered by ToolDiscoverer
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import type { ToolCall, ToolResult } from '@kb-labs/agent-contracts';
-import { spawn } from 'child_process';
-import { join } from 'path';
-import { getParser, detectLanguage } from './parsers';
-import type { ToolTraceRecorder } from '../trace/tool-trace-recorder.js';
-import type { ISchemaValidator } from '../trace/schema-validator.js';
-import { validateToolResult } from '../trace/schema-validator.js';
+import type { PluginContextV3 } from "@kb-labs/sdk";
+import type { ToolCall, ToolResult } from "@kb-labs/agent-contracts";
+import { spawn } from "child_process";
+import { join } from "path";
+import { getParser, detectLanguage } from "./parsers";
+import type { ToolTraceRecorder } from "../trace/tool-trace-recorder.js";
+import type { ISchemaValidator } from "../trace/schema-validator.js";
+import { validateToolResult } from "../trace/schema-validator.js";
 
 /**
  * Tool Executor
@@ -29,7 +29,7 @@ export class ToolExecutor {
 
   constructor(
     private ctx: PluginContextV3,
-    private agentContext?: { tools: Array<{ name: string; inputSchema: any }> }
+    private agentContext?: { tools: Array<{ name: string; inputSchema: any }> },
   ) {
     // Generate unique session ID for this ToolExecutor instance
     this.sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -75,7 +75,7 @@ export class ToolExecutor {
     }
 
     try {
-      this.ctx.platform.logger.debug('Executing tool', {
+      this.ctx.platform.logger.debug("Executing tool", {
         name: toolCall.name,
         input: toolCall.input,
       });
@@ -92,9 +92,9 @@ export class ToolExecutor {
         const cached = await this.ctx.platform.cache.get<ToolResult>(cacheKey);
         if (cached) {
           const durationMs = Date.now() - startTime;
-          console.log('[TOOL CACHE] ✅ HIT', {
+          console.log("[TOOL CACHE] ✅ HIT", {
             tool: toolCall.name,
-            cacheKey: cacheKey.substring(0, 60) + '...',
+            cacheKey: cacheKey.substring(0, 60) + "...",
             durationMs,
           });
 
@@ -105,7 +105,12 @@ export class ToolExecutor {
 
           // Record invocation result (if trace enabled)
           if (this.traceRecorder && invocationId) {
-            await this.traceRecorder.recordResult(invocationId, toolCall, result, durationMs);
+            await this.traceRecorder.recordResult(
+              invocationId,
+              toolCall,
+              result,
+              durationMs,
+            );
           }
 
           // Return cached result with fromCache flag
@@ -117,11 +122,11 @@ export class ToolExecutor {
       let output: string;
 
       // Route to appropriate executor based on tool prefix
-      if (toolCall.name.startsWith('fs:')) {
+      if (toolCall.name.startsWith("fs:")) {
         output = await this.executeFilesystemTool(toolCall);
-      } else if (toolCall.name.startsWith('shell:')) {
+      } else if (toolCall.name.startsWith("shell:")) {
         output = await this.executeShellTool(toolCall);
-      } else if (toolCall.name.startsWith('code:')) {
+      } else if (toolCall.name.startsWith("code:")) {
         output = await this.executeCodeTool(toolCall);
       } else {
         // Assume it's a KB Labs plugin command
@@ -130,7 +135,7 @@ export class ToolExecutor {
 
       const durationMs = Date.now() - startTime;
 
-      this.ctx.platform.logger.debug('Tool executed successfully', {
+      this.ctx.platform.logger.debug("Tool executed successfully", {
         name: toolCall.name,
         durationMs,
       });
@@ -143,30 +148,40 @@ export class ToolExecutor {
 
       // Validate output against schema (if validator enabled)
       if (this.schemaValidator) {
-        result = await validateToolResult(this.schemaValidator, toolCall.name, result);
+        result = await validateToolResult(
+          this.schemaValidator,
+          toolCall.name,
+          result,
+        );
       }
 
       // Cache successful results for 1 minute (60000ms)
       if (result.success && this.ctx.platform.cache) {
         await this.ctx.platform.cache.set(cacheKey, result, 60000);
-        console.log('[TOOL CACHE] 💾 STORED', {
+        console.log("[TOOL CACHE] 💾 STORED", {
           tool: toolCall.name,
-          cacheKey: cacheKey.substring(0, 60) + '...',
-          ttl: '60s',
+          cacheKey: cacheKey.substring(0, 60) + "...",
+          ttl: "60s",
         });
       }
 
       // Record invocation result (if trace enabled)
       if (this.traceRecorder && invocationId) {
-        await this.traceRecorder.recordResult(invocationId, toolCall, result, durationMs);
+        await this.traceRecorder.recordResult(
+          invocationId,
+          toolCall,
+          result,
+          durationMs,
+        );
       }
 
       return result;
     } catch (error) {
       const durationMs = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
 
-      this.ctx.platform.logger.warn('Tool execution failed', {
+      this.ctx.platform.logger.warn("Tool execution failed", {
         name: toolCall.name,
         error: errorMessage,
         durationMs,
@@ -175,7 +190,7 @@ export class ToolExecutor {
       const result: ToolResult = {
         success: false,
         error: {
-          code: 'EXECUTION_ERROR',
+          code: "EXECUTION_ERROR",
           message: errorMessage,
         },
         metadata: { durationMs, fromCache: false },
@@ -183,7 +198,12 @@ export class ToolExecutor {
 
       // Record invocation result (if trace enabled)
       if (this.traceRecorder && invocationId) {
-        await this.traceRecorder.recordResult(invocationId, toolCall, result, durationMs);
+        await this.traceRecorder.recordResult(
+          invocationId,
+          toolCall,
+          result,
+          durationMs,
+        );
       }
 
       return result;
@@ -198,13 +218,13 @@ export class ToolExecutor {
     const input = toolCall.input as Record<string, any>;
 
     switch (toolCall.name) {
-      case 'fs:read': {
+      case "fs:read": {
         const path = input.path as string;
         const maxLines = (input.maxLines as number) || 2000;
         const startLine = (input.startLine as number) || 1;
 
         if (!path) {
-          throw new Error('Missing required parameter: path');
+          throw new Error("Missing required parameter: path");
         }
 
         try {
@@ -221,11 +241,11 @@ export class ToolExecutor {
               `  fs:read with path="${path}", startLine=1, maxLines=500`,
               ``,
               `Or use fs:search to find specific content in the file.`,
-            ].join('\n');
+            ].join("\n");
           }
 
-          const content = await fs.readFile(path, 'utf-8');
-          const lines = content.split('\n');
+          const content = await fs.readFile(path, "utf-8");
+          const lines = content.split("\n");
 
           // Apply line limits
           const endLine = Math.min(startLine + maxLines - 1, lines.length);
@@ -236,55 +256,62 @@ export class ToolExecutor {
 
           // Add header if truncated
           if (startLine > 1 || endLine < lines.length) {
-            output.push(`📄 ${path} (lines ${startLine}-${endLine} of ${lines.length})`);
-            output.push('');
+            output.push(
+              `📄 ${path} (lines ${startLine}-${endLine} of ${lines.length})`,
+            );
+            output.push("");
           }
 
           // Add content with line numbers
           for (let i = 0; i < selectedLines.length; i++) {
             const lineNum = startLine + i;
-            const line = selectedLines[i] || '';
+            const line = selectedLines[i] || "";
             // Truncate very long lines
-            const truncatedLine = line.length > 500 ? line.substring(0, 500) + '...[truncated]' : line;
+            const truncatedLine =
+              line.length > 500
+                ? line.substring(0, 500) + "...[truncated]"
+                : line;
             output.push(`${lineNum.toString().padStart(5)}│ ${truncatedLine}`);
           }
 
           // Add footer if more content available
           if (endLine < lines.length) {
-            output.push('');
-            output.push(`... ${lines.length - endLine} more lines. Use startLine=${endLine + 1} to continue.`);
+            output.push("");
+            output.push(
+              `... ${lines.length - endLine} more lines. Use startLine=${endLine + 1} to continue.`,
+            );
           }
 
-          return output.join('\n');
+          return output.join("\n");
         } catch (error: any) {
           // Enhanced error handling for ENOENT (file not found)
-          if (error.code === 'ENOENT') {
-            return await this.handleFileNotFound(path);
+          if (error.code === "ENOENT") {
+            return this.handleFileNotFound(path);
           }
           throw error;
         }
       }
 
-      case 'fs:write': {
+      case "fs:write": {
         const path = input.path as string;
         const content = input.content as string;
         if (!path || content === undefined) {
-          throw new Error('Missing required parameters: path, content');
+          throw new Error("Missing required parameters: path, content");
         }
-        await fs.writeFile(path, content, { encoding: 'utf-8' });
+        await fs.writeFile(path, content, { encoding: "utf-8" });
         return `File written successfully: ${path}`;
       }
 
-      case 'fs:edit': {
+      case "fs:edit": {
         const path = input.path as string;
         const search = input.search as string;
         const replace = input.replace as string;
         if (!path || !search || replace === undefined) {
-          throw new Error('Missing required parameters: path, search, replace');
+          throw new Error("Missing required parameters: path, search, replace");
         }
 
         // Read file
-        const content = await fs.readFile(path, 'utf-8');
+        const content = await fs.readFile(path, "utf-8");
 
         // Check if search string exists
         if (!content.includes(search)) {
@@ -293,36 +320,36 @@ export class ToolExecutor {
 
         // Replace and write back
         const newContent = content.replace(search, replace);
-        await fs.writeFile(path, newContent, { encoding: 'utf-8' });
+        await fs.writeFile(path, newContent, { encoding: "utf-8" });
 
         return `File edited successfully: ${path}`;
       }
 
-      case 'fs:list': {
-        const path = input.path as string || '.';
-        const recursive = input.recursive as boolean || false;
+      case "fs:list": {
+        const path = (input.path as string) || ".";
+        const recursive = (input.recursive as boolean) || false;
 
         const entries = await fs.readdir(path);
 
         if (recursive) {
           // For recursive listing, we'd need to implement recursive readdir
           // For MVP, just list current directory
-          return entries.join('\n');
+          return entries.join("\n");
         }
 
-        return entries.join('\n');
+        return entries.join("\n");
       }
 
-      case 'fs:glob': {
+      case "fs:glob": {
         const pattern = input.pattern as string;
         const ignore = input.ignore as string[] | undefined;
         const maxResults = (input.maxResults as number) || 100;
 
         if (!pattern) {
-          throw new Error('Missing required parameter: pattern');
+          throw new Error("Missing required parameter: pattern");
         }
 
-        const { glob } = await import('glob');
+        const { glob } = await import("glob");
         const files = await glob(pattern, {
           cwd: this.ctx.cwd,
           ignore: ignore || [],
@@ -337,7 +364,7 @@ export class ToolExecutor {
           return `No files found matching pattern: ${pattern}`;
         }
 
-        let result = limited.join('\n');
+        let result = limited.join("\n");
         if (hasMore) {
           result += `\n\n... and ${files.length - maxResults} more files (use maxResults to increase limit)`;
         }
@@ -345,59 +372,62 @@ export class ToolExecutor {
         return result;
       }
 
-      case 'fs:exists': {
+      case "fs:exists": {
         const path = input.path as string;
         if (!path) {
-          throw new Error('Missing required parameter: path');
+          throw new Error("Missing required parameter: path");
         }
 
         try {
           const stat = await fs.stat(path);
-          const type = stat.isDirectory() ? 'directory' : 'file';
+          const type = stat.isDirectory() ? "directory" : "file";
           return `EXISTS: ${path} (${type})`;
         } catch {
           return `NOT_EXISTS: ${path}`;
         }
       }
 
-      case 'fs:search': {
+      case "fs:search": {
         const pattern = input.pattern as string;
         const text = input.text as string;
-        const caseInsensitive = input.caseInsensitive as boolean || false;
+        const caseInsensitive = (input.caseInsensitive as boolean) || false;
         const ignore = input.ignore as string[] | undefined;
 
         if (!pattern || !text) {
-          throw new Error('Missing required parameters: pattern, text');
+          throw new Error("Missing required parameters: pattern, text");
         }
 
         // Use glob to find files
-        const { glob } = await import('glob');
+        const { glob } = await import("glob");
         const files = await glob(pattern, {
           cwd: this.ctx.cwd,
           ignore: ignore || [], // No default ignores - agent controls everything
         });
 
         // Search in each file and group by file
-        const matchesByFile = new Map<string, Array<{ line: number; content: string }>>();
+        const matchesByFile = new Map<
+          string,
+          Array<{ line: number; content: string }>
+        >();
         const searchRegex = new RegExp(
-          text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-          caseInsensitive ? 'gi' : 'g'
+          text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+          caseInsensitive ? "gi" : "g",
         );
 
         for (const file of files) {
           try {
             const filePath = join(this.ctx.cwd, file);
-            const content = await fs.readFile(filePath, 'utf-8');
-            const lines = content.split('\n');
+            const content = await fs.readFile(filePath, "utf-8");
+            const lines = content.split("\n");
 
             for (let i = 0; i < lines.length; i++) {
-              if (searchRegex.test(lines[i] || '')) {
+              if (searchRegex.test(lines[i] || "")) {
                 if (!matchesByFile.has(file)) {
                   matchesByFile.set(file, []);
                 }
                 matchesByFile.get(file)!.push({
                   line: i + 1,
-                  content: lines[i]?.trim() || '',
+                  content: lines[i]?.trim() || "",
                 });
               }
             }
@@ -413,7 +443,7 @@ export class ToolExecutor {
 
         const totalMatches = Array.from(matchesByFile.values()).reduce(
           (sum, m) => sum + m.length,
-          0
+          0,
         );
 
         // Check if too many files found
@@ -427,18 +457,28 @@ export class ToolExecutor {
 
         // Add warning if too many files
         if (tooManyFiles) {
-          formatted.push('⚠️  WARNING: Too many files found!');
-          formatted.push(`Found ${matchesByFile.size} files with ${totalMatches} matches.`);
-          formatted.push('Showing only first 20 files to avoid context overflow.');
-          formatted.push('');
-          formatted.push('RECOMMENDATION: Use the "ignore" parameter to filter results:');
-          formatted.push('  ignore: ["**/node_modules/**", "**/dist/**", "**/.git/**"]');
-          formatted.push('');
-          formatted.push('Example:');
-          formatted.push(`  fs:search with pattern="${pattern}", text="${text}", ignore=["**/node_modules/**", "**/dist/**"]`);
-          formatted.push('');
-          formatted.push('---');
-          formatted.push('');
+          formatted.push("⚠️  WARNING: Too many files found!");
+          formatted.push(
+            `Found ${matchesByFile.size} files with ${totalMatches} matches.`,
+          );
+          formatted.push(
+            "Showing only first 20 files to avoid context overflow.",
+          );
+          formatted.push("");
+          formatted.push(
+            'RECOMMENDATION: Use the "ignore" parameter to filter results:',
+          );
+          formatted.push(
+            '  ignore: ["**/node_modules/**", "**/dist/**", "**/.git/**"]',
+          );
+          formatted.push("");
+          formatted.push("Example:");
+          formatted.push(
+            `  fs:search with pattern="${pattern}", text="${text}", ignore=["**/node_modules/**", "**/dist/**"]`,
+          );
+          formatted.push("");
+          formatted.push("---");
+          formatted.push("");
         }
 
         // Show files (limited to 20 if too many)
@@ -449,35 +489,45 @@ export class ToolExecutor {
             formatted.push(`  ${match.line}: ${match.content}`);
           }
           if (matches.length > 3) {
-            formatted.push(`  ... ${matches.length - 3} more matches in this file`);
+            formatted.push(
+              `  ... ${matches.length - 3} more matches in this file`,
+            );
           }
-          formatted.push(''); // Empty line between files
+          formatted.push(""); // Empty line between files
         }
 
         // Summary
         if (tooManyFiles) {
-          formatted.push(`Showing 20 of ${matchesByFile.size} files. ${matchesByFile.size - 20} files omitted.`);
-          formatted.push(`Total in ALL files: ${totalMatches} matches in ${matchesByFile.size} files`);
+          formatted.push(
+            `Showing 20 of ${matchesByFile.size} files. ${matchesByFile.size - 20} files omitted.`,
+          );
+          formatted.push(
+            `Total in ALL files: ${totalMatches} matches in ${matchesByFile.size} files`,
+          );
         } else {
-          formatted.push(`Total: ${totalMatches} matches in ${matchesByFile.size} files`);
+          formatted.push(
+            `Total: ${totalMatches} matches in ${matchesByFile.size} files`,
+          );
         }
-        formatted.push('');
+        formatted.push("");
 
         // Path usage instruction
-        formatted.push('INSTRUCTION: When using fs:read, use the FULL path shown after "FILE:" above.');
         formatted.push(
-          'Example: If you see "FILE: kb-labs-mind/packages/mind-engine/src/indexing/stages/storage.ts"'
+          'INSTRUCTION: When using fs:read, use the FULL path shown after "FILE:" above.',
         );
         formatted.push(
-          'Then use: fs:read with path "kb-labs-mind/packages/mind-engine/src/indexing/stages/storage.ts"'
+          'Example: If you see "FILE: kb-labs-mind/packages/mind-engine/src/indexing/stages/storage.ts"',
+        );
+        formatted.push(
+          'Then use: fs:read with path "kb-labs-mind/packages/mind-engine/src/indexing/stages/storage.ts"',
         );
 
-        const result = formatted.join('\n');
+        const result = formatted.join("\n");
 
         // Debug logging - show actual output sent to LLM
-        console.log('\n========== fs:search OUTPUT ==========');
+        console.log("\n========== fs:search OUTPUT ==========");
         console.log(result);
-        console.log('======================================\n');
+        console.log("======================================\n");
 
         return result;
       }
@@ -494,10 +544,10 @@ export class ToolExecutor {
     const input = toolCall.input as Record<string, any>;
 
     switch (toolCall.name) {
-      case 'shell:exec': {
+      case "shell:exec": {
         const command = input.command as string;
         if (!command) {
-          throw new Error('Missing required parameter: command');
+          throw new Error("Missing required parameter: command");
         }
 
         return new Promise((resolve, reject) => {
@@ -507,26 +557,28 @@ export class ToolExecutor {
             env: process.env,
           });
 
-          let stdout = '';
-          let stderr = '';
+          let stdout = "";
+          let stderr = "";
 
-          child.stdout?.on('data', (data) => {
+          child.stdout?.on("data", (data) => {
             stdout += data.toString();
           });
 
-          child.stderr?.on('data', (data) => {
+          child.stderr?.on("data", (data) => {
             stderr += data.toString();
           });
 
-          child.on('close', (code) => {
+          child.on("close", (code) => {
             if (code !== 0) {
-              reject(new Error(`Command failed with exit code ${code}:\n${stderr}`));
+              reject(
+                new Error(`Command failed with exit code ${code}:\n${stderr}`),
+              );
             } else {
-              resolve(stdout || stderr || 'Command executed successfully');
+              resolve(stdout || stderr || "Command executed successfully");
             }
           });
 
-          child.on('error', (error) => {
+          child.on("error", (error) => {
             reject(new Error(`Failed to execute command: ${error.message}`));
           });
         });
@@ -548,19 +600,19 @@ export class ToolExecutor {
     const input = toolCall.input as Record<string, any>;
 
     switch (toolCall.name) {
-      case 'code:find-definition': {
+      case "code:find-definition": {
         const symbol = input.symbol as string;
-        const symbolType = (input.type as string) || 'any';
-        const scope = (input.scope as string) || '**/*.ts';
+        const symbolType = (input.type as string) || "any";
+        const scope = (input.scope as string) || "**/*.ts";
 
         if (!symbol) {
-          throw new Error('Missing required parameter: symbol');
+          throw new Error("Missing required parameter: symbol");
         }
 
-        const { glob } = await import('glob');
+        const { glob } = await import("glob");
         const files = await glob(scope, {
           cwd: this.ctx.cwd,
-          ignore: ['**/node_modules/**', '**/dist/**', '**/.git/**'],
+          ignore: ["**/node_modules/**", "**/dist/**", "**/.git/**"],
           nodir: true,
         });
 
@@ -576,7 +628,7 @@ export class ToolExecutor {
         for (const file of files.slice(0, 500)) {
           try {
             const filePath = join(this.ctx.cwd, file);
-            const content = await fs.readFile(filePath, 'utf-8');
+            const content = await fs.readFile(filePath, "utf-8");
             const language = detectLanguage(file);
             const parser = getParser(language);
 
@@ -588,15 +640,15 @@ export class ToolExecutor {
 
             for (const def of defs) {
               // Filter by type if specified
-              if (symbolType !== 'any' && def.type !== symbolType) {
+              if (symbolType !== "any" && def.type !== symbolType) {
                 continue;
               }
 
               // Get context (lines around definition)
-              const lines = content.split('\n');
+              const lines = content.split("\n");
               const startIdx = Math.max(0, def.startLine - 1);
               const endIdx = Math.min(lines.length, def.startLine + 5);
-              const contextLines = lines.slice(startIdx, endIdx).join('\n');
+              const contextLines = lines.slice(startIdx, endIdx).join("\n");
 
               definitions.push({
                 file,
@@ -616,35 +668,39 @@ export class ToolExecutor {
         }
 
         // Format output
-        const output: string[] = [`Found ${definitions.length} definition(s) for "${symbol}":\n`];
+        const output: string[] = [
+          `Found ${definitions.length} definition(s) for "${symbol}":\n`,
+        ];
         for (const def of definitions.slice(0, 10)) {
-          const exportMarker = def.exported ? ' [exported]' : '';
-          output.push(`FILE: ${def.file}:${def.line} (${def.type})${exportMarker}`);
-          output.push('```');
+          const exportMarker = def.exported ? " [exported]" : "";
+          output.push(
+            `FILE: ${def.file}:${def.line} (${def.type})${exportMarker}`,
+          );
+          output.push("```");
           output.push(def.content);
-          output.push('```\n');
+          output.push("```\n");
         }
 
         if (definitions.length > 10) {
           output.push(`... and ${definitions.length - 10} more definitions`);
         }
 
-        return output.join('\n');
+        return output.join("\n");
       }
 
-      case 'code:find-usages': {
+      case "code:find-usages": {
         const symbol = input.symbol as string;
-        const scope = (input.scope as string) || '**/*.ts';
-        const includeDefinition = input.includeDefinition as boolean || false;
+        const scope = (input.scope as string) || "**/*.ts";
+        const includeDefinition = (input.includeDefinition as boolean) || false;
 
         if (!symbol) {
-          throw new Error('Missing required parameter: symbol');
+          throw new Error("Missing required parameter: symbol");
         }
 
-        const { glob } = await import('glob');
+        const { glob } = await import("glob");
         const files = await glob(scope, {
           cwd: this.ctx.cwd,
-          ignore: ['**/node_modules/**', '**/dist/**', '**/.git/**'],
+          ignore: ["**/node_modules/**", "**/dist/**", "**/.git/**"],
           nodir: true,
         });
 
@@ -660,7 +716,7 @@ export class ToolExecutor {
         for (const file of files.slice(0, 500)) {
           try {
             const filePath = join(this.ctx.cwd, file);
-            const content = await fs.readFile(filePath, 'utf-8');
+            const content = await fs.readFile(filePath, "utf-8");
             const language = detectLanguage(file);
             const parser = getParser(language);
 
@@ -700,37 +756,44 @@ export class ToolExecutor {
         }
 
         // Format output
-        const output: string[] = [`Found ${usages.length} usage(s) of "${symbol}" in ${byFile.size} file(s):\n`];
+        const output: string[] = [
+          `Found ${usages.length} usage(s) of "${symbol}" in ${byFile.size} file(s):\n`,
+        ];
 
-        for (const [file, fileUsages] of Array.from(byFile.entries()).slice(0, 15)) {
+        for (const [file, fileUsages] of Array.from(byFile.entries()).slice(
+          0,
+          15,
+        )) {
           output.push(`FILE: ${file}`);
           for (const usage of fileUsages.slice(0, 5)) {
-            const marker = usage.isDefinition ? ' [DEF]' : '';
-            output.push(`  ${usage.line}:${usage.column}: ${usage.content}${marker}`);
+            const marker = usage.isDefinition ? " [DEF]" : "";
+            output.push(
+              `  ${usage.line}:${usage.column}: ${usage.content}${marker}`,
+            );
           }
           if (fileUsages.length > 5) {
             output.push(`  ... and ${fileUsages.length - 5} more in this file`);
           }
-          output.push('');
+          output.push("");
         }
 
         if (byFile.size > 15) {
           output.push(`... and ${byFile.size - 15} more files`);
         }
 
-        return output.join('\n');
+        return output.join("\n");
       }
 
-      case 'code:outline': {
+      case "code:outline": {
         const path = input.path as string;
         const depth = (input.depth as number) || 2;
 
         if (!path) {
-          throw new Error('Missing required parameter: path');
+          throw new Error("Missing required parameter: path");
         }
 
         const filePath = join(this.ctx.cwd, path);
-        const content = await fs.readFile(filePath, 'utf-8');
+        const content = await fs.readFile(filePath, "utf-8");
         const language = detectLanguage(path);
         const parser = getParser(language);
 
@@ -751,15 +814,15 @@ export class ToolExecutor {
           byType.set(item.type, (byType.get(item.type) || 0) + 1);
         }
 
-        output.push('Summary:');
+        output.push("Summary:");
         for (const [type, count] of byType) {
           output.push(`  ${type}: ${count}`);
         }
-        output.push('');
+        output.push("");
 
-        output.push('Items:');
+        output.push("Items:");
         for (const item of outline) {
-          const indent = '  '.repeat(item.depth);
+          const indent = "  ".repeat(item.depth);
           output.push(`${indent}${item.line}: [${item.type}] ${item.name}`);
 
           // Show children if any
@@ -770,7 +833,7 @@ export class ToolExecutor {
           }
         }
 
-        return output.join('\n');
+        return output.join("\n");
       }
 
       default:
@@ -792,11 +855,11 @@ export class ToolExecutor {
   private async executePluginCommand(toolCall: ToolCall): Promise<string> {
     const commandId = toolCall.name; // e.g., "mind:rag-query"
 
-    if (!commandId.includes(':')) {
+    if (!commandId.includes(":")) {
       throw new Error(`Invalid plugin command format: ${toolCall.name}`);
     }
 
-    console.log('[SPAWN] Plugin command input:', {
+    console.log("[SPAWN] Plugin command input:", {
       name: toolCall.name,
       input: toolCall.input,
       inputType: typeof toolCall.input,
@@ -808,37 +871,37 @@ export class ToolExecutor {
     // Build CLI arguments from input
     const args = this.buildCLIArgs(commandId, input);
 
-    console.log('[SPAWN] Executing CLI command:', {
-      command: 'pnpm kb',
-      args: args.join(' '),
+    console.log("[SPAWN] Executing CLI command:", {
+      command: "pnpm kb",
+      args: args.join(" "),
     });
 
     return new Promise((resolve, reject) => {
-      const child = spawn('pnpm', ['kb', ...args], {
+      const child = spawn("pnpm", ["kb", ...args], {
         cwd: this.ctx.cwd,
         env: {
           ...process.env,
           // Request JSON output for easier parsing
-          KB_OUTPUT_FORMAT: 'json',
+          KB_OUTPUT_FORMAT: "json",
           // Disable interactive prompts
-          CI: '1',
+          CI: "1",
         },
         shell: true,
       });
 
-      let stdout = '';
-      let stderr = '';
+      let stdout = "";
+      let stderr = "";
 
-      child.stdout?.on('data', (data) => {
+      child.stdout?.on("data", (data) => {
         stdout += data.toString();
       });
 
-      child.stderr?.on('data', (data) => {
+      child.stderr?.on("data", (data) => {
         stderr += data.toString();
       });
 
-      child.on('close', (code) => {
-        console.log('[SPAWN] Command completed:', {
+      child.on("close", (code) => {
+        console.log("[SPAWN] Command completed:", {
           code,
           stdoutLength: stdout.length,
           stderrLength: stderr.length,
@@ -846,8 +909,12 @@ export class ToolExecutor {
 
         if (code !== 0) {
           // Try to extract meaningful error from stderr or stdout
-          const errorOutput = stderr || stdout || 'Unknown error';
-          reject(new Error(`CLI command failed (exit ${code}): ${errorOutput.substring(0, 500)}`));
+          const errorOutput = stderr || stdout || "Unknown error";
+          reject(
+            new Error(
+              `CLI command failed (exit ${code}): ${errorOutput.substring(0, 500)}`,
+            ),
+          );
         } else {
           // Parse and return output
           const result = this.parseCLIOutput(stdout, stderr);
@@ -855,7 +922,7 @@ export class ToolExecutor {
         }
       });
 
-      child.on('error', (error) => {
+      child.on("error", (error) => {
         reject(new Error(`Failed to spawn CLI command: ${error.message}`));
       });
     });
@@ -866,13 +933,15 @@ export class ToolExecutor {
    */
   private normalizePluginInput(toolCall: ToolCall): Record<string, any> {
     // If input is already an object, use it directly
-    if (typeof toolCall.input === 'object' && toolCall.input !== null) {
+    if (typeof toolCall.input === "object" && toolCall.input !== null) {
       return toolCall.input as Record<string, any>;
     }
 
     // If input is a string, try to map it to the main parameter
-    if (typeof toolCall.input === 'string' && this.agentContext) {
-      const tool = this.agentContext.tools.find(t => t.name === toolCall.name);
+    if (typeof toolCall.input === "string" && this.agentContext) {
+      const tool = this.agentContext.tools.find(
+        (t) => t.name === toolCall.name,
+      );
 
       if (tool?.inputSchema?.properties) {
         const props = tool.inputSchema.properties as Record<string, any>;
@@ -886,7 +955,7 @@ export class ToolExecutor {
 
         // Try required params first
         for (const req of required) {
-          if (props[req]?.type === 'string') {
+          if (props[req]?.type === "string") {
             mainParam = req;
             break;
           }
@@ -894,9 +963,16 @@ export class ToolExecutor {
 
         // Try common names
         if (!mainParam) {
-          const commonNames = ['text', 'query', 'command', 'message', 'prompt', 'input'];
+          const commonNames = [
+            "text",
+            "query",
+            "command",
+            "message",
+            "prompt",
+            "input",
+          ];
           for (const name of commonNames) {
-            if (props[name]?.type === 'string') {
+            if (props[name]?.type === "string") {
               mainParam = name;
               break;
             }
@@ -906,7 +982,7 @@ export class ToolExecutor {
         // Use first string parameter
         if (!mainParam) {
           for (const [key, value] of Object.entries(props)) {
-            if ((value as any).type === 'string') {
+            if ((value as any).type === "string") {
               mainParam = key;
               break;
             }
@@ -914,7 +990,9 @@ export class ToolExecutor {
         }
 
         if (mainParam) {
-          console.log(`[SPAWN] Converted string to object: { ${mainParam}: "${toolCall.input}" }`);
+          console.log(
+            `[SPAWN] Converted string to object: { ${mainParam}: "${toolCall.input}" }`,
+          );
           return { [mainParam]: toolCall.input };
         }
       }
@@ -930,7 +1008,10 @@ export class ToolExecutor {
    * Converts: { text: "hello", mode: "instant" }
    * To: ["mind:rag-query", "--text", "hello", "--mode", "instant"]
    */
-  private buildCLIArgs(commandId: string, input: Record<string, any>): string[] {
+  private buildCLIArgs(
+    commandId: string,
+    input: Record<string, any>,
+  ): string[] {
     const args: string[] = [commandId];
 
     for (const [key, value] of Object.entries(input)) {
@@ -939,7 +1020,7 @@ export class ToolExecutor {
       }
 
       // Handle boolean flags
-      if (typeof value === 'boolean') {
+      if (typeof value === "boolean") {
         if (value) {
           args.push(`--${key}`);
         }
@@ -960,8 +1041,8 @@ export class ToolExecutor {
     }
 
     // Always add --agent flag for JSON output (for commands that support it)
-    if (!args.includes('--agent')) {
-      args.push('--agent');
+    if (!args.includes("--agent")) {
+      args.push("--agent");
     }
 
     return args;
@@ -990,19 +1071,27 @@ export class ToolExecutor {
     // Return raw stdout if no JSON found
     // Filter out common log prefixes
     const cleanedOutput = stdout
-      .split('\n')
-      .filter(line => {
+      .split("\n")
+      .filter((line) => {
         // Skip pnpm/npm lifecycle logs
-        if (line.startsWith('>')) return false;
+        if (line.startsWith(">")) {
+          return false;
+        }
         // Skip empty lines at start/end
-        if (line.trim() === '') return false;
+        if (line.trim() === "") {
+          return false;
+        }
         // Skip debug logs
-        if (line.includes('[DEBUG]') || line.includes('[v3-adapter DEBUG]')) return false;
+        if (line.includes("[DEBUG]") || line.includes("[v3-adapter DEBUG]")) {
+          return false;
+        }
         // Skip AdapterLoader logs
-        if (line.includes('[AdapterLoader]')) return false;
+        if (line.includes("[AdapterLoader]")) {
+          return false;
+        }
         return true;
       })
-      .join('\n')
+      .join("\n")
       .trim();
 
     return cleanedOutput || stdout;
@@ -1017,7 +1106,7 @@ export class ToolExecutor {
    * @returns Cache key string
    */
   private generateCacheKey(toolCall: ToolCall): string {
-    const agentId = this.agentId || 'unknown';
+    const agentId = this.agentId || "unknown";
     const inputHash = this.hashInput(toolCall.input);
     return `agent-tools:${agentId}:${this.sessionId}:${toolCall.name}:${inputHash}`;
   }
@@ -1034,25 +1123,26 @@ export class ToolExecutor {
   private hashInput(input: any): string {
     // Handle undefined/null
     if (input === undefined || input === null) {
-      return 'none';
+      return "none";
     }
 
     // Clone and remove forceRefresh flag (shouldn't affect cache key)
     let inputToHash = input;
-    if (typeof input === 'object' && !Array.isArray(input)) {
+    if (typeof input === "object" && !Array.isArray(input)) {
       inputToHash = { ...input };
       delete inputToHash.forceRefresh;
     }
 
     // Convert to deterministic string
-    const str = typeof inputToHash === 'string'
-      ? inputToHash
-      : JSON.stringify(inputToHash, Object.keys(inputToHash).sort());
+    const str =
+      typeof inputToHash === "string"
+        ? inputToHash
+        : JSON.stringify(inputToHash, Object.keys(inputToHash).sort());
 
     // Simple hash function (djb2)
     let hash = 5381;
     for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) + hash) + str.charCodeAt(i); // hash * 33 + c
+      hash = (hash << 5) + hash + str.charCodeAt(i); // hash * 33 + c
     }
 
     // Convert to base36 (alphanumeric) and take first 8 chars
@@ -1069,7 +1159,7 @@ export class ToolExecutor {
    */
   private async handleFileNotFound(path: string): Promise<string> {
     const fs = this.ctx.runtime.fs;
-    const { dirname, basename } = await import('path');
+    const { dirname, basename } = await import("path");
 
     const parentDir = dirname(path);
     const fileName = basename(path);
@@ -1080,34 +1170,45 @@ export class ToolExecutor {
       const entries = await fs.readdir(parentDir);
 
       // Find similar files (case-insensitive partial match)
-      const similar = entries.filter(entry => {
-        const lowerEntry = entry.toLowerCase();
-        const lowerFile = fileName.toLowerCase();
+      const similar = entries
+        .filter((entry) => {
+          const lowerEntry = entry.toLowerCase();
+          const lowerFile = fileName.toLowerCase();
 
-        // Exact match (shouldn't happen, but just in case)
-        if (lowerEntry === lowerFile) return true;
+          // Exact match (shouldn't happen, but just in case)
+          if (lowerEntry === lowerFile) {
+            return true;
+          }
 
-        // Contains the filename
-        if (lowerEntry.includes(lowerFile) || lowerFile.includes(lowerEntry)) return true;
+          // Contains the filename
+          if (
+            lowerEntry.includes(lowerFile) ||
+            lowerFile.includes(lowerEntry)
+          ) {
+            return true;
+          }
 
-        // Remove extension and check stem
-        const stemEntry = lowerEntry.replace(/\.[^.]+$/, '');
-        const stemFile = lowerFile.replace(/\.[^.]+$/, '');
-        if (stemEntry.includes(stemFile) || stemFile.includes(stemEntry)) return true;
+          // Remove extension and check stem
+          const stemEntry = lowerEntry.replace(/\.[^.]+$/, "");
+          const stemFile = lowerFile.replace(/\.[^.]+$/, "");
+          if (stemEntry.includes(stemFile) || stemFile.includes(stemEntry)) {
+            return true;
+          }
 
-        return false;
-      }).slice(0, 5); // Limit to 5 suggestions
+          return false;
+        })
+        .slice(0, 5); // Limit to 5 suggestions
 
       if (similar.length > 0) {
         suggestions.push(`Similar files in ${parentDir}:`);
-        similar.forEach(file => {
+        similar.forEach((file) => {
           suggestions.push(`  - ${parentDir}/${file}`);
         });
       } else {
         // No similar files, show all files in directory
         suggestions.push(`Files in ${parentDir}:`);
         const limited = entries.slice(0, 10); // Show max 10 files
-        limited.forEach(file => {
+        limited.forEach((file) => {
           suggestions.push(`  - ${file}`);
         });
         if (entries.length > 10) {
@@ -1121,7 +1222,9 @@ export class ToolExecutor {
       // Try to suggest checking path construction
       suggestions.push(`The path may be incorrectly constructed.`);
       suggestions.push(`Common issues:`);
-      suggestions.push(`  - Wrong monorepo name (check: kb-labs-mind vs kb-labs-core)`);
+      suggestions.push(
+        `  - Wrong monorepo name (check: kb-labs-mind vs kb-labs-core)`,
+      );
       suggestions.push(`  - Missing/wrong package name`);
       suggestions.push(`  - File moved or deleted`);
     }
@@ -1137,7 +1240,7 @@ export class ToolExecutor {
       `  2. Try one of the similar files listed above`,
       `  3. Use mind:rag-query to search for the code semantically`,
       `  4. Check if the file was moved or renamed`,
-    ].join('\n');
+    ].join("\n");
 
     throw new Error(errorMessage);
   }

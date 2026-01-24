@@ -10,13 +10,13 @@
  * - Cleanup при завершении сессии оркестратора
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
+import type { PluginContextV3 } from "@kb-labs/sdk";
 import type {
   AgentFinding,
   FindingsSummary,
   StoredFindings,
   FindingsRegistry,
-} from './types.js';
+} from "./types.js";
 
 /**
  * Findings Store with adaptive TTL and session-based cleanup
@@ -40,7 +40,7 @@ export class FindingsStore {
     options?: {
       customTTL?: number; // Custom TTL in ms (overrides defaults)
       maxDeadline?: number; // Max deadline (default: 7 days)
-    }
+    },
   ): Promise<string> {
     const findingsId = `findings:${sessionId}:${subtaskId}`;
 
@@ -60,7 +60,7 @@ export class FindingsStore {
     // Register findings in session registry for cleanup
     await this.registerInSession(sessionId, findingsId);
 
-    this.ctx.platform.logger.debug('Findings saved with adaptive TTL', {
+    this.ctx.platform.logger.debug("Findings saved with adaptive TTL", {
       findingsId,
       count: findings.length,
       ttlMs: ttl,
@@ -80,7 +80,7 @@ export class FindingsStore {
     const data = await this.ctx.platform.cache.get<StoredFindings>(findingsRef);
 
     if (!data) {
-      this.ctx.platform.logger.warn('Findings not found (possibly expired)', {
+      this.ctx.platform.logger.warn("Findings not found (possibly expired)", {
         findingsRef,
       });
       return [];
@@ -100,11 +100,11 @@ export class FindingsStore {
    */
   createSummary(findings: AgentFinding[]): FindingsSummary {
     const bySeverity = {
-      critical: findings.filter((f) => f.severity === 'critical').length,
-      high: findings.filter((f) => f.severity === 'high').length,
-      medium: findings.filter((f) => f.severity === 'medium').length,
-      low: findings.filter((f) => f.severity === 'low').length,
-      info: findings.filter((f) => f.severity === 'info').length,
+      critical: findings.filter((f) => f.severity === "critical").length,
+      high: findings.filter((f) => f.severity === "high").length,
+      medium: findings.filter((f) => f.severity === "medium").length,
+      low: findings.filter((f) => f.severity === "low").length,
+      info: findings.filter((f) => f.severity === "info").length,
     };
 
     const actionable = findings.filter((f) => f.actionable).length;
@@ -113,13 +113,26 @@ export class FindingsStore {
     // Priority: critical > high > actionable > recent
     const topFindings = findings
       .sort((a, b) => {
-        const severityOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-        const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
-        if (severityDiff !== 0) return severityDiff;
+        const severityOrder = {
+          critical: 0,
+          high: 1,
+          medium: 2,
+          low: 3,
+          info: 4,
+        };
+        const severityDiff =
+          severityOrder[a.severity] - severityOrder[b.severity];
+        if (severityDiff !== 0) {
+          return severityDiff;
+        }
 
         // If same severity, prioritize actionable
-        if (a.actionable && !b.actionable) return -1;
-        if (!a.actionable && b.actionable) return 1;
+        if (a.actionable && !b.actionable) {
+          return -1;
+        }
+        if (!a.actionable && b.actionable) {
+          return 1;
+        }
 
         return 0;
       })
@@ -148,11 +161,14 @@ export class FindingsStore {
    */
   private calculateTTL(
     sessionId: string,
-    options?: { customTTL?: number; maxDeadline?: number }
+    options?: { customTTL?: number; maxDeadline?: number },
   ): number {
     // Custom TTL takes precedence
     if (options?.customTTL) {
-      return Math.min(options.customTTL, options.maxDeadline || this.getDefaultMaxDeadline());
+      return Math.min(
+        options.customTTL,
+        options.maxDeadline || this.getDefaultMaxDeadline(),
+      );
     }
 
     // Environment variable configuration
@@ -160,7 +176,7 @@ export class FindingsStore {
     if (envTTLHours) {
       const ttlMs = parseInt(envTTLHours, 10) * 60 * 60 * 1000;
       if (!isNaN(ttlMs) && ttlMs > 0) {
-        this.ctx.platform.logger.debug('Using TTL from KB_FINDINGS_TTL_HOURS', {
+        this.ctx.platform.logger.debug("Using TTL from KB_FINDINGS_TTL_HOURS", {
           hours: envTTLHours,
           ms: ttlMs,
         });
@@ -184,10 +200,13 @@ export class FindingsStore {
     if (envMaxDays) {
       const maxMs = parseInt(envMaxDays, 10) * 24 * 60 * 60 * 1000;
       if (!isNaN(maxMs) && maxMs > 0) {
-        this.ctx.platform.logger.debug('Using max deadline from KB_FINDINGS_MAX_DEADLINE_DAYS', {
-          days: envMaxDays,
-          ms: maxMs,
-        });
+        this.ctx.platform.logger.debug(
+          "Using max deadline from KB_FINDINGS_MAX_DEADLINE_DAYS",
+          {
+            days: envMaxDays,
+            ms: maxMs,
+          },
+        );
         return maxMs;
       }
     }
@@ -205,11 +224,15 @@ export class FindingsStore {
    * @param sessionId - Session ID
    * @param findingsId - Findings reference ID to register
    */
-  private async registerInSession(sessionId: string, findingsId: string): Promise<void> {
+  private async registerInSession(
+    sessionId: string,
+    findingsId: string,
+  ): Promise<void> {
     const registryKey = `findings-registry:${sessionId}`;
 
     // Get existing registry
-    const existing = await this.ctx.platform.cache.get<FindingsRegistry>(registryKey);
+    const existing =
+      await this.ctx.platform.cache.get<FindingsRegistry>(registryKey);
 
     const findingsIds = existing?.findingsIds || [];
     if (!findingsIds.includes(findingsId)) {
@@ -223,7 +246,11 @@ export class FindingsStore {
     };
 
     // Update registry with same TTL as max deadline
-    await this.ctx.platform.cache.set(registryKey, registry, this.getDefaultMaxDeadline());
+    await this.ctx.platform.cache.set(
+      registryKey,
+      registry,
+      this.getDefaultMaxDeadline(),
+    );
   }
 
   /**
@@ -238,10 +265,15 @@ export class FindingsStore {
     const registryKey = `findings-registry:${sessionId}`;
 
     // Get all findings for this session
-    const registry = await this.ctx.platform.cache.get<FindingsRegistry>(registryKey);
+    const registry =
+      await this.ctx.platform.cache.get<FindingsRegistry>(registryKey);
 
-    if (!registry || !registry.findingsIds || registry.findingsIds.length === 0) {
-      this.ctx.platform.logger.debug('No findings to cleanup', { sessionId });
+    if (
+      !registry ||
+      !registry.findingsIds ||
+      registry.findingsIds.length === 0
+    ) {
+      this.ctx.platform.logger.debug("No findings to cleanup", { sessionId });
       return 0;
     }
 
@@ -255,7 +287,7 @@ export class FindingsStore {
     // Delete registry itself
     await this.ctx.platform.cache.delete(registryKey);
 
-    this.ctx.platform.logger.info('Session findings cleaned up', {
+    this.ctx.platform.logger.info("Session findings cleaned up", {
       sessionId,
       findingsCleaned: cleaned,
     });

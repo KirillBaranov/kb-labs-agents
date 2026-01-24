@@ -9,31 +9,35 @@
  * - Cost and token usage
  */
 
-import type { IAnalytics } from '@kb-labs/sdk';
-import type { LLMTier } from '@kb-labs/agent-contracts';
-import type { SubTask, DelegatedResult, OrchestratorResult } from '../executor/types.js';
+import type { IAnalytics } from "@kb-labs/sdk";
+import type { LLMTier } from "@kb-labs/agent-contracts";
+import type {
+  SubTask,
+  DelegatedResult,
+  OrchestratorResult,
+} from "../executor/types.js";
 
 /**
  * Analytics event names for V2 orchestrator
  */
 export const ORCHESTRATOR_EVENTS = {
   // Task lifecycle
-  TASK_STARTED: 'orchestrator.task.started',
-  TASK_COMPLETED: 'orchestrator.task.completed',
-  TASK_FAILED: 'orchestrator.task.failed',
+  TASK_STARTED: "orchestrator.task.started",
+  TASK_COMPLETED: "orchestrator.task.completed",
+  TASK_FAILED: "orchestrator.task.failed",
 
   // Planning phase
-  PLANNING_STARTED: 'orchestrator.planning.started',
-  PLANNING_COMPLETED: 'orchestrator.planning.completed',
+  PLANNING_STARTED: "orchestrator.planning.started",
+  PLANNING_COMPLETED: "orchestrator.planning.completed",
 
   // Agent delegation
-  SPECIALIST_DELEGATED: 'orchestrator.specialist.delegated',
-  SPECIALIST_COMPLETED: 'orchestrator.specialist.completed',
-  SPECIALIST_FAILED: 'orchestrator.specialist.failed',
+  SPECIALIST_DELEGATED: "orchestrator.specialist.delegated",
+  SPECIALIST_COMPLETED: "orchestrator.specialist.completed",
+  SPECIALIST_FAILED: "orchestrator.specialist.failed",
 
   // Synthesis phase
-  SYNTHESIS_STARTED: 'orchestrator.synthesis.started',
-  SYNTHESIS_COMPLETED: 'orchestrator.synthesis.completed',
+  SYNTHESIS_STARTED: "orchestrator.synthesis.started",
+  SYNTHESIS_COMPLETED: "orchestrator.synthesis.completed",
 } as const;
 
 /**
@@ -51,7 +55,9 @@ export class OrchestratorAnalytics {
    * Track orchestrator task start
    */
   trackTaskStarted(task: string): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATOR_EVENTS.TASK_STARTED, {
       task_length: task.length,
@@ -64,16 +70,21 @@ export class OrchestratorAnalytics {
    * Track orchestrator task completion
    */
   trackTaskCompleted(task: string, result: OrchestratorResult): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     // Calculate agent distribution
     const agentCounts: Record<string, number> = {};
     for (const delegated of result.delegatedResults) {
-      agentCounts[delegated.agentId] = (agentCounts[delegated.agentId] || 0) + 1;
+      agentCounts[delegated.agentId] =
+        (agentCounts[delegated.agentId] || 0) + 1;
     }
 
     // Calculate success rate
-    const successCount = result.delegatedResults.filter(r => r.success).length;
+    const successCount = result.delegatedResults.filter(
+      (r) => r.success,
+    ).length;
     const totalCount = result.delegatedResults.length;
     const successRate = totalCount > 0 ? (successCount / totalCount) * 100 : 0;
 
@@ -94,8 +105,15 @@ export class OrchestratorAnalytics {
   /**
    * Track orchestrator task failure
    */
-  trackTaskFailed(task: string, error: string, durationMs: number, tokensUsed: number): void {
-    if (!this.analytics) return;
+  trackTaskFailed(
+    task: string,
+    error: string,
+    durationMs: number,
+    tokensUsed: number,
+  ): void {
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATOR_EVENTS.TASK_FAILED, {
       task_length: task.length,
@@ -110,7 +128,9 @@ export class OrchestratorAnalytics {
    * Track planning phase start
    */
   trackPlanningStarted(task: string): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATOR_EVENTS.PLANNING_STARTED, {
       task_length: task.length,
@@ -121,8 +141,14 @@ export class OrchestratorAnalytics {
   /**
    * Track planning phase completion
    */
-  trackPlanningCompleted(plan: SubTask[], tokensUsed: number, durationMs: number): void {
-    if (!this.analytics) return;
+  trackPlanningCompleted(
+    plan: SubTask[],
+    tokensUsed: number,
+    durationMs: number,
+  ): void {
+    if (!this.analytics) {
+      return;
+    }
 
     // Calculate agent distribution in plan
     const agentCounts: Record<string, number> = {};
@@ -136,7 +162,7 @@ export class OrchestratorAnalytics {
     // Count dependencies
     const dependencyCount = plan.reduce(
       (sum, s) => sum + (s.dependencies?.length || 0),
-      0
+      0,
     );
 
     this.analytics.track(ORCHESTRATOR_EVENTS.PLANNING_COMPLETED, {
@@ -155,14 +181,16 @@ export class OrchestratorAnalytics {
    * Track agent delegation start
    */
   trackSpecialistDelegated(subtask: SubTask): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATOR_EVENTS.SPECIALIST_DELEGATED, {
       subtask_id: subtask.id,
       agent_id: subtask.agentId,
       description_length: subtask.description.length,
       priority: subtask.priority || 5,
-      complexity: subtask.estimatedComplexity || 'medium',
+      complexity: subtask.estimatedComplexity || "medium",
       has_dependencies: (subtask.dependencies?.length || 0) > 0,
       timestamp: Date.now(),
     });
@@ -172,7 +200,9 @@ export class OrchestratorAnalytics {
    * Track agent completion
    */
   trackSpecialistCompleted(subtask: SubTask, result: DelegatedResult): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATOR_EVENTS.SPECIALIST_COMPLETED, {
       subtask_id: subtask.id,
@@ -190,12 +220,14 @@ export class OrchestratorAnalytics {
    * Track agent failure
    */
   trackSpecialistFailed(subtask: SubTask, result: DelegatedResult): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATOR_EVENTS.SPECIALIST_FAILED, {
       subtask_id: subtask.id,
       agent_id: subtask.agentId,
-      error_message: result.error?.substring(0, 200) || 'unknown',
+      error_message: result.error?.substring(0, 200) || "unknown",
       tokens_used: result.tokensUsed,
       duration_ms: result.durationMs,
       priority: subtask.priority || 5,
@@ -207,7 +239,9 @@ export class OrchestratorAnalytics {
    * Track synthesis phase start
    */
   trackSynthesisStarted(resultsCount: number): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATOR_EVENTS.SYNTHESIS_STARTED, {
       results_count: resultsCount,
@@ -218,8 +252,14 @@ export class OrchestratorAnalytics {
   /**
    * Track synthesis phase completion
    */
-  trackSynthesisCompleted(answerLength: number, tokensUsed: number, durationMs: number): void {
-    if (!this.analytics) return;
+  trackSynthesisCompleted(
+    answerLength: number,
+    tokensUsed: number,
+    durationMs: number,
+  ): void {
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATOR_EVENTS.SYNTHESIS_COMPLETED, {
       answer_length: answerLength,
@@ -233,9 +273,13 @@ export class OrchestratorAnalytics {
    * Get output length for analytics
    */
   private getOutputLength(output: unknown): number {
-    if (output === null || output === undefined) return 0;
-    if (typeof output === 'string') return output.length;
-    if (typeof output === 'object') {
+    if (output === null || output === undefined) {
+      return 0;
+    }
+    if (typeof output === "string") {
+      return output.length;
+    }
+    if (typeof output === "object") {
       try {
         return JSON.stringify(output).length;
       } catch {
@@ -258,11 +302,15 @@ export class OrchestratorAnalytics {
    * @param completionTokens - Tokens in completion
    * @returns Estimated cost in USD
    */
-  estimateCost(tier: LLMTier, promptTokens: number, completionTokens: number): number {
+  estimateCost(
+    tier: LLMTier,
+    promptTokens: number,
+    completionTokens: number,
+  ): number {
     const rates = {
-      small: { prompt: 0.15 / 1_000_000, completion: 0.60 / 1_000_000 },
-      medium: { prompt: 2.50 / 1_000_000, completion: 10.00 / 1_000_000 },
-      large: { prompt: 15.00 / 1_000_000, completion: 60.00 / 1_000_000 },
+      small: { prompt: 0.15 / 1_000_000, completion: 0.6 / 1_000_000 },
+      medium: { prompt: 2.5 / 1_000_000, completion: 10.0 / 1_000_000 },
+      large: { prompt: 15.0 / 1_000_000, completion: 60.0 / 1_000_000 },
     };
 
     const rate = rates[tier];
@@ -279,7 +327,11 @@ export class OrchestratorAnalytics {
    * @param completionTokens - Tokens in completion
    * @returns Estimated cost in USD
    */
-  trackSpecialistCost(tier: LLMTier, promptTokens: number, completionTokens: number): number {
+  trackSpecialistCost(
+    tier: LLMTier,
+    promptTokens: number,
+    completionTokens: number,
+  ): number {
     const cost = this.estimateCost(tier, promptTokens, completionTokens);
     this.totalCostUsd += cost;
     return cost;

@@ -17,7 +17,12 @@
  * 5. Returns { exitCode } instead of { ok }
  */
 
-import { defineCommand, useLoader, type PluginContextV3, type CommandResult } from '@kb-labs/sdk';
+import {
+  defineCommand,
+  useLoader,
+  type PluginContextV3,
+  type CommandResult,
+} from "@kb-labs/sdk";
 
 // V3: Define types inline (no external contracts)
 interface LoaderFlags {
@@ -37,94 +42,100 @@ interface LoaderResult {
 }
 
 export default defineCommand<unknown, LoaderInput, LoaderResult>({
-  id: 'plugin-template:test-loader',
-  description: 'Test UI loader/spinner functionality with various scenarios',
+  id: "plugin-template:test-loader",
+  description: "Test UI loader/spinner functionality with various scenarios",
 
   handler: {
     async execute(
       ctx: PluginContextV3<unknown>,
-      input: LoaderInput
+      input: LoaderInput,
     ): Promise<CommandResult<LoaderResult>> {
       const flags = input.flags;
-    const duration = flags.duration ?? 2000;
-    const shouldFail = flags.fail ?? false;
-    const stagesCount = flags.stages ?? 3;
+      const duration = flags.duration ?? 2000;
+      const shouldFail = flags.fail ?? false;
+      const stagesCount = flags.stages ?? 3;
 
-    ctx.ui?.info('', {
-      title: '🧪 Testing Loader/Spinner functionality',
-      sections: [{
-        items: [
-          `Duration per stage: ${duration}ms`,
-          `Stages: ${stagesCount}`,
-          `Fail scenario: ${shouldFail ? 'yes' : 'no'}`,
-        ]
-      }]
-    });
+      ctx.ui?.info("", {
+        title: "🧪 Testing Loader/Spinner functionality",
+        sections: [
+          {
+            items: [
+              `Duration per stage: ${duration}ms`,
+              `Stages: ${stagesCount}`,
+              `Fail scenario: ${shouldFail ? "yes" : "no"}`,
+            ],
+          },
+        ],
+      });
 
-    // ===== 1. Single Continuous Loader (no stages) =====
-    ctx.ui.info('\n1. Single Continuous Loader (ideal for quick tasks)');
+      // ===== 1. Single Continuous Loader (no stages) =====
+      ctx.ui.info("\n1. Single Continuous Loader (ideal for quick tasks)");
 
-    const loader = useLoader('Loading data...');
-    loader.start();
+      const loader = useLoader("Loading data...");
+      loader.start();
 
-    await sleep(duration / 5);
+      await sleep(duration / 5);
 
-    loader.update({ text: 'Processing items...' });
-    await sleep(duration / 5);
+      loader.update({ text: "Processing items..." });
+      await sleep(duration / 5);
 
-    loader.update({ text: 'Validating results...' });
-    await sleep(duration / 5);
+      loader.update({ text: "Validating results..." });
+      await sleep(duration / 5);
 
-    loader.update({ text: 'Finalizing...' });
-    await sleep(duration / 5);
+      loader.update({ text: "Finalizing..." });
+      await sleep(duration / 5);
 
-    loader.succeed('Data loaded successfully!');
+      loader.succeed("Data loaded successfully!");
 
-    await sleep(500);
+      await sleep(500);
 
-    // ===== 2. Multi-Stage Progress Test =====
-    ctx.ui.info('\n2. Multi-Stage Progress (for complex operations)');
+      // ===== 2. Multi-Stage Progress Test =====
+      ctx.ui.info("\n2. Multi-Stage Progress (for complex operations)");
 
-    for (let i = 1; i <= stagesCount; i++) {
-      const spinner = useLoader(`Stage ${i}/${stagesCount}: Starting...`);
-      spinner.start();
+      for (let i = 1; i <= stagesCount; i++) {
+        const spinner = useLoader(`Stage ${i}/${stagesCount}: Starting...`);
+        spinner.start();
 
-      await sleep(duration / 4);
-      spinner.update({ text: `Stage ${i}/${stagesCount}: 25% complete` });
+        await sleep(duration / 4);
+        spinner.update({ text: `Stage ${i}/${stagesCount}: 25% complete` });
 
-      await sleep(duration / 4);
-      spinner.update({ text: `Stage ${i}/${stagesCount}: 50% complete` });
+        await sleep(duration / 4);
+        spinner.update({ text: `Stage ${i}/${stagesCount}: 50% complete` });
 
-      await sleep(duration / 4);
-      spinner.update({ text: `Stage ${i}/${stagesCount}: 75% complete` });
+        await sleep(duration / 4);
+        spinner.update({ text: `Stage ${i}/${stagesCount}: 75% complete` });
 
-      await sleep(duration / 4);
+        await sleep(duration / 4);
 
-      // Complete or fail stage
-      if (shouldFail && i === Math.floor(stagesCount / 2)) {
-        spinner.fail(`Stage ${i}/${stagesCount}: Failed!`);
-        break;
-      } else {
-        spinner.succeed(`Stage ${i}/${stagesCount}: Complete!`);
+        // Complete or fail stage
+        if (shouldFail && i === Math.floor(stagesCount / 2)) {
+          spinner.fail(`Stage ${i}/${stagesCount}: Failed!`);
+          break;
+        } else {
+          spinner.succeed(`Stage ${i}/${stagesCount}: Complete!`);
+        }
       }
-    }
 
-    await sleep(500);
+      await sleep(500);
 
-    // ===== Final Result =====
-    const result = {
-      completed: !shouldFail || stagesCount === 0,
-      stagesRun: shouldFail ? Math.floor(stagesCount / 2) : stagesCount,
-    };
+      // ===== Final Result =====
+      const result = {
+        completed: !shouldFail || stagesCount === 0,
+        stagesRun: shouldFail ? Math.floor(stagesCount / 2) : stagesCount,
+      };
 
-    // Final summary
-    ctx.ui.success(`\nLoader Test Complete - ${result.completed ? 'Success' : 'Failed'}`);
+      // Final summary
+      ctx.ui.success(
+        `\nLoader Test Complete - ${result.completed ? "Success" : "Failed"}`,
+      );
 
       return { exitCode: 0, result };
-    }
-  }
+    },
+  },
 });
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

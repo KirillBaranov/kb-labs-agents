@@ -64,10 +64,10 @@ export interface PluginConfig {
 export const defaultPluginConfig: PluginConfig = {
   enabled: true,
   greeting: {
-    configPath: '.kb/template/hello-config.json',
-    defaultName: 'KB Labs',
+    configPath: ".kb/template/hello-config.json",
+    defaultName: "KB Labs",
   },
   output: {
-    directory: '.kb/template/output',
+    directory: ".kb/template/output",
   },
 };

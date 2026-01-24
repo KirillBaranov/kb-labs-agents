@@ -17,7 +17,7 @@
  * sanitizeToolName("shell:exec") // "shell_exec"
  */
 export function sanitizeToolName(name: string): string {
-  return name.replace(/[:-]/g, '_');
+  return name.replace(/[:-]/g, "_");
 }
 
 /**
@@ -32,7 +32,9 @@ export function sanitizeToolName(name: string): string {
  * map.get("fs_read") // "fs:read"
  * map.get("mind_rag_query") // "mind:rag-query"
  */
-export function createToolNameMapping(originalNames: string[]): Map<string, string> {
+export function createToolNameMapping(
+  originalNames: string[],
+): Map<string, string> {
   const map = new Map<string, string>();
   for (const name of originalNames) {
     const sanitized = sanitizeToolName(name);
@@ -54,6 +56,9 @@ export function createToolNameMapping(originalNames: string[]): Map<string, stri
  * restoreToolName("mind_rag_query", map) // "mind:rag-query"
  * restoreToolName("unknown", map) // "unknown" (fallback)
  */
-export function restoreToolName(sanitizedName: string, mapping: Map<string, string>): string {
+export function restoreToolName(
+  sanitizedName: string,
+  mapping: Map<string, string>,
+): string {
   return mapping.get(sanitizedName) || sanitizedName;
 }

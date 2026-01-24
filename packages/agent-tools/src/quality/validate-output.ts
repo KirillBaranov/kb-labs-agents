@@ -3,7 +3,7 @@
  * Tool for validating agent output quality.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Validation criterion result.
@@ -44,7 +44,7 @@ export interface OutputValidation {
  */
 export function createValidateOutputTool(): LLMTool {
   return {
-    name: 'validate_output',
+    name: "validate_output",
     description: `Validate agent output against quality criteria and requirements.
 
 **Common validation criteria:**
@@ -60,43 +60,43 @@ export function createValidateOutputTool(): LLMTool {
 - Document validation evidence`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'agentId', 'isValid', 'criteria', 'assessment'],
+      type: "object",
+      required: ["subtaskId", "agentId", "isValid", "criteria", "assessment"],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'ID of subtask being validated',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "ID of subtask being validated",
+          pattern: "^subtask-\\d+$",
         },
         agentId: {
-          type: 'string',
-          description: 'Agent who produced the output',
+          type: "string",
+          description: "Agent who produced the output",
         },
         isValid: {
-          type: 'boolean',
-          description: 'Whether output passes validation',
+          type: "boolean",
+          description: "Whether output passes validation",
         },
         criteria: {
-          type: 'array',
-          description: 'Individual validation criteria results',
+          type: "array",
+          description: "Individual validation criteria results",
           minItems: 1,
           items: {
-            type: 'object',
-            required: ['criterion', 'met', 'evidence'],
+            type: "object",
+            required: ["criterion", "met", "evidence"],
             properties: {
               criterion: {
-                type: 'string',
-                description: 'Name of validation criterion',
+                type: "string",
+                description: "Name of validation criterion",
                 minLength: 5,
                 maxLength: 100,
               },
               met: {
-                type: 'boolean',
-                description: 'Whether this criterion was met',
+                type: "boolean",
+                description: "Whether this criterion was met",
               },
               evidence: {
-                type: 'string',
-                description: 'Evidence or explanation for this result',
+                type: "string",
+                description: "Evidence or explanation for this result",
                 minLength: 10,
                 maxLength: 300,
               },
@@ -104,17 +104,17 @@ export function createValidateOutputTool(): LLMTool {
           },
         },
         issues: {
-          type: 'array',
-          description: 'Issues found during validation (if any)',
+          type: "array",
+          description: "Issues found during validation (if any)",
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 200,
           },
         },
         assessment: {
-          type: 'string',
-          description: 'Overall validation assessment',
+          type: "string",
+          description: "Overall validation assessment",
           minLength: 20,
           maxLength: 500,
         },

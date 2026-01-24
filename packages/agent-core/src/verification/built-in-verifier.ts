@@ -7,16 +7,16 @@
  * Part of the anti-hallucination verification system (ADR-0002).
  */
 
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-import { createHash } from 'node:crypto';
-import type { PluginContextV3 } from '@kb-labs/sdk';
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { createHash } from "node:crypto";
+import type { PluginContextV3 } from "@kb-labs/sdk";
 import type {
   Claim,
   FileWriteClaim,
   FileEditClaim,
   FileDeleteClaim,
-} from '@kb-labs/agent-contracts';
+} from "@kb-labs/agent-contracts";
 
 /**
  * Verification result for a single claim
@@ -50,46 +50,53 @@ export class BuiltInToolVerifier {
    * @param basePath - Base directory for relative paths
    * @returns Verification result
    */
-  async verifyClaim(claim: Claim, basePath: string = process.cwd()): Promise<ClaimVerificationResult> {
+  async verifyClaim(
+    claim: Claim,
+    basePath: string = process.cwd(),
+  ): Promise<ClaimVerificationResult> {
     try {
       switch (claim.kind) {
-        case 'file-write':
+        case "file-write":
           return await this.verifyFileWrite(claim, basePath);
 
-        case 'file-edit':
+        case "file-edit":
           return await this.verifyFileEdit(claim, basePath);
 
-        case 'file-delete':
+        case "file-delete":
           return await this.verifyFileDelete(claim, basePath);
 
-        case 'command-executed':
+        case "command-executed":
           // Command verification requires checking shell history or logs
           // For now, we trust command-executed claims (no way to verify retroactively)
-          this.ctx.platform.logger.debug('Skipping verification for command-executed claim', { claim });
+          this.ctx.platform.logger.debug(
+            "Skipping verification for command-executed claim",
+            { claim },
+          );
           return { valid: true, claim };
 
-        case 'code-inserted':
+        case "code-inserted":
           // Code insertion is verified similarly to file-edit
           return await this.verifyCodeInserted(claim, basePath);
 
         default:
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          this.ctx.platform.logger.warn('Unknown claim kind', { kind: (claim as any).kind });
+          this.ctx.platform.logger.warn("Unknown claim kind", {
+            kind: (claim as any).kind,
+          });
           return {
             valid: false,
             claim,
-            reason: 'Unknown claim kind',
+            reason: "Unknown claim kind",
           };
       }
     } catch (error) {
-      this.ctx.platform.logger.warn('Claim verification failed with error', {
+      this.ctx.platform.logger.warn("Claim verification failed with error", {
         claim,
         error: error instanceof Error ? error.message : String(error),
       });
       return {
         valid: false,
         claim,
-        reason: error instanceof Error ? error.message : 'Unknown error',
+        reason: error instanceof Error ? error.message : "Unknown error",
       };
     }
   }
@@ -101,8 +108,13 @@ export class BuiltInToolVerifier {
    * @param basePath - Base directory for relative paths
    * @returns Array of verification results
    */
-  async verifyClaims(claims: Claim[], basePath: string = process.cwd()): Promise<ClaimVerificationResult[]> {
-    const results = await Promise.all(claims.map(claim => this.verifyClaim(claim, basePath)));
+  async verifyClaims(
+    claims: Claim[],
+    basePath: string = process.cwd(),
+  ): Promise<ClaimVerificationResult[]> {
+    const results = await Promise.all(
+      claims.map((claim) => this.verifyClaim(claim, basePath)),
+    );
     return results;
   }
 
@@ -111,7 +123,10 @@ export class BuiltInToolVerifier {
    *
    * Checks that file exists and content hash matches.
    */
-  private async verifyFileWrite(claim: FileWriteClaim, basePath: string): Promise<ClaimVerificationResult> {
+  private async verifyFileWrite(
+    claim: FileWriteClaim,
+    basePath: string,
+  ): Promise<ClaimVerificationResult> {
     const filePath = path.resolve(basePath, claim.filePath);
 
     // Check file exists
@@ -121,13 +136,13 @@ export class BuiltInToolVerifier {
       return {
         valid: false,
         claim,
-        reason: 'File does not exist',
+        reason: "File does not exist",
         details: { filePath },
       };
     }
 
     // Read file content
-    const content = await fs.readFile(filePath, 'utf-8');
+    const content = await fs.readFile(filePath, "utf-8");
 
     // Compute hash
     const actualHash = this.computeHash(content);
@@ -137,7 +152,7 @@ export class BuiltInToolVerifier {
       return {
         valid: false,
         claim,
-        reason: 'Content hash mismatch',
+        reason: "Content hash mismatch",
         details: {
           expected: claim.contentHash,
           actual: actualHash,
@@ -153,7 +168,10 @@ export class BuiltInToolVerifier {
    *
    * Checks that file exists and anchors match.
    */
-  private async verifyFileEdit(claim: FileEditClaim, basePath: string): Promise<ClaimVerificationResult> {
+  private async verifyFileEdit(
+    claim: FileEditClaim,
+    basePath: string,
+  ): Promise<ClaimVerificationResult> {
     const filePath = path.resolve(basePath, claim.filePath);
 
     // Check file exists
@@ -163,13 +181,13 @@ export class BuiltInToolVerifier {
       return {
         valid: false,
         claim,
-        reason: 'File does not exist',
+        reason: "File does not exist",
         details: { filePath },
       };
     }
 
     // Read file content
-    const content = await fs.readFile(filePath, 'utf-8');
+    const content = await fs.readFile(filePath, "utf-8");
 
     // Check if anchors are present
     const hasBeforeAnchor = content.includes(claim.anchor.beforeSnippet);
@@ -179,24 +197,31 @@ export class BuiltInToolVerifier {
       return {
         valid: false,
         claim,
-        reason: 'Neither anchor found in file (file may have been edited again)',
+        reason:
+          "Neither anchor found in file (file may have been edited again)",
         details: {
-          beforeAnchor: claim.anchor.beforeSnippet.substring(0, 50) + '...',
-          afterAnchor: claim.anchor.afterSnippet.substring(0, 50) + '...',
+          beforeAnchor: claim.anchor.beforeSnippet.substring(0, 50) + "...",
+          afterAnchor: claim.anchor.afterSnippet.substring(0, 50) + "...",
         },
       };
     }
 
     if (!hasBeforeAnchor) {
-      this.ctx.platform.logger.debug('Before anchor not found, but after anchor present', {
-        filePath: claim.filePath,
-      });
+      this.ctx.platform.logger.debug(
+        "Before anchor not found, but after anchor present",
+        {
+          filePath: claim.filePath,
+        },
+      );
     }
 
     if (!hasAfterAnchor) {
-      this.ctx.platform.logger.debug('After anchor not found, but before anchor present', {
-        filePath: claim.filePath,
-      });
+      this.ctx.platform.logger.debug(
+        "After anchor not found, but before anchor present",
+        {
+          filePath: claim.filePath,
+        },
+      );
     }
 
     // If at least one anchor is found, consider it valid
@@ -209,7 +234,10 @@ export class BuiltInToolVerifier {
    *
    * Checks that file does NOT exist.
    */
-  private async verifyFileDelete(claim: FileDeleteClaim, basePath: string): Promise<ClaimVerificationResult> {
+  private async verifyFileDelete(
+    claim: FileDeleteClaim,
+    basePath: string,
+  ): Promise<ClaimVerificationResult> {
     const filePath = path.resolve(basePath, claim.filePath);
 
     // Check file does NOT exist
@@ -219,7 +247,7 @@ export class BuiltInToolVerifier {
       return {
         valid: false,
         claim,
-        reason: 'File still exists',
+        reason: "File still exists",
         details: { filePath },
       };
     } catch {
@@ -234,8 +262,8 @@ export class BuiltInToolVerifier {
    * Similar to file-edit verification.
    */
   private async verifyCodeInserted(
-    claim: Extract<Claim, { kind: 'code-inserted' }>,
-    basePath: string
+    claim: Extract<Claim, { kind: "code-inserted" }>,
+    basePath: string,
   ): Promise<ClaimVerificationResult> {
     const filePath = path.resolve(basePath, claim.filePath);
 
@@ -246,13 +274,13 @@ export class BuiltInToolVerifier {
       return {
         valid: false,
         claim,
-        reason: 'File does not exist',
+        reason: "File does not exist",
         details: { filePath },
       };
     }
 
     // Read file content
-    const content = await fs.readFile(filePath, 'utf-8');
+    const content = await fs.readFile(filePath, "utf-8");
 
     // Check if anchors are present
     const hasBeforeAnchor = content.includes(claim.anchor.beforeSnippet);
@@ -262,10 +290,10 @@ export class BuiltInToolVerifier {
       return {
         valid: false,
         claim,
-        reason: 'Neither anchor found in file',
+        reason: "Neither anchor found in file",
         details: {
-          beforeAnchor: claim.anchor.beforeSnippet.substring(0, 50) + '...',
-          afterAnchor: claim.anchor.afterSnippet.substring(0, 50) + '...',
+          beforeAnchor: claim.anchor.beforeSnippet.substring(0, 50) + "...",
+          afterAnchor: claim.anchor.afterSnippet.substring(0, 50) + "...",
         },
       };
     }
@@ -277,6 +305,6 @@ export class BuiltInToolVerifier {
    * Compute SHA-256 hash of content
    */
   private computeHash(content: string): string {
-    return createHash('sha256').update(content, 'utf-8').digest('hex');
+    return createHash("sha256").update(content, "utf-8").digest("hex");
   }
 }

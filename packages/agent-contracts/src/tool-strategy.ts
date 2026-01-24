@@ -27,15 +27,15 @@
  * - `gated`: Groups are locked until `unlockAfter` group is used
  * - `unrestricted`: All tools available equally (flat list)
  */
-export type ToolStrategyMode = 'prioritized' | 'gated' | 'unrestricted';
+export type ToolStrategyMode = "prioritized" | "gated" | "unrestricted";
 
 /**
  * Built-in tool categories
  */
 export type BuiltInToolCategory =
-  | 'fs'      // Filesystem: read, write, edit, list, search, glob, exists
-  | 'shell'   // Shell: exec
-  | 'code';   // Code analysis: find-definition, find-usages, ast-query
+  | "fs" // Filesystem: read, write, edit, list, search, glob, exists
+  | "shell" // Shell: exec
+  | "code"; // Code analysis: find-definition, find-usages, ast-query
 
 /**
  * Hint for LLM on when/how to use tools in this group

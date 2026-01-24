@@ -3,12 +3,17 @@
  * Tool for updating subtask status during execution.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Subtask status values.
  */
-export type SubtaskStatus = 'pending' | 'in-progress' | 'completed' | 'failed' | 'blocked';
+export type SubtaskStatus =
+  | "pending"
+  | "in-progress"
+  | "completed"
+  | "failed"
+  | "blocked";
 
 /**
  * Status update.
@@ -35,7 +40,7 @@ export interface StatusUpdate {
  */
 export function createUpdateSubtaskStatusTool(): LLMTool {
   return {
-    name: 'update_subtask_status',
+    name: "update_subtask_status",
     description: `Update the status of a subtask during execution.
 
 **Status values:**
@@ -51,35 +56,36 @@ export function createUpdateSubtaskStatusTool(): LLMTool {
 - Indicate blockers or dependencies`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'status', 'progressPercent', 'message'],
+      type: "object",
+      required: ["subtaskId", "status", "progressPercent", "message"],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'ID of subtask being updated',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "ID of subtask being updated",
+          pattern: "^subtask-\\d+$",
         },
         status: {
-          type: 'string',
-          description: 'New status value',
-          enum: ['pending', 'in-progress', 'completed', 'failed', 'blocked'],
+          type: "string",
+          description: "New status value",
+          enum: ["pending", "in-progress", "completed", "failed", "blocked"],
         },
         progressPercent: {
-          type: 'number',
-          description: 'Progress percentage (0-100)',
+          type: "number",
+          description: "Progress percentage (0-100)",
           minimum: 0,
           maximum: 100,
         },
         message: {
-          type: 'string',
-          description: 'Status message explaining current state',
+          type: "string",
+          description: "Status message explaining current state",
           minLength: 10,
           maxLength: 300,
         },
         estimatedCompletion: {
-          type: 'string',
-          description: 'Estimated time to completion (ISO 8601 duration, e.g., "PT5M" for 5 minutes)',
-          pattern: '^PT\\d+[HMS]$',
+          type: "string",
+          description:
+            'Estimated time to completion (ISO 8601 duration, e.g., "PT5M" for 5 minutes)',
+          pattern: "^PT\\d+[HMS]$",
         },
       },
     },

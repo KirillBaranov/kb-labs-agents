@@ -15,4 +15,3 @@ export interface WorkflowContract {
 }
 
 export type WorkflowContractsMap = Record<string, WorkflowContract>;
-

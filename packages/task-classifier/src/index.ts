@@ -25,13 +25,13 @@
  * ```
  */
 
-export { HeuristicComplexityClassifier } from './heuristic-classifier.js';
-export { LLMComplexityClassifier } from './llm-classifier.js';
-export { HybridComplexityClassifier } from './hybrid-classifier.js';
+export { HeuristicComplexityClassifier } from "./heuristic-classifier.js";
+export { LLMComplexityClassifier } from "./llm-classifier.js";
+export { HybridComplexityClassifier } from "./hybrid-classifier.js";
 
 export type {
   ClassifyInput,
   ClassificationResult,
   ITaskClassifier,
   HeuristicRule,
-} from './types.js';
+} from "./types.js";

@@ -4,14 +4,20 @@
  * Zod schemas for REST API request/response validation
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 /**
  * Request to run an agent
  */
 export const RunAgentRequestSchema = z.object({
   /** Agent ID to execute */
-  agentId: z.string().min(1).regex(/^[a-z0-9-]+$/, 'Agent ID must be lowercase alphanumeric with hyphens'),
+  agentId: z
+    .string()
+    .min(1)
+    .regex(
+      /^[a-z0-9-]+$/,
+      "Agent ID must be lowercase alphanumeric with hyphens",
+    ),
   /** Task description for the agent */
   task: z.string().min(1),
   /** Optional progress streaming (future: SSE support) */

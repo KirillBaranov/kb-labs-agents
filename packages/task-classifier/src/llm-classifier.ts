@@ -6,7 +6,13 @@
  * More accurate than heuristic, but costs ~$0.002 per classification.
  */
 
-import type { ILLM, LLMTier, ClassifyInput, ClassificationResult, ITaskClassifier } from './types.js';
+import type {
+  ILLM,
+  ClassifyInput,
+  ClassificationResult,
+  ITaskClassifier,
+  LLMTier,
+} from "./types.js";
 
 /**
  * LLM classification prompt template.
@@ -71,7 +77,7 @@ export class LLMComplexityClassifier implements ITaskClassifier {
     const { taskDescription } = input;
 
     // Generate prompt
-    const prompt = CLASSIFICATION_PROMPT.replace('{TASK}', taskDescription);
+    const prompt = CLASSIFICATION_PROMPT.replace("{TASK}", taskDescription);
 
     try {
       // Call LLM
@@ -93,17 +99,17 @@ export class LLMComplexityClassifier implements ITaskClassifier {
 
       return {
         tier,
-        confidence: 'high', // LLM classifications are always high confidence
-        method: 'llm',
+        confidence: "high", // LLM classifications are always high confidence
+        method: "llm",
         reasoning,
       };
     } catch (error) {
       // Fallback to medium tier on error
       return {
-        tier: 'medium',
-        confidence: 'low',
-        method: 'llm',
-        reasoning: `Error during LLM classification: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        tier: "medium",
+        confidence: "low",
+        method: "llm",
+        reasoning: `Error during LLM classification: ${error instanceof Error ? error.message : "Unknown error"}`,
       };
     }
   }

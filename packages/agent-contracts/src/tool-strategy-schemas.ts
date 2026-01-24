@@ -2,12 +2,16 @@
  * Zod Schemas for Tool Strategy Configuration
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 /**
  * Tool strategy mode
  */
-export const ToolStrategyModeSchema = z.enum(['prioritized', 'gated', 'unrestricted']);
+export const ToolStrategyModeSchema = z.enum([
+  "prioritized",
+  "gated",
+  "unrestricted",
+]);
 
 /**
  * Tool group schema

@@ -13,7 +13,12 @@
  * 6. Returns { exitCode } instead of { ok, result }
  */
 
-import { defineCommand, TimingTracker, type PluginContextV3, type CommandResult } from '@kb-labs/sdk';
+import {
+  defineCommand,
+  TimingTracker,
+  type PluginContextV3,
+  type CommandResult,
+} from "@kb-labs/sdk";
 
 // V3: Define flags inline (no external deps)
 interface HelloFlags {
@@ -36,7 +41,7 @@ interface HelloResult {
  * Simple greeting creator (inline, no external deps)
  */
 function createGreeting(name?: string): HelloResult {
-  const target = name || 'World';
+  const target = name || "World";
   return {
     message: `Hello, ${target}!`,
     target,
@@ -47,44 +52,44 @@ function createGreeting(name?: string): HelloResult {
  * V3 Hello Command
  */
 export default defineCommand<unknown, HelloInput, HelloResult>({
-  id: 'plugin-template:hello',
-  description: 'Print a hello message from the plugin template',
+  id: "plugin-template:hello",
+  description: "Print a hello message from the plugin template",
 
   handler: {
     async execute(
       ctx: PluginContextV3<unknown>,
-      input: HelloInput
+      input: HelloInput,
     ): Promise<CommandResult<HelloResult>> {
       const tracker = new TimingTracker();
       const flags = input.flags;
 
       // Trace: command started
-      ctx.trace.addEvent('hello.start', { name: flags.name });
+      ctx.trace.addEvent("hello.start", { name: flags.name });
 
-      tracker.checkpoint('init');
+      tracker.checkpoint("init");
 
       // Core logic
       const greeting = createGreeting(flags.name);
 
-      tracker.checkpoint('greeting');
+      tracker.checkpoint("greeting");
 
       // Trace: command processing
-      ctx.trace.addEvent('hello.process', { message: greeting.message });
+      ctx.trace.addEvent("hello.process", { message: greeting.message });
 
-      tracker.checkpoint('processing');
+      tracker.checkpoint("processing");
 
       // Output
       if (flags.json) {
         ctx.ui.json(greeting);
       } else {
         ctx.ui.success(greeting.message, {
-          title: 'Hello Command',
+          title: "Hello Command",
           sections: [
             {
-              header: 'Details',
+              header: "Details",
               items: [
                 `Target: ${greeting.target}`,
-                `Mode: ${flags.json ? 'JSON' : 'Interactive'}`,
+                `Mode: ${flags.json ? "JSON" : "Interactive"}`,
               ],
             },
           ],
@@ -93,7 +98,7 @@ export default defineCommand<unknown, HelloInput, HelloResult>({
       }
 
       // Trace: command completed
-      ctx.trace.addEvent('hello.complete');
+      ctx.trace.addEvent("hello.complete");
 
       // Return structured result
       // Standard metadata (executedAt, duration, pluginId, etc.) will be injected automatically by runtime
@@ -101,7 +106,7 @@ export default defineCommand<unknown, HelloInput, HelloResult>({
         exitCode: 0,
         result: greeting,
         meta: {
-          version: 'v3',
+          version: "v3",
           timing: tracker.breakdown(),
         },
       };

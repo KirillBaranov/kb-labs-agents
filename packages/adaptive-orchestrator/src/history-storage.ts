@@ -5,9 +5,9 @@
  * Stores execution history in .kb/agents/history/{session_id}/
  */
 
-import { mkdir, writeFile, readFile, readdir, unlink, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import type { IHistoryStorage, OrchestrationHistory } from './history-types.js';
+import { mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import type { IHistoryStorage, OrchestrationHistory } from "./history-types.js";
 
 /**
  * File-based history storage.
@@ -27,8 +27,8 @@ import type { IHistoryStorage, OrchestrationHistory } from './history-types.js';
 export class FileHistoryStorage implements IHistoryStorage {
   private historyDir: string;
 
-  constructor(cwd: string, baseDir: string = '.kb/agents') {
-    this.historyDir = resolve(cwd, baseDir, 'history');
+  constructor(cwd: string, baseDir: string = ".kb/agents") {
+    this.historyDir = resolve(cwd, baseDir, "history");
   }
 
   /**
@@ -42,23 +42,23 @@ export class FileHistoryStorage implements IHistoryStorage {
 
     // Save full session
     await writeFile(
-      join(sessionDir, 'session.json'),
+      join(sessionDir, "session.json"),
       JSON.stringify(history, null, 2),
-      'utf-8'
+      "utf-8",
     );
 
     // Save plan separately for quick inspection
     await writeFile(
-      join(sessionDir, 'plan.json'),
+      join(sessionDir, "plan.json"),
       JSON.stringify(history.plan, null, 2),
-      'utf-8'
+      "utf-8",
     );
 
     // Save result separately
     await writeFile(
-      join(sessionDir, 'result.json'),
+      join(sessionDir, "result.json"),
       JSON.stringify(history.result, null, 2),
-      'utf-8'
+      "utf-8",
     );
 
     // Update index
@@ -69,12 +69,12 @@ export class FileHistoryStorage implements IHistoryStorage {
    * Load orchestration history.
    */
   async load(sessionId: string): Promise<OrchestrationHistory | null> {
-    const sessionPath = join(this.historyDir, sessionId, 'session.json');
+    const sessionPath = join(this.historyDir, sessionId, "session.json");
 
     try {
-      const content = await readFile(sessionPath, 'utf-8');
+      const content = await readFile(sessionPath, "utf-8");
       return JSON.parse(content) as OrchestrationHistory;
-    } catch (error) {
+    } catch {
       // Session not found
       return null;
     }
@@ -91,7 +91,7 @@ export class FileHistoryStorage implements IHistoryStorage {
         .map((entry) => entry.name)
         .sort()
         .reverse(); // Most recent first
-    } catch (error) {
+    } catch {
       // History directory doesn't exist yet
       return [];
     }
@@ -105,7 +105,7 @@ export class FileHistoryStorage implements IHistoryStorage {
 
     try {
       await rm(sessionDir, { recursive: true, force: true });
-    } catch (error) {
+    } catch {
       // Ignore errors - directory might not exist
     }
 
@@ -117,14 +117,14 @@ export class FileHistoryStorage implements IHistoryStorage {
    * Update index.json with session metadata.
    */
   private async updateIndex(history: OrchestrationHistory): Promise<void> {
-    const indexPath = join(this.historyDir, 'index.json');
+    const indexPath = join(this.historyDir, "index.json");
 
     let index: SessionMetadata[] = [];
 
     try {
-      const content = await readFile(indexPath, 'utf-8');
+      const content = await readFile(indexPath, "utf-8");
       index = JSON.parse(content);
-    } catch (error) {
+    } catch {
       // Index doesn't exist yet
     }
 
@@ -149,23 +149,23 @@ export class FileHistoryStorage implements IHistoryStorage {
 
     // Write updated index
     await mkdir(this.historyDir, { recursive: true });
-    await writeFile(indexPath, JSON.stringify(index, null, 2), 'utf-8');
+    await writeFile(indexPath, JSON.stringify(index, null, 2), "utf-8");
   }
 
   /**
    * Remove session from index.
    */
   private async removeFromIndex(sessionId: string): Promise<void> {
-    const indexPath = join(this.historyDir, 'index.json');
+    const indexPath = join(this.historyDir, "index.json");
 
     try {
-      const content = await readFile(indexPath, 'utf-8');
+      const content = await readFile(indexPath, "utf-8");
       let index: SessionMetadata[] = JSON.parse(content);
 
       index = index.filter((entry) => entry.sessionId !== sessionId);
 
-      await writeFile(indexPath, JSON.stringify(index, null, 2), 'utf-8');
-    } catch (error) {
+      await writeFile(indexPath, JSON.stringify(index, null, 2), "utf-8");
+    } catch {
       // Index doesn't exist or read failed - ignore
     }
   }
@@ -174,12 +174,12 @@ export class FileHistoryStorage implements IHistoryStorage {
    * Get index (list of all sessions with metadata).
    */
   async getIndex(): Promise<SessionMetadata[]> {
-    const indexPath = join(this.historyDir, 'index.json');
+    const indexPath = join(this.historyDir, "index.json");
 
     try {
-      const content = await readFile(indexPath, 'utf-8');
+      const content = await readFile(indexPath, "utf-8");
       return JSON.parse(content);
-    } catch (error) {
+    } catch {
       return [];
     }
   }

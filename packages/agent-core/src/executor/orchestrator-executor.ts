@@ -13,21 +13,20 @@
  * - Injects fix/review subtasks when needed
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import { useLLM, useAnalytics, useCache, findRepoRoot } from '@kb-labs/sdk';
+import type { PluginContextV3 } from "@kb-labs/sdk";
+import { useLLM, useAnalytics, useCache, findRepoRoot } from "@kb-labs/sdk";
 import type {
-  AgentConfigV1,
   ExecutionContext,
   LLMTier,
   OrchestratorCallbacks,
-} from '@kb-labs/agent-contracts';
-import { AgentExecutor, type AgentContext } from './agent-executor.js';
-import { AgentRegistry } from '../registry/agent-registry.js';
-import { ToolDiscoverer } from '../tools/tool-discoverer.js';
-import { OrchestratorAnalytics } from '../analytics/orchestrator-analytics.js';
-import { FindingsStore } from './findings-store.js';
-import { TaskVerifier } from '../verification/task-verifier.js';
-import * as path from 'path';
+} from "@kb-labs/agent-contracts";
+import { AgentExecutor, type AgentContext } from "./agent-executor.js";
+import { AgentRegistry } from "../registry/agent-registry.js";
+import { ToolDiscoverer } from "../tools/tool-discoverer.js";
+import { OrchestratorAnalytics } from "../analytics/orchestrator-analytics.js";
+import { FindingsStore } from "./findings-store.js";
+import { TaskVerifier } from "../verification/task-verifier.js";
+import * as path from "path";
 import {
   createExecutionPlanTool,
   createReviseExecutionPlanTool,
@@ -45,14 +44,14 @@ import {
   createRequestContextTool,
   createSummarizeLearningsTool,
   type ExecutionPlan,
-} from '@kb-labs/agent-tools';
+} from "@kb-labs/agent-tools";
 import type {
   SubTask,
   DelegatedResult,
   OrchestratorResult,
   AgentFinding,
   AdaptationDecision,
-} from './types.js';
+} from "./types.js";
 
 // Types moved to ./types.ts (Phase 2)
 
@@ -131,16 +130,19 @@ export class OrchestratorExecutor {
    * @param callbacks - Optional progress tracking callbacks
    * @returns Orchestration result with synthesized answer
    */
-  async execute(task: string, callbacks?: OrchestratorCallbacks): Promise<OrchestratorResult> {
+  async execute(
+    task: string,
+    callbacks?: OrchestratorCallbacks,
+  ): Promise<OrchestratorResult> {
     const startTime = Date.now();
     let totalTokens = 0;
     let plan: SubTask[] = []; // Declare at function scope for error recovery
-    let delegatedResults: DelegatedResult[] = []; // Declare at function scope for error recovery
+    const delegatedResults: DelegatedResult[] = []; // Declare at function scope for error recovery
 
     // Phase 5: Store callbacks for use during execution
     this.callbacks = callbacks;
 
-    this.ctx.platform.logger.info('Orchestrator started', {
+    this.ctx.platform.logger.info("Orchestrator started", {
       task,
       sessionId: this.sessionId,
     });
@@ -148,7 +150,7 @@ export class OrchestratorExecutor {
 
     try {
       // Step 1: Plan execution (decompose task into subtasks)
-      this.ctx.platform.logger.info('Planning execution...');
+      this.ctx.platform.logger.info("Planning execution...");
       this.analytics.trackPlanningStarted(task);
       const planStartTime = Date.now();
 
@@ -156,8 +158,12 @@ export class OrchestratorExecutor {
       plan = planResult.plan;
       totalTokens += planResult.tokensUsed;
 
-      this.analytics.trackPlanningCompleted(plan, planResult.tokensUsed, Date.now() - planStartTime);
-      this.ctx.platform.logger.info('Execution plan created', {
+      this.analytics.trackPlanningCompleted(
+        plan,
+        planResult.tokensUsed,
+        Date.now() - planStartTime,
+      );
+      this.ctx.platform.logger.info("Execution plan created", {
         subtasks: plan.length,
         tokensUsed: planResult.tokensUsed,
       });
@@ -168,28 +174,31 @@ export class OrchestratorExecutor {
       });
 
       // Step 2: Execute subtasks in order (respecting dependencies)
-      this.ctx.platform.logger.info('Executing subtasks...');
+      this.ctx.platform.logger.info("Executing subtasks...");
       // delegatedResults already declared at function scope for error recovery
-      let taskSolved = false; // Track if task is already solved
+      const taskSolved = false; // Track if task is already solved
 
       for (const subtask of plan) {
         // Check dependencies
         if (subtask.dependencies && subtask.dependencies.length > 0) {
           const dependenciesMet = subtask.dependencies.every((depId) =>
-            delegatedResults.some((r) => r.subtaskId === depId && r.success)
+            delegatedResults.some((r) => r.subtaskId === depId && r.success),
           );
 
           if (!dependenciesMet) {
-            this.ctx.platform.logger.warn('Subtask dependencies not met, skipping', {
-              subtaskId: subtask.id,
-              dependencies: subtask.dependencies,
-            });
+            this.ctx.platform.logger.warn(
+              "Subtask dependencies not met, skipping",
+              {
+                subtaskId: subtask.id,
+                dependencies: subtask.dependencies,
+              },
+            );
             continue;
           }
         }
 
         // Phase 2: Update status to in-progress
-        this.ctx.platform.logger.info('📋 Subtask starting', {
+        this.ctx.platform.logger.info("📋 Subtask starting", {
           subtaskId: subtask.id,
           agent: subtask.agentId,
           progress: `${delegatedResults.length}/${plan.length}`,
@@ -208,13 +217,18 @@ export class OrchestratorExecutor {
         totalTokens += result.tokensUsed;
 
         // Phase 2: Update status after completion
-        const progressPercent = Math.round((delegatedResults.length / plan.length) * 100);
-        this.ctx.platform.logger.info(result.success ? '✅ Subtask completed' : '❌ Subtask failed', {
-          subtaskId: subtask.id,
-          agent: subtask.agentId,
-          progress: `${delegatedResults.length}/${plan.length} (${progressPercent}%)`,
-          tokensUsed: result.tokensUsed,
-        });
+        const progressPercent = Math.round(
+          (delegatedResults.length / plan.length) * 100,
+        );
+        this.ctx.platform.logger.info(
+          result.success ? "✅ Subtask completed" : "❌ Subtask failed",
+          {
+            subtaskId: subtask.id,
+            agent: subtask.agentId,
+            progress: `${delegatedResults.length}/${plan.length} (${progressPercent}%)`,
+            tokensUsed: result.tokensUsed,
+          },
+        );
 
         // Track agent result
         if (result.success) {
@@ -232,31 +246,45 @@ export class OrchestratorExecutor {
 
           // Phase 2: Check for findings and potentially adapt plan
           if (result.findingsSummary && result.findingsSummary.actionable > 0) {
-            this.ctx.platform.logger.info('Agent reported actionable findings', {
-              subtaskId: subtask.id,
-              agentId: subtask.agentId,
-              total: result.findingsSummary.total,
-              actionable: result.findingsSummary.actionable,
-              critical: result.findingsSummary.bySeverity.critical,
-              high: result.findingsSummary.bySeverity.high,
-            });
+            this.ctx.platform.logger.info(
+              "Agent reported actionable findings",
+              {
+                subtaskId: subtask.id,
+                agentId: subtask.agentId,
+                total: result.findingsSummary.total,
+                actionable: result.findingsSummary.actionable,
+                critical: result.findingsSummary.bySeverity.critical,
+                high: result.findingsSummary.bySeverity.high,
+              },
+            );
 
             // Analyze and potentially adapt plan
-            const adaptation = await this.analyzeAndAdapt(task, plan, delegatedResults, result);
+            const adaptation = await this.analyzeAndAdapt(
+              task,
+              plan,
+              delegatedResults,
+              result,
+            );
 
             if (adaptation.shouldAdapt && adaptation.confidence >= 0.7) {
               // Inject new subtasks after current position
-              const insertIndex = plan.findIndex((s) => s.id === subtask.id) + 1;
+              const insertIndex =
+                plan.findIndex((s) => s.id === subtask.id) + 1;
               plan.splice(insertIndex, 0, ...adaptation.newSubtasks);
 
-              this.ctx.platform.logger.info('✨ Plan adapted based on findings', {
-                reason: adaptation.reason,
-                confidence: adaptation.confidence,
-                addedSubtasks: adaptation.newSubtasks.map((s: SubTask) => s.id),
-                newTotalSubtasks: plan.length,
-              });
+              this.ctx.platform.logger.info(
+                "✨ Plan adapted based on findings",
+                {
+                  reason: adaptation.reason,
+                  confidence: adaptation.confidence,
+                  addedSubtasks: adaptation.newSubtasks.map(
+                    (s: SubTask) => s.id,
+                  ),
+                  newTotalSubtasks: plan.length,
+                },
+              );
 
-              this.ctx.platform.analytics.track('orchestrator.plan.adapted', {
+              this.ctx.platform.analytics.track("orchestrator.plan.adapted", {
                 trigger: subtask.agentId,
                 reason: adaptation.reason,
                 confidence: adaptation.confidence,
@@ -270,13 +298,16 @@ export class OrchestratorExecutor {
                 {
                   current: delegatedResults.length,
                   total: plan.length - adaptation.newSubtasks.length, // Original total before adaptation
-                }
+                },
               );
             } else if (adaptation.shouldAdapt && adaptation.confidence < 0.7) {
-              this.ctx.platform.logger.info('⚠️  Adaptation suggested but low confidence, skipping', {
-                confidence: adaptation.confidence,
-                reason: adaptation.reason,
-              });
+              this.ctx.platform.logger.info(
+                "⚠️  Adaptation suggested but low confidence, skipping",
+                {
+                  confidence: adaptation.confidence,
+                  reason: adaptation.reason,
+                },
+              );
             }
           }
         } else {
@@ -291,28 +322,34 @@ export class OrchestratorExecutor {
 
         // Verify tool trace if available (anti-hallucination check)
         if (result.success && result.traceRef) {
-          const verificationResult = await this.verifyToolTrace(result.traceRef, subtask.description);
+          const verificationResult = await this.verifyToolTrace(
+            result.traceRef,
+            subtask.description,
+          );
           if (!verificationResult.verified) {
-            this.ctx.platform.logger.warn('Tool trace verification failed', {
+            this.ctx.platform.logger.warn("Tool trace verification failed", {
               subtaskId: subtask.id,
               traceRef: result.traceRef,
               reason: verificationResult.reason,
             });
             // Track verification failure
-            this.ctx.platform.analytics.track('orchestrator.verification.failed', {
-              subtaskId: subtask.id,
-              agentId: subtask.agentId,
-              reason: verificationResult.reason,
-            });
+            this.ctx.platform.analytics.track(
+              "orchestrator.verification.failed",
+              {
+                subtaskId: subtask.id,
+                agentId: subtask.agentId,
+                reason: verificationResult.reason,
+              },
+            );
           } else {
-            this.ctx.platform.logger.debug('Tool trace verified', {
+            this.ctx.platform.logger.debug("Tool trace verified", {
               subtaskId: subtask.id,
               traceRef: result.traceRef,
             });
           }
         }
 
-        this.ctx.platform.logger.info('Subtask completed', {
+        this.ctx.platform.logger.info("Subtask completed", {
           subtaskId: subtask.id,
           agentId: subtask.agentId,
           success: result.success,
@@ -321,9 +358,12 @@ export class OrchestratorExecutor {
 
         // Stop if critical subtask failed
         if (!result.success && subtask.priority && subtask.priority >= 8) {
-          this.ctx.platform.logger.error('Critical subtask failed, aborting', new Error(
-            `Subtask ${subtask.id} failed: ${result.error || 'unknown error'}`
-          ));
+          this.ctx.platform.logger.error(
+            "Critical subtask failed, aborting",
+            new Error(
+              `Subtask ${subtask.id} failed: ${result.error || "unknown error"}`,
+            ),
+          );
           break;
         }
 
@@ -333,23 +373,30 @@ export class OrchestratorExecutor {
         const shouldCheckOptimization = remainingCount >= 2; // Only if ≥2 tasks remain
 
         if (result.success && shouldCheckOptimization) {
-          this.ctx.platform.logger.debug('Checking if task can be optimized', {
+          this.ctx.platform.logger.debug("Checking if task can be optimized", {
             completed: delegatedResults.length,
             remaining: remainingCount,
           });
 
           // Check if task is already solved (early stopping)
-          const earlyStopCheck = await this.checkTaskCompletion(task, plan, delegatedResults);
+          const earlyStopCheck = await this.checkTaskCompletion(
+            task,
+            plan,
+            delegatedResults,
+          );
 
           if (earlyStopCheck.isSolved) {
-            taskSolved = true;
-            this.ctx.platform.logger.info('✅ Task already solved, early stopping', {
-              completedSubtasks: delegatedResults.length,
-              skippedSubtasks: remainingCount,
-              totalSubtasks: plan.length,
-              confidence: earlyStopCheck.confidence,
-              reason: earlyStopCheck.reason,
-            });
+            const _taskSolved = true;
+            this.ctx.platform.logger.info(
+              "✅ Task already solved, early stopping",
+              {
+                completedSubtasks: delegatedResults.length,
+                skippedSubtasks: remainingCount,
+                totalSubtasks: plan.length,
+                confidence: earlyStopCheck.confidence,
+                reason: earlyStopCheck.reason,
+              },
+            );
             break; // Early exit - task is solved!
           }
 
@@ -359,18 +406,18 @@ export class OrchestratorExecutor {
             task,
             plan,
             delegatedResults,
-            remainingSubtasks
+            remainingSubtasks,
           );
 
           if (cancellationCheck.shouldCancel) {
-            this.ctx.platform.logger.info('🚫 Cancelling remaining agents', {
+            this.ctx.platform.logger.info("🚫 Cancelling remaining agents", {
               completedSubtasks: delegatedResults.length,
               cancelledSubtasks: remainingSubtasks.length,
               confidence: cancellationCheck.confidence,
               reason: cancellationCheck.reason,
             });
             // Track cancellation in analytics
-            this.ctx.platform.analytics.track('orchestrator.agents.cancelled', {
+            this.ctx.platform.analytics.track("orchestrator.agents.cancelled", {
               completedCount: delegatedResults.length,
               cancelledCount: remainingSubtasks.length,
               confidence: cancellationCheck.confidence,
@@ -382,18 +429,19 @@ export class OrchestratorExecutor {
       }
 
       // Step 3: Synthesize results into final answer
-      this.ctx.platform.logger.info('Synthesizing results...');
+      this.ctx.platform.logger.info("Synthesizing results...");
       this.analytics.trackSynthesisStarted(delegatedResults.length);
       const synthesisStartTime = Date.now();
 
-      const { answer, tokensUsed: synthesisTokens } = await this.synthesizeResults(
-        task,
-        plan,
-        delegatedResults
-      );
+      const { answer, tokensUsed: synthesisTokens } =
+        await this.synthesizeResults(task, plan, delegatedResults);
       totalTokens += synthesisTokens;
 
-      this.analytics.trackSynthesisCompleted(answer.length, synthesisTokens, Date.now() - synthesisStartTime);
+      this.analytics.trackSynthesisCompleted(
+        answer.length,
+        synthesisTokens,
+        Date.now() - synthesisStartTime,
+      );
 
       const durationMs = Date.now() - startTime;
 
@@ -407,7 +455,7 @@ export class OrchestratorExecutor {
       };
 
       this.analytics.trackTaskCompleted(task, result);
-      this.ctx.platform.logger.info('Orchestrator completed', {
+      this.ctx.platform.logger.info("Orchestrator completed", {
         success: true,
         subtasks: plan.length,
         tokensUsed: totalTokens,
@@ -416,7 +464,9 @@ export class OrchestratorExecutor {
       });
 
       // Phase 5: Notify completion
-      const successfulSubtasks = delegatedResults.filter((r) => r.success).length;
+      const successfulSubtasks = delegatedResults.filter(
+        (r) => r.success,
+      ).length;
       const failedSubtasks = delegatedResults.filter((r) => !r.success).length;
 
       this.callbacks?.onComplete?.(answer, {
@@ -434,47 +484,68 @@ export class OrchestratorExecutor {
       return result;
     } catch (error) {
       const durationMs = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
 
-      this.analytics.trackTaskFailed(task, errorMessage, durationMs, totalTokens);
-      this.ctx.platform.logger.error('Orchestrator failed', error instanceof Error ? error : new Error(errorMessage));
+      this.analytics.trackTaskFailed(
+        task,
+        errorMessage,
+        durationMs,
+        totalTokens,
+      );
+      this.ctx.platform.logger.error(
+        "Orchestrator failed",
+        error instanceof Error ? error : new Error(errorMessage),
+      );
 
       // ADR-0002: Try to recover partial results if agents completed successfully
       const hasPartialResults = delegatedResults.length > 0;
-      let fallbackAnswer = '';
+      let fallbackAnswer = "";
 
       if (hasPartialResults) {
-        this.ctx.platform.logger.warn('Synthesis failed, attempting fallback answer from partial results', {
-          completedSubtasks: delegatedResults.length,
-          totalSubtasks: plan.length,
-        });
+        this.ctx.platform.logger.warn(
+          "Synthesis failed, attempting fallback answer from partial results",
+          {
+            completedSubtasks: delegatedResults.length,
+            totalSubtasks: plan.length,
+          },
+        );
 
         try {
           // Simple fallback: concatenate agent outputs
-          const successfulResults = delegatedResults.filter(r => r.success);
+          const successfulResults = delegatedResults.filter((r) => r.success);
           if (successfulResults.length > 0) {
-            fallbackAnswer = '# Partial Results\n\n';
+            fallbackAnswer = "# Partial Results\n\n";
             fallbackAnswer += `**Note**: Full synthesis failed, but ${successfulResults.length} agent(s) completed successfully.\n\n`;
 
             for (const result of successfulResults) {
-              const subtask = plan.find(s => s.id === result.subtaskId);
+              const subtask = plan.find((s) => s.id === result.subtaskId);
               fallbackAnswer += `## ${subtask?.description || result.subtaskId}\n`;
               fallbackAnswer += `**Specialist**: ${result.agentId}\n\n`;
 
-              if (typeof result.output === 'string') {
-                fallbackAnswer += result.output + '\n\n';
+              if (typeof result.output === "string") {
+                fallbackAnswer += result.output + "\n\n";
               } else if (result.output) {
-                fallbackAnswer += '```json\n' + JSON.stringify(result.output, null, 2) + '\n```\n\n';
+                fallbackAnswer +=
+                  "```json\n" +
+                  JSON.stringify(result.output, null, 2) +
+                  "\n```\n\n";
               }
             }
 
-            this.ctx.platform.logger.info('Generated fallback answer from partial results', {
-              answerLength: fallbackAnswer.length,
-            });
+            this.ctx.platform.logger.info(
+              "Generated fallback answer from partial results",
+              {
+                answerLength: fallbackAnswer.length,
+              },
+            );
           }
         } catch (fallbackError) {
-          this.ctx.platform.logger.warn('Fallback synthesis also failed', {
-            error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+          this.ctx.platform.logger.warn("Fallback synthesis also failed", {
+            error:
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : String(fallbackError),
           });
         }
       }
@@ -504,13 +575,13 @@ export class OrchestratorExecutor {
       const cleaned = await this.findingsStore.cleanupSession(this.sessionId);
 
       if (cleaned > 0) {
-        this.ctx.platform.logger.debug('Findings cleanup completed', {
+        this.ctx.platform.logger.debug("Findings cleanup completed", {
           sessionId: this.sessionId,
           findingsCleaned: cleaned,
         });
       }
     } catch (error) {
-      this.ctx.platform.logger.warn('Failed to cleanup findings', {
+      this.ctx.platform.logger.warn("Failed to cleanup findings", {
         sessionId: this.sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -528,31 +599,31 @@ export class OrchestratorExecutor {
    * @returns Execution plan with subtasks
    */
   private async planExecution(
-    task: string
+    task: string,
   ): Promise<{ plan: SubTask[]; tokensUsed: number }> {
-    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier
+    const llm = useLLM({ tier: "large" }); // Orchestrator uses large tier
     if (!llm) {
-      throw new Error('LLM not available for orchestrator planning');
+      throw new Error("LLM not available for orchestrator planning");
     }
 
     // Load available agents
     const agents = await this.registry.list();
 
     // DEBUG: Log discovered agents
-    console.log('\n🔍 DEBUG: Discovered agents:');
+    console.log("\n🔍 DEBUG: Discovered agents:");
     console.log(`   Total: ${agents.length}`);
-    console.log(`   IDs: ${agents.map(s => s.id).join(', ') || '(none)'}`);
-    agents.forEach(s => {
-      console.log(`   - ${s.id}: valid=${s.valid}, error=${s.error || 'none'}`);
+    console.log(`   IDs: ${agents.map((s) => s.id).join(", ") || "(none)"}`);
+    agents.forEach((s) => {
+      console.log(`   - ${s.id}: valid=${s.valid}, error=${s.error || "none"}`);
     });
 
-    const agentIds = agents.map(s => s.id);
+    const agentIds = agents.map((s) => s.id);
     const agentDescriptions = agents
       .map(
         (s) =>
-          `- ${s.id}: ${s.description || 'No description'}\n  Capabilities: ${s.capabilities?.join(', ') || 'None'}`
+          `- ${s.id}: ${s.description || "No description"}\n  Capabilities: ${s.capabilities?.join(", ") || "None"}`,
       )
-      .join('\n');
+      .join("\n");
 
     // Get all orchestrator tools
     const tools = this.getOrchestratorTools(agentIds);
@@ -575,41 +646,51 @@ ${agentDescriptions}
 
     const userPrompt = `User task: ${task}\n\nAnalyze this task and create an execution plan by calling the create_execution_plan tool.`;
 
-    console.log('[DEBUG] About to call LLM with planning tool...');
-    console.log('[DEBUG] Tool name:', planningTool.name);
-    console.log('[DEBUG] Valid agent IDs:', agentIds);
+    console.log("[DEBUG] About to call LLM with planning tool...");
+    console.log("[DEBUG] Tool name:", planningTool.name);
+    console.log("[DEBUG] Valid agent IDs:", agentIds);
 
     const response = await llm.chatWithTools!(
       [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
       {
         tools: [planningTool],
-        toolChoice: { type: 'function', function: { name: 'create_execution_plan' } }, // FORCE tool call
-      }
+        toolChoice: {
+          type: "function",
+          function: { name: "create_execution_plan" },
+        }, // FORCE tool call
+      },
     );
 
-    console.log('[DEBUG] LLM response received');
-    console.log('[DEBUG] Tool calls:', response.toolCalls?.length || 0);
-    console.log('[DEBUG] Token usage:', response.usage);
+    console.log("[DEBUG] LLM response received");
+    console.log("[DEBUG] Tool calls:", response.toolCalls?.length || 0);
+    console.log("[DEBUG] Token usage:", response.usage);
 
-    const tokensUsed = (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0);
+    const tokensUsed =
+      (response.usage?.promptTokens || 0) +
+      (response.usage?.completionTokens || 0);
 
     // Extract plan from tool call
     if (!response.toolCalls || response.toolCalls.length === 0) {
-      throw new Error('LLM did not call create_execution_plan tool');
+      throw new Error("LLM did not call create_execution_plan tool");
     }
 
-    const toolCall = response.toolCalls.find(tc => tc.name === 'create_execution_plan');
+    const toolCall = response.toolCalls.find(
+      (tc) => tc.name === "create_execution_plan",
+    );
     if (!toolCall) {
-      throw new Error('create_execution_plan tool call not found');
+      throw new Error("create_execution_plan tool call not found");
     }
 
     const executionPlan = toolCall.input as ExecutionPlan;
     const plan = executionPlan.subtasks;
 
-    console.log('[DEBUG] Extracted plan from tool:', JSON.stringify(plan, null, 2));
+    console.log(
+      "[DEBUG] Extracted plan from tool:",
+      JSON.stringify(plan, null, 2),
+    );
 
     return { plan, tokensUsed };
   }
@@ -632,7 +713,7 @@ ${agentDescriptions}
           return parsed as SubTask[];
         }
       } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse JSON code block', {
+        this.ctx.platform.logger.warn("Failed to parse JSON code block", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -647,7 +728,7 @@ ${agentDescriptions}
           return parsed as SubTask[];
         }
       } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse JSON array', {
+        this.ctx.platform.logger.warn("Failed to parse JSON array", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -663,7 +744,7 @@ ${agentDescriptions}
       // Silent fail, will throw below
     }
 
-    throw new Error('Failed to extract execution plan from LLM response');
+    throw new Error("Failed to extract execution plan from LLM response");
   }
 
   /**
@@ -678,7 +759,10 @@ ${agentDescriptions}
    * @param projectRoot - Project root directory
    * @returns Output directory path or undefined (use projectRoot)
    */
-  private extractOutputDir(taskDescription: string, projectRoot: string): string | undefined {
+  private extractOutputDir(
+    taskDescription: string,
+    _projectRoot: string,
+  ): string | undefined {
     const patterns = [
       /output\s+(?:to|in|at)\s+([^\s]+)/i,
       /save\s+(?:to|in|at)\s+([^\s]+)/i,
@@ -710,7 +794,9 @@ ${agentDescriptions}
    * @param delegatedResults - Previous agent results
    * @returns Array of finding summaries
    */
-  private async extractFindings(delegatedResults: DelegatedResult[]): Promise<string[]> {
+  private async extractFindings(
+    delegatedResults: DelegatedResult[],
+  ): Promise<string[]> {
     const findings: string[] = [];
 
     for (const result of delegatedResults) {
@@ -726,7 +812,10 @@ ${agentDescriptions}
 
       // Filter to actionable/high-severity (max 5 per agent)
       const keyFindings = fullFindings
-        .filter((f) => f.severity === 'critical' || f.severity === 'high' || f.actionable)
+        .filter(
+          (f) =>
+            f.severity === "critical" || f.severity === "high" || f.actionable,
+        )
         .slice(0, 5);
 
       // Format as compact summaries
@@ -770,7 +859,9 @@ ${agentDescriptions}
    * Sleep for specified milliseconds (Phase 3: retry backoff)
    */
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
   }
 
   /**
@@ -790,12 +881,12 @@ ${agentDescriptions}
   private async executeWithRetry(
     subtask: SubTask,
     delegatedResults: DelegatedResult[],
-    maxRetries = 2
+    maxRetries = 2,
   ): Promise<DelegatedResult> {
     const startTime = Date.now();
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      this.ctx.platform.logger.info('Executing agent', {
+      this.ctx.platform.logger.info("Executing agent", {
         subtaskId: subtask.id,
         agent: subtask.agentId,
         attempt,
@@ -805,15 +896,22 @@ ${agentDescriptions}
       try {
         // Load agent config and tools
         const config = await this.registry.load(subtask.agentId);
-        const tools = await this.toolDiscoverer.discoverWithStrategy(config.tools);
+        const tools = await this.toolDiscoverer.discoverWithStrategy(
+          config.tools,
+        );
         const context: AgentContext = { config, tools };
 
         // V2: Build ExecutionContext for agent
         const workingDir = process.cwd();
         const projectRoot = await this.getProjectRoot();
-        const outputDir = this.extractOutputDir(subtask.description, projectRoot);
+        const outputDir = this.extractOutputDir(
+          subtask.description,
+          projectRoot,
+        );
         const findings = await this.extractFindings(
-          delegatedResults.filter((r) => subtask.dependencies?.includes(r.subtaskId))
+          delegatedResults.filter((r) =>
+            subtask.dependencies?.includes(r.subtaskId),
+          ),
         );
 
         // Build previousResults map (Phase 5: use DelegatedResult for ExecutionContext)
@@ -839,25 +937,41 @@ ${agentDescriptions}
         };
 
         // Execute agent
-        const outcome = await this.agentExecutor.execute(context, subtask.description, executionContext);
+        const outcome = await this.agentExecutor.execute(
+          context,
+          subtask.description,
+          executionContext,
+        );
 
         // Success!
         if (outcome.ok) {
-          this.ctx.platform.logger.info('Agent succeeded', {
+          this.ctx.platform.logger.info("Agent succeeded", {
             subtaskId: subtask.id,
             attempt,
-            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            tokensUsed:
+              outcome.meta.tokenUsage.prompt +
+              outcome.meta.tokenUsage.completion,
             durationMs: outcome.meta.durationMs,
           });
 
           // Process findings if present
-          let findingsSummary: DelegatedResult['findingsSummary'];
+          let findingsSummary: DelegatedResult["findingsSummary"];
           let findingsRef: string | undefined;
 
-          if (outcome.result.output && typeof outcome.result.output === 'object' && 'findings' in outcome.result.output) {
-            const findings = (outcome.result.output as { findings: AgentFinding[] }).findings;
+          if (
+            outcome.result.output &&
+            typeof outcome.result.output === "object" &&
+            "findings" in outcome.result.output
+          ) {
+            const findings = (
+              outcome.result.output as { findings: AgentFinding[] }
+            ).findings;
             if (findings && findings.length > 0) {
-              findingsRef = await this.findingsStore.save(this.sessionId, subtask.id, findings);
+              findingsRef = await this.findingsStore.save(
+                this.sessionId,
+                subtask.id,
+                findings,
+              );
               findingsSummary = this.findingsStore.createSummary(findings);
             }
           }
@@ -876,7 +990,7 @@ ${agentDescriptions}
         }
 
         // Failed - check if should retry
-        this.ctx.platform.logger.warn('Agent failed', {
+        this.ctx.platform.logger.warn("Agent failed", {
           subtaskId: subtask.id,
           attempt,
           kind: outcome.failure.kind,
@@ -887,7 +1001,7 @@ ${agentDescriptions}
 
         // If no retry suggested, return failure immediately
         if (outcome.failure.suggestedRetry === false) {
-          this.ctx.platform.logger.info('Retry not recommended, stopping', {
+          this.ctx.platform.logger.info("Retry not recommended, stopping", {
             subtaskId: subtask.id,
             kind: outcome.failure.kind,
           });
@@ -898,7 +1012,9 @@ ${agentDescriptions}
             success: false,
             output: outcome.partial?.output || null,
             error: outcome.failure.message,
-            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            tokensUsed:
+              outcome.meta.tokenUsage.prompt +
+              outcome.meta.tokenUsage.completion,
             durationMs: Date.now() - startTime,
             traceRef: outcome.partial?.traceRef,
           };
@@ -906,7 +1022,7 @@ ${agentDescriptions}
 
         // Last attempt - return failure
         if (attempt === maxRetries) {
-          this.ctx.platform.logger.warn('Max retries reached', {
+          this.ctx.platform.logger.warn("Max retries reached", {
             subtaskId: subtask.id,
             maxRetries,
           });
@@ -917,7 +1033,9 @@ ${agentDescriptions}
             success: false,
             output: outcome.partial?.output || null,
             error: outcome.failure.message,
-            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            tokensUsed:
+              outcome.meta.tokenUsage.prompt +
+              outcome.meta.tokenUsage.completion,
             durationMs: Date.now() - startTime,
             traceRef: outcome.partial?.traceRef,
           };
@@ -925,7 +1043,7 @@ ${agentDescriptions}
 
         // Exponential backoff before retry
         const backoffMs = 1000 * Math.pow(2, attempt - 1);
-        this.ctx.platform.logger.info('Retrying after backoff', {
+        this.ctx.platform.logger.info("Retrying after backoff", {
           subtaskId: subtask.id,
           backoffMs,
           nextAttempt: attempt + 1,
@@ -934,11 +1052,15 @@ ${agentDescriptions}
         await this.sleep(backoffMs);
       } catch (error) {
         // Unexpected error during execution
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
 
-        this.ctx.platform.logger.error('Unexpected error in agent execution', new Error(
-          `[${subtask.agentId}] ${errorMessage} (attempt ${attempt})`
-        ));
+        this.ctx.platform.logger.error(
+          "Unexpected error in agent execution",
+          new Error(
+            `[${subtask.agentId}] ${errorMessage} (attempt ${attempt})`,
+          ),
+        );
 
         // If last attempt, return error
         if (attempt === maxRetries) {
@@ -959,7 +1081,7 @@ ${agentDescriptions}
     }
 
     // Should never reach here, but TypeScript needs it
-    throw new Error('executeWithRetry: unreachable code');
+    throw new Error("executeWithRetry: unreachable code");
   }
 
   /**
@@ -979,13 +1101,13 @@ ${agentDescriptions}
   private async executeWithEscalation(
     subtask: SubTask,
     delegatedResults: DelegatedResult[],
-    maxRetries = 2
+    maxRetries = 2,
   ): Promise<DelegatedResult> {
     // Load agent config to get escalation ladder
     const config = await this.registry.load(subtask.agentId);
     const ladder: LLMTier[] = config.llm.escalationLadder || [config.llm.tier];
 
-    this.ctx.platform.logger.info('Starting execution with escalation', {
+    this.ctx.platform.logger.info("Starting execution with escalation", {
       subtaskId: subtask.id,
       agentId: subtask.agentId,
       escalationLadder: ladder,
@@ -995,7 +1117,7 @@ ${agentDescriptions}
     for (let tierIndex = 0; tierIndex < ladder.length; tierIndex++) {
       const tier = ladder[tierIndex]!; // Safe: index is within bounds
 
-      this.ctx.platform.logger.info('Trying tier', {
+      this.ctx.platform.logger.info("Trying tier", {
         subtaskId: subtask.id,
         tier,
         tierIndex: tierIndex + 1,
@@ -1007,12 +1129,12 @@ ${agentDescriptions}
         subtask,
         delegatedResults,
         tier,
-        maxRetries
+        maxRetries,
       );
 
       // Success!
       if (result.success) {
-        this.ctx.platform.logger.info('Agent succeeded with tier', {
+        this.ctx.platform.logger.info("Agent succeeded with tier", {
           subtaskId: subtask.id,
           tier,
           tierIndex: tierIndex + 1,
@@ -1023,31 +1145,34 @@ ${agentDescriptions}
       // Failed - check if should escalate to next tier
       if (tierIndex < ladder.length - 1) {
         const nextTier = ladder[tierIndex + 1]!; // Safe: checked bounds above
-        this.ctx.platform.logger.warn('Escalating to next tier', {
+        this.ctx.platform.logger.warn("Escalating to next tier", {
           subtaskId: subtask.id,
           fromTier: tier,
           toTier: nextTier,
           error: result.error,
         });
 
-        this.ctx.platform.analytics.track('orchestrator.escalation', {
+        this.ctx.platform.analytics.track("orchestrator.escalation", {
           subtaskId: subtask.id,
           agentId: subtask.agentId,
           fromTier: tier,
           toTier: nextTier,
-          reason: result.error || 'unknown',
+          reason: result.error || "unknown",
         });
       } else {
         // No more tiers to try
-        this.ctx.platform.logger.error('All tiers exhausted', new Error(
-          `Subtask ${subtask.id} failed even after escalating through all tiers: ${ladder.join(' → ')}`
-        ));
+        this.ctx.platform.logger.error(
+          "All tiers exhausted",
+          new Error(
+            `Subtask ${subtask.id} failed even after escalating through all tiers: ${ladder.join(" → ")}`,
+          ),
+        );
         return result;
       }
     }
 
     // Should never reach here
-    throw new Error('executeWithEscalation: unreachable code');
+    throw new Error("executeWithEscalation: unreachable code");
   }
 
   /**
@@ -1065,12 +1190,12 @@ ${agentDescriptions}
     subtask: SubTask,
     delegatedResults: DelegatedResult[],
     tier: LLMTier,
-    maxRetries: number
+    maxRetries: number,
   ): Promise<DelegatedResult> {
     const startTime = Date.now();
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      this.ctx.platform.logger.info('Executing agent with tier', {
+      this.ctx.platform.logger.info("Executing agent with tier", {
         subtaskId: subtask.id,
         agent: subtask.agentId,
         tier,
@@ -1081,15 +1206,22 @@ ${agentDescriptions}
       try {
         // Load agent config and tools
         const config = await this.registry.load(subtask.agentId);
-        const tools = await this.toolDiscoverer.discoverWithStrategy(config.tools);
+        const tools = await this.toolDiscoverer.discoverWithStrategy(
+          config.tools,
+        );
         const context: AgentContext = { config, tools };
 
         // V2: Build ExecutionContext for agent
         const workingDir = process.cwd();
         const projectRoot = await this.getProjectRoot();
-        const outputDir = this.extractOutputDir(subtask.description, projectRoot);
+        const outputDir = this.extractOutputDir(
+          subtask.description,
+          projectRoot,
+        );
         const findings = await this.extractFindings(
-          delegatedResults.filter((r) => subtask.dependencies?.includes(r.subtaskId))
+          delegatedResults.filter((r) =>
+            subtask.dependencies?.includes(r.subtaskId),
+          ),
         );
 
         // Build previousResults map (Phase 5: use DelegatedResult for ExecutionContext)
@@ -1120,17 +1252,17 @@ ${agentDescriptions}
           subtask.description,
           executionContext,
           undefined, // no progress callback
-          tier // tier override
+          tier, // tier override
         );
 
         // Phase 4: Track cost
         const cost = this.analytics.trackSpecialistCost(
           tier,
           outcome.meta.tokenUsage.prompt,
-          outcome.meta.tokenUsage.completion
+          outcome.meta.tokenUsage.completion,
         );
 
-        this.ctx.platform.logger.debug('Agent execution cost', {
+        this.ctx.platform.logger.debug("Agent execution cost", {
           subtaskId: subtask.id,
           tier,
           promptTokens: outcome.meta.tokenUsage.prompt,
@@ -1141,29 +1273,41 @@ ${agentDescriptions}
 
         // Success!
         if (outcome.ok) {
-          this.ctx.platform.logger.info('Agent succeeded', {
+          this.ctx.platform.logger.info("Agent succeeded", {
             subtaskId: subtask.id,
             tier,
             attempt,
-            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            tokensUsed:
+              outcome.meta.tokenUsage.prompt +
+              outcome.meta.tokenUsage.completion,
             durationMs: outcome.meta.durationMs,
             costUsd: cost.toFixed(6),
           });
 
           // Process findings if present
-          let findingsSummary: DelegatedResult['findingsSummary'];
+          let findingsSummary: DelegatedResult["findingsSummary"];
           let findingsRef: string | undefined;
 
-          if (outcome.result.output && typeof outcome.result.output === 'object' && 'findings' in outcome.result.output) {
-            const findings = (outcome.result.output as { findings: AgentFinding[] }).findings;
+          if (
+            outcome.result.output &&
+            typeof outcome.result.output === "object" &&
+            "findings" in outcome.result.output
+          ) {
+            const findings = (
+              outcome.result.output as { findings: AgentFinding[] }
+            ).findings;
             if (findings && findings.length > 0) {
-              findingsRef = await this.findingsStore.save(this.sessionId, subtask.id, findings);
+              findingsRef = await this.findingsStore.save(
+                this.sessionId,
+                subtask.id,
+                findings,
+              );
               findingsSummary = this.findingsStore.createSummary(findings);
             }
           }
 
           // ADR-0002: Verify agent output (3-level validation)
-          this.ctx.platform.logger.debug('Starting output verification', {
+          this.ctx.platform.logger.debug("Starting output verification", {
             subtaskId: subtask.id,
             hasOutput: !!outcome.result.output,
             hasTraceRef: !!outcome.result.traceRef,
@@ -1174,12 +1318,12 @@ ${agentDescriptions}
             outcome.result.toolTrace, // For Level 2 validation
             workingDir,
             subtask.agentId, // For metrics
-            subtask.id // For metrics
+            subtask.id, // For metrics
           );
 
           if (!verification.valid) {
             // Verification failed - log and return failure (triggers retry)
-            this.ctx.platform.logger.warn('Output verification failed', {
+            this.ctx.platform.logger.warn("Output verification failed", {
               subtaskId: subtask.id,
               tier,
               attempt,
@@ -1194,8 +1338,10 @@ ${agentDescriptions}
                 agentId: subtask.agentId,
                 success: false,
                 output: outcome.result.output,
-                error: `Verification failed: ${verification.errors?.join(', ')}`,
-                tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+                error: `Verification failed: ${verification.errors?.join(", ")}`,
+                tokensUsed:
+                  outcome.meta.tokenUsage.prompt +
+                  outcome.meta.tokenUsage.completion,
                 durationMs: Date.now() - startTime,
                 traceRef: outcome.result.traceRef,
               };
@@ -1203,19 +1349,22 @@ ${agentDescriptions}
 
             // Retry with exponential backoff
             const backoffMs = 1000 * Math.pow(2, attempt - 1);
-            this.ctx.platform.logger.info('Retrying after verification failure', {
-              subtaskId: subtask.id,
-              tier,
-              backoffMs,
-              nextAttempt: attempt + 1,
-            });
+            this.ctx.platform.logger.info(
+              "Retrying after verification failure",
+              {
+                subtaskId: subtask.id,
+                tier,
+                backoffMs,
+                nextAttempt: attempt + 1,
+              },
+            );
 
             await this.sleep(backoffMs);
             continue; // Retry the loop
           }
 
           // Verification passed!
-          this.ctx.platform.logger.debug('Output verification passed', {
+          this.ctx.platform.logger.debug("Output verification passed", {
             subtaskId: subtask.id,
             level: verification.level,
           });
@@ -1234,7 +1383,7 @@ ${agentDescriptions}
         }
 
         // Failed - check if should retry
-        this.ctx.platform.logger.warn('Agent failed', {
+        this.ctx.platform.logger.warn("Agent failed", {
           subtaskId: subtask.id,
           tier,
           attempt,
@@ -1246,7 +1395,7 @@ ${agentDescriptions}
 
         // If no retry suggested, return failure immediately
         if (outcome.failure.suggestedRetry === false) {
-          this.ctx.platform.logger.info('Retry not recommended, stopping', {
+          this.ctx.platform.logger.info("Retry not recommended, stopping", {
             subtaskId: subtask.id,
             kind: outcome.failure.kind,
           });
@@ -1257,7 +1406,9 @@ ${agentDescriptions}
             success: false,
             output: outcome.partial?.output || null,
             error: outcome.failure.message,
-            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            tokensUsed:
+              outcome.meta.tokenUsage.prompt +
+              outcome.meta.tokenUsage.completion,
             durationMs: Date.now() - startTime,
             traceRef: outcome.partial?.traceRef,
           };
@@ -1265,7 +1416,7 @@ ${agentDescriptions}
 
         // Last attempt - return failure
         if (attempt === maxRetries) {
-          this.ctx.platform.logger.warn('Max retries reached for tier', {
+          this.ctx.platform.logger.warn("Max retries reached for tier", {
             subtaskId: subtask.id,
             tier,
             maxRetries,
@@ -1277,7 +1428,9 @@ ${agentDescriptions}
             success: false,
             output: outcome.partial?.output || null,
             error: outcome.failure.message,
-            tokensUsed: outcome.meta.tokenUsage.prompt + outcome.meta.tokenUsage.completion,
+            tokensUsed:
+              outcome.meta.tokenUsage.prompt +
+              outcome.meta.tokenUsage.completion,
             durationMs: Date.now() - startTime,
             traceRef: outcome.partial?.traceRef,
           };
@@ -1285,7 +1438,7 @@ ${agentDescriptions}
 
         // Exponential backoff before retry
         const backoffMs = 1000 * Math.pow(2, attempt - 1);
-        this.ctx.platform.logger.info('Retrying after backoff', {
+        this.ctx.platform.logger.info("Retrying after backoff", {
           subtaskId: subtask.id,
           tier,
           backoffMs,
@@ -1295,11 +1448,15 @@ ${agentDescriptions}
         await this.sleep(backoffMs);
       } catch (error) {
         // Unexpected error during execution
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
 
-        this.ctx.platform.logger.error('Unexpected error in agent execution', new Error(
-          `[${subtask.agentId}] Tier: ${tier}, Attempt: ${attempt}, Error: ${errorMessage}`
-        ));
+        this.ctx.platform.logger.error(
+          "Unexpected error in agent execution",
+          new Error(
+            `[${subtask.agentId}] Tier: ${tier}, Attempt: ${attempt}, Error: ${errorMessage}`,
+          ),
+        );
 
         // If last attempt, return error
         if (attempt === maxRetries) {
@@ -1320,7 +1477,7 @@ ${agentDescriptions}
     }
 
     // Should never reach here, but TypeScript needs it
-    throw new Error('executeWithRetryAndTier: unreachable code');
+    throw new Error("executeWithRetryAndTier: unreachable code");
   }
 
   /**
@@ -1332,7 +1489,10 @@ ${agentDescriptions}
    * @param delegatedResults - Previously completed subtasks
    * @returns Delegated result
    */
-  private async delegateTask(subtask: SubTask, delegatedResults: DelegatedResult[]): Promise<DelegatedResult> {
+  private async delegateTask(
+    subtask: SubTask,
+    delegatedResults: DelegatedResult[],
+  ): Promise<DelegatedResult> {
     // Phase 4: Use executeWithEscalation for automatic tier escalation + retry
     return this.executeWithEscalation(subtask, delegatedResults, 2);
   }
@@ -1353,14 +1513,14 @@ ${agentDescriptions}
    */
   private async verifyToolTrace(
     traceRef: string,
-    taskDescription: string
+    taskDescription: string,
   ): Promise<{ verified: boolean; reason?: string }> {
     // Extract trace ID from reference
-    const traceId = traceRef.replace(/^trace:/, '');
+    const traceId = traceRef.replace(/^trace:/, "");
 
     // For Phase 1: Just log that verification would happen here
     // In Phase 2: Actually load and verify the trace
-    this.ctx.platform.logger.debug('Tool trace verification (placeholder)', {
+    this.ctx.platform.logger.debug("Tool trace verification (placeholder)", {
       traceId,
       taskDescription,
     });
@@ -1391,22 +1551,22 @@ ${agentDescriptions}
   private async checkTaskCompletion(
     task: string,
     plan: SubTask[],
-    delegatedResults: DelegatedResult[]
+    delegatedResults: DelegatedResult[],
   ): Promise<{ isSolved: boolean; confidence: number; reason: string }> {
-    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier for reasoning
+    const llm = useLLM({ tier: "large" }); // Orchestrator uses large tier for reasoning
     if (!llm) {
-      return { isSolved: false, confidence: 0, reason: 'LLM not available' };
+      return { isSolved: false, confidence: 0, reason: "LLM not available" };
     }
 
     // Build summary of completed work
     const completedWork = delegatedResults
       .map((r, i) => {
         const subtask = plan.find((s) => s.id === r.subtaskId);
-        const status = r.success ? '✅ SUCCESS' : '❌ FAILED';
-        let output = '';
+        const status = r.success ? "✅ SUCCESS" : "❌ FAILED";
+        let output = "";
 
         if (r.success && r.output) {
-          if (typeof r.output === 'string') {
+          if (typeof r.output === "string") {
             output = r.output.substring(0, 500); // Limit output length
           } else {
             output = JSON.stringify(r.output, null, 2).substring(0, 500);
@@ -1415,15 +1575,15 @@ ${agentDescriptions}
           output = `Error: ${r.error}`;
         }
 
-        return `${i + 1}. [${subtask?.id}] ${subtask?.description || '(unknown)'}\n   Status: ${status}\n   Specialist: ${r.agentId}\n   Output: ${output}`;
+        return `${i + 1}. [${subtask?.id}] ${subtask?.description || "(unknown)"}\n   Status: ${status}\n   Specialist: ${r.agentId}\n   Output: ${output}`;
       })
-      .join('\n\n');
+      .join("\n\n");
 
     // Build list of remaining subtasks
     const remainingSubtasks = plan
       .slice(delegatedResults.length)
       .map((s) => `- [${s.id}] ${s.description} (assigned to: ${s.agentId})`)
-      .join('\n');
+      .join("\n");
 
     const systemPrompt = `You are an AI orchestrator evaluating task completion.
 
@@ -1463,7 +1623,7 @@ Remaining: ${plan.length - delegatedResults.length}
 # Completed Subtasks (${delegatedResults.length}/${plan.length}):
 ${completedWork}
 
-${remainingSubtasks ? `\n# Remaining Subtasks:\n${remainingSubtasks}\n` : ''}
+${remainingSubtasks ? `\n# Remaining Subtasks:\n${remainingSubtasks}\n` : ""}
 
 **Question**: Is the original task ALREADY FULLY SOLVED based on the completed subtasks?
 
@@ -1476,18 +1636,20 @@ Return your assessment as JSON.`;
 
     const response = await llm.chatWithTools!(
       [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
       {
         tools: [], // No tools needed for assessment
-      }
+      },
     );
 
-    const content = response.content || '';
-    const tokensUsed = (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0);
+    const content = response.content || "";
+    const tokensUsed =
+      (response.usage?.promptTokens || 0) +
+      (response.usage?.completionTokens || 0);
 
-    this.ctx.platform.logger.debug('Task completion check', {
+    this.ctx.platform.logger.debug("Task completion check", {
       tokensUsed,
       responseLength: content.length,
     });
@@ -1513,26 +1675,33 @@ Return your assessment as JSON.`;
     task: string,
     plan: SubTask[],
     delegatedResults: DelegatedResult[],
-    remainingSubtasks: SubTask[]
+    remainingSubtasks: SubTask[],
   ): Promise<{ shouldCancel: boolean; confidence: number; reason: string }> {
-    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier for reasoning
+    const llm = useLLM({ tier: "large" }); // Orchestrator uses large tier for reasoning
     if (!llm) {
-      return { shouldCancel: false, confidence: 0, reason: 'LLM not available' };
+      return {
+        shouldCancel: false,
+        confidence: 0,
+        reason: "LLM not available",
+      };
     }
 
     // Build summary of completed work
     const completedWork = delegatedResults
       .map((r, i) => {
         const subtask = plan.find((s) => s.id === r.subtaskId);
-        const status = r.success ? '✅ SUCCESS' : '❌ FAILED';
+        const status = r.success ? "✅ SUCCESS" : "❌ FAILED";
         return `${i + 1}. [${subtask?.id}] ${subtask?.description}\n   Status: ${status}\n   Specialist: ${r.agentId}`;
       })
-      .join('\n\n');
+      .join("\n\n");
 
     // Build list of remaining subtasks with details
     const remainingWork = remainingSubtasks
-      .map((s, i) => `${i + 1}. [${s.id}] ${s.description}\n   Priority: ${s.priority || 5}/10\n   Specialist: ${s.agentId}`)
-      .join('\n\n');
+      .map(
+        (s, i) =>
+          `${i + 1}. [${s.id}] ${s.description}\n   Priority: ${s.priority || 5}/10\n   Specialist: ${s.agentId}`,
+      )
+      .join("\n\n");
 
     const systemPrompt = `You are an AI orchestrator deciding whether to cancel remaining agents.
 
@@ -1581,18 +1750,20 @@ Return your decision as JSON.`;
 
     const response = await llm.chatWithTools!(
       [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
       {
         tools: [],
-      }
+      },
     );
 
-    const content = response.content || '';
-    const tokensUsed = (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0);
+    const content = response.content || "";
+    const tokensUsed =
+      (response.usage?.promptTokens || 0) +
+      (response.usage?.completionTokens || 0);
 
-    this.ctx.platform.logger.debug('Agent cancellation check', {
+    this.ctx.platform.logger.debug("Agent cancellation check", {
       tokensUsed,
       responseLength: content.length,
     });
@@ -1615,15 +1786,15 @@ Return your decision as JSON.`;
     if (jsonBlockMatch && jsonBlockMatch[1]) {
       try {
         const parsed = JSON.parse(jsonBlockMatch[1]);
-        if (typeof parsed.shouldCancel === 'boolean') {
+        if (typeof parsed.shouldCancel === "boolean") {
           return {
             shouldCancel: parsed.shouldCancel,
             confidence: parsed.confidence || 0.5,
-            reason: parsed.reason || 'No reason provided',
+            reason: parsed.reason || "No reason provided",
           };
         }
       } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse cancellation JSON', {
+        this.ctx.platform.logger.warn("Failed to parse cancellation JSON", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -1634,26 +1805,28 @@ Return your decision as JSON.`;
     if (objectMatch) {
       try {
         const parsed = JSON.parse(objectMatch[0]);
-        if (typeof parsed.shouldCancel === 'boolean') {
+        if (typeof parsed.shouldCancel === "boolean") {
           return {
             shouldCancel: parsed.shouldCancel,
             confidence: parsed.confidence || 0.5,
-            reason: parsed.reason || 'No reason provided',
+            reason: parsed.reason || "No reason provided",
           };
         }
       } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse cancellation object', {
+        this.ctx.platform.logger.warn("Failed to parse cancellation object", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
 
     // Fallback: assume do not cancel (conservative)
-    this.ctx.platform.logger.warn('Failed to parse cancellation check, assuming continue');
+    this.ctx.platform.logger.warn(
+      "Failed to parse cancellation check, assuming continue",
+    );
     return {
       shouldCancel: false,
       confidence: 0,
-      reason: 'Failed to parse LLM response',
+      reason: "Failed to parse LLM response",
     };
   }
 
@@ -1675,15 +1848,15 @@ Return your decision as JSON.`;
     if (jsonBlockMatch && jsonBlockMatch[1]) {
       try {
         const parsed = JSON.parse(jsonBlockMatch[1]);
-        if (typeof parsed.isSolved === 'boolean') {
+        if (typeof parsed.isSolved === "boolean") {
           return {
             isSolved: parsed.isSolved,
             confidence: parsed.confidence || 0.5,
-            reason: parsed.reason || 'No reason provided',
+            reason: parsed.reason || "No reason provided",
           };
         }
       } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse JSON code block', {
+        this.ctx.platform.logger.warn("Failed to parse JSON code block", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -1694,15 +1867,15 @@ Return your decision as JSON.`;
     if (objectMatch) {
       try {
         const parsed = JSON.parse(objectMatch[0]);
-        if (typeof parsed.isSolved === 'boolean') {
+        if (typeof parsed.isSolved === "boolean") {
           return {
             isSolved: parsed.isSolved,
             confidence: parsed.confidence || 0.5,
-            reason: parsed.reason || 'No reason provided',
+            reason: parsed.reason || "No reason provided",
           };
         }
       } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse JSON object', {
+        this.ctx.platform.logger.warn("Failed to parse JSON object", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -1711,11 +1884,11 @@ Return your decision as JSON.`;
     // Strategy 3: Fallback - try to parse entire content
     try {
       const parsed = JSON.parse(content);
-      if (typeof parsed.isSolved === 'boolean') {
+      if (typeof parsed.isSolved === "boolean") {
         return {
           isSolved: parsed.isSolved,
           confidence: parsed.confidence || 0.5,
-          reason: parsed.reason || 'No reason provided',
+          reason: parsed.reason || "No reason provided",
         };
       }
     } catch {
@@ -1723,11 +1896,13 @@ Return your decision as JSON.`;
     }
 
     // Default fallback: assume not solved
-    this.ctx.platform.logger.warn('Failed to parse task completion check, assuming not solved');
+    this.ctx.platform.logger.warn(
+      "Failed to parse task completion check, assuming not solved",
+    );
     return {
       isSolved: false,
       confidence: 0,
-      reason: 'Failed to parse LLM response',
+      reason: "Failed to parse LLM response",
     };
   }
 
@@ -1745,25 +1920,27 @@ Return your decision as JSON.`;
   private async synthesizeResults(
     task: string,
     plan: SubTask[],
-    results: DelegatedResult[]
+    results: DelegatedResult[],
   ): Promise<{ answer: string; tokensUsed: number }> {
-    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier for synthesis
+    const llm = useLLM({ tier: "large" }); // Orchestrator uses large tier for synthesis
     if (!llm) {
-      throw new Error('LLM not available for result synthesis');
+      throw new Error("LLM not available for result synthesis");
     }
 
     // Build synthesis prompt with all agent outputs
-    let resultsText = '';
+    let resultsText = "";
     for (const result of results) {
       const subtask = plan.find((s) => s.id === result.subtaskId);
-      if (!subtask) continue;
+      if (!subtask) {
+        continue;
+      }
 
       resultsText += `## ${subtask.description}\n`;
       resultsText += `**Specialist**: ${result.agentId}\n`;
-      resultsText += `**Status**: ${result.success ? 'Success' : 'Failed'}\n`;
+      resultsText += `**Status**: ${result.success ? "Success" : "Failed"}\n`;
 
       if (result.success && result.output) {
-        if (typeof result.output === 'string') {
+        if (typeof result.output === "string") {
           resultsText += `**Output**:\n${result.output}\n\n`;
         } else {
           resultsText += `**Output**:\n${JSON.stringify(result.output, null, 2)}\n\n`;
@@ -1799,16 +1976,18 @@ Synthesize these results into a comprehensive answer to the original task.`;
 
     const response = await llm.chatWithTools!(
       [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
       {
         tools: [], // No tools needed for synthesis
-      }
+      },
     );
 
-    const answer = response.content || '(no answer generated)';
-    const tokensUsed = (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0);
+    const answer = response.content || "(no answer generated)";
+    const tokensUsed =
+      (response.usage?.promptTokens || 0) +
+      (response.usage?.completionTokens || 0);
 
     return { answer, tokensUsed };
   }
@@ -1832,23 +2011,26 @@ Synthesize these results into a comprehensive answer to the original task.`;
     task: string,
     plan: SubTask[],
     delegatedResults: DelegatedResult[],
-    currentResult: DelegatedResult
+    currentResult: DelegatedResult,
   ): Promise<AdaptationDecision> {
-    const llm = useLLM({ tier: 'large' }); // Orchestrator uses large tier for adaptive planning (Phase 2)
+    const llm = useLLM({ tier: "large" }); // Orchestrator uses large tier for adaptive planning (Phase 2)
     if (!llm) {
       return {
         shouldAdapt: false,
-        reason: 'LLM not available',
+        reason: "LLM not available",
         newSubtasks: [],
         confidence: 0,
       };
     }
 
     // If no findings, no adaptation needed
-    if (!currentResult.findingsSummary || currentResult.findingsSummary.total === 0) {
+    if (
+      !currentResult.findingsSummary ||
+      currentResult.findingsSummary.total === 0
+    ) {
       return {
         shouldAdapt: false,
-        reason: 'No findings to act on',
+        reason: "No findings to act on",
         newSubtasks: [],
         confidence: 1,
       };
@@ -1874,15 +2056,15 @@ ${summary.topFindings
     (f, i) => `
 ${i + 1}. [${f.severity.toUpperCase()}] ${f.category}: ${f.title}
    ${f.description}
-   ${f.suggestedAction ? `→ Suggested: ${f.suggestedAction.type} - ${f.suggestedAction.description}` : '→ No suggested action'}
-`
+   ${f.suggestedAction ? `→ Suggested: ${f.suggestedAction.type} - ${f.suggestedAction.description}` : "→ No suggested action"}
+`,
   )
-  .join('\n')}
+  .join("\n")}
 `.trim();
 
     // Get available agents for targetAgent suggestions
     const agents = await this.registry.list();
-    const availableSpecialistIds = agents.map((s) => s.id).join(', ');
+    const availableSpecialistIds = agents.map((s) => s.id).join(", ");
 
     // UNIVERSAL prompt - works for any agent type
     const systemPrompt = `You are an AI orchestrator deciding whether to adapt an execution plan based on agent findings.
@@ -1940,18 +2122,18 @@ If YES, generate specific subtasks based on suggested actions.
 If NO, explain why findings don't warrant plan changes.`;
 
     // Get orchestrator tools for plan revision
-    const tools = this.getOrchestratorTools(availableSpecialistIds.split(', '));
+    const tools = this.getOrchestratorTools(availableSpecialistIds.split(", "));
     const reviseTool = tools.revise;
 
     const response = await llm.chatWithTools!(
       [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
       {
         tools: [reviseTool],
         // Don't force tool call - LLM decides if adaptation is needed
-      }
+      },
     );
 
     // Check if LLM called revise_execution_plan tool
@@ -1959,36 +2141,43 @@ If NO, explain why findings don't warrant plan changes.`;
       // LLM decided no adaptation needed
       return {
         shouldAdapt: false,
-        reason: response.content || 'No adaptation recommended by LLM',
+        reason: response.content || "No adaptation recommended by LLM",
         newSubtasks: [],
         confidence: 0.9,
       };
     }
 
-    const toolCall = response.toolCalls.find(tc => tc.name === 'revise_execution_plan');
+    const toolCall = response.toolCalls.find(
+      (tc) => tc.name === "revise_execution_plan",
+    );
     if (!toolCall) {
       // LLM called different tool or no revision
       return {
         shouldAdapt: false,
-        reason: 'No plan revision tool called',
+        reason: "No plan revision tool called",
         newSubtasks: [],
         confidence: 0.8,
       };
     }
 
-    const revision = toolCall.input as { action: string; subtask?: SubTask; subtaskId?: string; reason: string };
+    const revision = toolCall.input as {
+      action: string;
+      subtask?: SubTask;
+      subtaskId?: string;
+      reason: string;
+    };
 
     // Handle different revision actions
-    if (revision.action === 'add' && revision.subtask) {
+    if (revision.action === "add" && revision.subtask) {
       return {
         shouldAdapt: true,
         reason: revision.reason,
         newSubtasks: [revision.subtask],
         confidence: 0.85,
       };
-    } else if (revision.action === 'modify' && revision.subtask) {
+    } else if (revision.action === "modify" && revision.subtask) {
       // Find and replace existing subtask
-      const index = plan.findIndex(s => s.id === revision.subtaskId);
+      const index = plan.findIndex((s) => s.id === revision.subtaskId);
       if (index !== -1) {
         plan[index] = revision.subtask;
       }
@@ -2022,13 +2211,18 @@ If NO, explain why findings don't warrant plan changes.`;
     subtaskId: string,
     agentId: string,
     finding: {
-      category: 'bug' | 'optimization' | 'requirement' | 'constraint' | 'insight';
+      category:
+        | "bug"
+        | "optimization"
+        | "requirement"
+        | "constraint"
+        | "insight";
       description: string;
       impact: string;
       affectedSubtasks: string[];
-    }
+    },
   ): Promise<void> {
-    this.ctx.platform.logger.info('🔗 Knowledge sharing: Finding shared', {
+    this.ctx.platform.logger.info("🔗 Knowledge sharing: Finding shared", {
       subtaskId,
       agentId,
       category: finding.category,
@@ -2037,7 +2231,7 @@ If NO, explain why findings don't warrant plan changes.`;
 
     // Store finding for potential use by other agents
     // For now, just log it - future: store in FindingsStore or context
-    this.ctx.platform.analytics.track('orchestrator.knowledge.shared', {
+    this.ctx.platform.analytics.track("orchestrator.knowledge.shared", {
       subtaskId,
       agentId,
       category: finding.category,
@@ -2059,9 +2253,9 @@ If NO, explain why findings don't warrant plan changes.`;
   private async requestContext(
     requesterSubtaskId: string,
     sourceSubtaskId: string,
-    questions: string[]
+    questions: string[],
   ): Promise<string> {
-    this.ctx.platform.logger.info('🔍 Knowledge sharing: Context requested', {
+    this.ctx.platform.logger.info("🔍 Knowledge sharing: Context requested", {
       requester: requesterSubtaskId,
       source: sourceSubtaskId,
       questionCount: questions.length,
@@ -2071,5 +2265,4 @@ If NO, explain why findings don't warrant plan changes.`;
     // For now, return placeholder
     return `Context from ${sourceSubtaskId}: Previous work completed successfully. ${questions.length} questions noted.`;
   }
-
 }

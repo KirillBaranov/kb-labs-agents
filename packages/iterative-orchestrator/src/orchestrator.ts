@@ -12,10 +12,10 @@
  * - Context accumulation across iterations
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import { useLLM } from '@kb-labs/sdk';
-import { AgentExecutor, ToolDiscoverer } from '@kb-labs/agent-core';
-import type { AgentContext, AgentConfigV1 } from '@kb-labs/agent-contracts';
+import type { PluginContextV3 } from "@kb-labs/sdk";
+import { useLLM } from "@kb-labs/sdk";
+import { AgentExecutor, ToolDiscoverer } from "@kb-labs/agent-core";
+import type { AgentContext } from "@kb-labs/agent-contracts";
 import type {
   OrchestratorDecision,
   OrchestratorResponse,
@@ -25,7 +25,7 @@ import type {
   IterativeOrchestratorConfig,
   AgentDefinition,
   OrchestratorCallbacks,
-} from './types.js';
+} from "./types.js";
 
 /**
  * Default configuration
@@ -127,7 +127,7 @@ export class IterativeOrchestrator {
   constructor(
     ctx: PluginContextV3,
     config: Partial<IterativeOrchestratorConfig> = {},
-    callbacks?: OrchestratorCallbacks
+    callbacks?: OrchestratorCallbacks,
   ) {
     this.ctx = ctx;
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -155,7 +155,7 @@ export class IterativeOrchestrator {
       totalCost: 0,
     };
 
-    this.ctx.platform.logger.info('Starting iterative orchestration', {
+    this.ctx.platform.logger.info("Starting iterative orchestration", {
       task,
       maxIterations: this.config.maxIterations,
       agents: Array.from(this.agents.keys()),
@@ -175,68 +175,75 @@ export class IterativeOrchestrator {
       const decision = await this.think(context);
       this.callbacks?.onIteration?.(context.iteration, decision);
 
-      this.ctx.platform.logger.info('Orchestrator decision', {
+      this.ctx.platform.logger.info("Orchestrator decision", {
         iteration: context.iteration,
         type: decision.type,
       });
 
       // 2. Handle decision
       switch (decision.type) {
-        case 'COMPLETE':
+        case "COMPLETE":
           return this.complete(context, decision);
 
-        case 'DELEGATE':
-          const result = await this.delegateToAgent(decision.agentId, decision.task, context);
+        case "DELEGATE":
+          const result = await this.delegateToAgent(
+            decision.agentId,
+            decision.task,
+            context,
+          );
           context.results.push(result);
           break;
 
-        case 'DELEGATE_PARALLEL':
+        case "DELEGATE_PARALLEL":
           // For MVP, execute sequentially with early stopping check
           for (const delegateTask of decision.tasks) {
             const parallelResult = await this.delegateToAgent(
               delegateTask.agentId,
               delegateTask.task,
-              context
+              context,
             );
             context.results.push(parallelResult);
 
             // Check if orchestrator wants to stop early
             const evalDecision = await this.think(context);
-            if (evalDecision.type === 'COMPLETE') {
+            if (evalDecision.type === "COMPLETE") {
               return this.complete(context, evalDecision);
             }
           }
           break;
 
-        case 'ESCALATE':
+        case "ESCALATE":
           return this.escalate(context, decision);
 
-        case 'ABORT':
+        case "ABORT":
           return this.abort(context, decision);
       }
     }
 
     // Max iterations reached - force escalate
     return this.escalate(context, {
-      type: 'ESCALATE',
+      type: "ESCALATE",
       reason: `Max iterations (${this.config.maxIterations}) reached without completion`,
-      question: 'The task is taking longer than expected. Should I continue with a different approach or do you want to simplify the request?',
+      question:
+        "The task is taking longer than expected. Should I continue with a different approach or do you want to simplify the request?",
     });
   }
 
   /**
    * Orchestrator thinks and decides what to do next
    */
-  private async think(context: OrchestrationContext): Promise<OrchestratorDecision> {
+  private async think(
+    context: OrchestrationContext,
+  ): Promise<OrchestratorDecision> {
     const llm = useLLM();
     if (!llm) {
-      throw new Error('LLM not available');
+      throw new Error("LLM not available");
     }
 
     // Build prompt
     const prompt = this.buildPrompt(context);
 
-    this.ctx.platform.logger.debug('Orchestrator thinking', {
+    this.ctx.platform.logger.debug("Orchestrator thinking", {
       iteration: context.iteration,
       promptLength: prompt.length,
     });
@@ -247,12 +254,13 @@ export class IterativeOrchestrator {
       maxTokens: 2000,
     });
 
-    context.totalTokens += response.usage.promptTokens + response.usage.completionTokens;
+    context.totalTokens +=
+      response.usage.promptTokens + response.usage.completionTokens;
 
     // Parse response
-    const parsed = this.parseResponse(response.content || '');
+    const parsed = this.parseResponse(response.content || "");
 
-    this.ctx.platform.logger.debug('Orchestrator decision parsed', {
+    this.ctx.platform.logger.debug("Orchestrator decision parsed", {
       reasoning: parsed.reasoning,
       decisionType: parsed.decision.type,
     });
@@ -266,11 +274,11 @@ export class IterativeOrchestrator {
   private async delegateToAgent(
     agentId: string,
     task: string,
-    context: OrchestrationContext
+    context: OrchestrationContext,
   ): Promise<AgentResult> {
     const startTime = Date.now();
 
-    this.ctx.platform.logger.info('Delegating to agent', {
+    this.ctx.platform.logger.info("Delegating to agent", {
       agentId,
       task,
       iteration: context.iteration,
@@ -299,12 +307,12 @@ export class IterativeOrchestrator {
 
       // Build agent config
       const agentConfig: AgentConfigV1 = {
-        schema: 'kb.agent/1',
+        schema: "kb.agent/1",
         id: agentId,
         name: agent.name,
         description: agent.description,
         llm: {
-          tier: 'small', // Cheap model for workers
+          tier: "small", // Cheap model for workers
           temperature: 0.7,
           maxTokens: 4000,
           maxToolCalls: 10,
@@ -316,11 +324,11 @@ export class IterativeOrchestrator {
       const toolDiscoverer = new ToolDiscoverer(this.ctx);
       const tools = await toolDiscoverer.discover(agentConfig.tools);
 
-      this.ctx.platform.logger.debug('Discovered tools for agent', {
+      this.ctx.platform.logger.debug("Discovered tools for agent", {
         agentId,
         requestedTools: agent.tools,
         discoveredCount: tools.length,
-        discoveredTools: tools.map(t => t.name),
+        discoveredTools: tools.map((t) => t.name),
       });
 
       const agentContext: AgentContext = {
@@ -334,7 +342,7 @@ export class IterativeOrchestrator {
       const agentResult: AgentResult = {
         agentId,
         task,
-        result: result.result || '',
+        result: result.result || "",
         success: result.success,
         iteration: context.iteration,
         durationMs: Date.now() - startTime,
@@ -344,18 +352,18 @@ export class IterativeOrchestrator {
 
       this.callbacks?.onAgentComplete?.(agentResult);
 
-      this.ctx.platform.logger.info('Agent completed', {
+      this.ctx.platform.logger.info("Agent completed", {
         agentId,
         success: result.success,
         durationMs: agentResult.durationMs,
       });
 
       return agentResult;
-    } catch (error) {
+    } catch {
       const errorResult: AgentResult = {
         agentId,
         task,
-        result: '',
+        result: "",
         success: false,
         iteration: context.iteration,
         durationMs: Date.now() - startTime,
@@ -364,7 +372,10 @@ export class IterativeOrchestrator {
 
       this.callbacks?.onAgentComplete?.(errorResult);
 
-      this.ctx.platform.logger.error('Agent execution failed', error instanceof Error ? error : new Error(String(error)));
+      this.ctx.platform.logger.error(
+        "Agent execution failed",
+        error instanceof Error ? error : new Error(String(error)),
+      );
 
       return errorResult;
     }
@@ -375,9 +386,9 @@ export class IterativeOrchestrator {
    */
   private complete(
     context: OrchestrationContext,
-    decision: { type: 'COMPLETE'; answer: string; confidence: number }
+    decision: { type: "COMPLETE"; answer: string; confidence: number },
   ): OrchestrationResult {
-    this.ctx.platform.logger.info('Orchestration completed', {
+    this.ctx.platform.logger.info("Orchestration completed", {
       iterations: context.iteration,
       confidence: decision.confidence,
       agentCalls: context.results.length,
@@ -396,25 +407,33 @@ export class IterativeOrchestrator {
    */
   private async escalate(
     context: OrchestrationContext,
-    decision: { type: 'ESCALATE'; reason: string; question: string; options?: string[] }
+    decision: {
+      type: "ESCALATE";
+      reason: string;
+      question: string;
+      options?: string[];
+    },
   ): Promise<OrchestrationResult> {
-    this.ctx.platform.logger.warn('Orchestration escalating to user', {
+    this.ctx.platform.logger.warn("Orchestration escalating to user", {
       reason: decision.reason,
       question: decision.question,
     });
 
     // Try to get user response via callback
-    const userResponse = await this.callbacks?.onEscalate?.(decision.reason, decision.question);
+    const userResponse = await this.callbacks?.onEscalate?.(
+      decision.reason,
+      decision.question,
+    );
 
     if (userResponse) {
       // User provided input - continue orchestration
-      this.ctx.platform.logger.info('User provided escalation response', {
+      this.ctx.platform.logger.info("User provided escalation response", {
         response: userResponse.slice(0, 100),
       });
 
       // Add user response to context and continue
       context.results.push({
-        agentId: 'user',
+        agentId: "user",
         task: decision.question,
         result: userResponse,
         success: true,
@@ -425,7 +444,7 @@ export class IterativeOrchestrator {
       // Re-think with user input
       const newDecision = await this.think(context);
 
-      if (newDecision.type === 'COMPLETE') {
+      if (newDecision.type === "COMPLETE") {
         return this.complete(context, newDecision);
       }
 
@@ -448,9 +467,9 @@ export class IterativeOrchestrator {
    */
   private abort(
     context: OrchestrationContext,
-    decision: { type: 'ABORT'; reason: string }
+    decision: { type: "ABORT"; reason: string },
   ): OrchestrationResult {
-    this.ctx.platform.logger.warn('Orchestration aborted', {
+    this.ctx.platform.logger.warn("Orchestration aborted", {
       reason: decision.reason,
     });
 
@@ -466,8 +485,10 @@ export class IterativeOrchestrator {
   /**
    * Create timeout result
    */
-  private createTimeoutResult(context: OrchestrationContext): OrchestrationResult {
-    this.ctx.platform.logger.warn('Orchestration timed out', {
+  private createTimeoutResult(
+    context: OrchestrationContext,
+  ): OrchestrationResult {
+    this.ctx.platform.logger.warn("Orchestration timed out", {
       timeoutMs: this.config.timeoutMs,
       iterations: context.iteration,
     });
@@ -486,25 +507,31 @@ export class IterativeOrchestrator {
    */
   private buildPrompt(context: OrchestrationContext): string {
     // Format execution history
-    const history = context.results.length === 0
-      ? '(No previous actions)'
-      : context.results.map((r, i) => {
-          const status = r.success ? '✓' : '✗';
-          const truncatedResult = r.result.length > 500
-            ? r.result.slice(0, 500) + '...'
-            : r.result;
-          return `${i + 1}. [${status}] Agent: ${r.agentId}\n   Task: ${r.task}\n   Result: ${truncatedResult}`;
-        }).join('\n\n');
+    const history =
+      context.results.length === 0
+        ? "(No previous actions)"
+        : context.results
+            .map((r, i) => {
+              const status = r.success ? "✓" : "✗";
+              const truncatedResult =
+                r.result.length > 500
+                  ? r.result.slice(0, 500) + "..."
+                  : r.result;
+              return `${i + 1}. [${status}] Agent: ${r.agentId}\n   Task: ${r.task}\n   Result: ${truncatedResult}`;
+            })
+            .join("\n\n");
 
     // Format available agents
     const agents = Array.from(this.agents.values())
-      .map(a => `- **${a.id}**: ${a.description}\n  Tools: ${a.tools.join(', ')}`)
-      .join('\n');
+      .map(
+        (a) =>
+          `- **${a.id}**: ${a.description}\n  Tools: ${a.tools.join(", ")}`,
+      )
+      .join("\n");
 
-    return ORCHESTRATOR_PROMPT
-      .replace('{task}', context.task)
-      .replace('{history}', history)
-      .replace('{agents}', agents || '(No agents registered)');
+    return ORCHESTRATOR_PROMPT.replace("{task}", context.task)
+      .replace("{history}", history)
+      .replace("{agents}", agents || "(No agents registered)");
   }
 
   /**
@@ -516,9 +543,9 @@ export class IterativeOrchestrator {
     if (!jsonMatch) {
       // Fallback: treat as direct answer
       return {
-        reasoning: 'Could not parse structured response',
+        reasoning: "Could not parse structured response",
         decision: {
-          type: 'COMPLETE',
+          type: "COMPLETE",
           answer: content,
           confidence: 0.5,
         },
@@ -528,14 +555,14 @@ export class IterativeOrchestrator {
     try {
       const parsed = JSON.parse(jsonMatch[0]);
       return {
-        reasoning: parsed.reasoning || '',
+        reasoning: parsed.reasoning || "",
         decision: parsed.decision,
       };
     } catch {
       return {
-        reasoning: 'JSON parse failed',
+        reasoning: "JSON parse failed",
         decision: {
-          type: 'COMPLETE',
+          type: "COMPLETE",
           answer: content,
           confidence: 0.5,
         },
@@ -546,9 +573,14 @@ export class IterativeOrchestrator {
   /**
    * Build execution statistics
    */
-  private buildStats(context: OrchestrationContext): OrchestrationResult['stats'] {
+  private buildStats(
+    context: OrchestrationContext,
+  ): OrchestrationResult["stats"] {
     const durationMs = Date.now() - context.startTime;
-    const agentTokens = context.results.reduce((sum, r) => sum + (r.tokens || 0), 0);
+    const agentTokens = context.results.reduce(
+      (sum, r) => sum + (r.tokens || 0),
+      0,
+    );
 
     return {
       iterations: context.iteration,
@@ -562,7 +594,10 @@ export class IterativeOrchestrator {
   /**
    * Estimate cost based on tokens
    */
-  private estimateCost(orchestratorTokens: number, agentTokens: number): number {
+  private estimateCost(
+    orchestratorTokens: number,
+    agentTokens: number,
+  ): number {
     // Rough estimates:
     // Orchestrator (Opus): ~$15/M input, ~$75/M output (assume 50/50 split)
     // Agents (Haiku): ~$0.25/M input, ~$1.25/M output
@@ -577,16 +612,16 @@ export class IterativeOrchestrator {
    * Converts simple tool names like ['mind:rag-query', 'fs:read']
    * into proper AgentToolsConfig structure for ToolDiscoverer
    */
-  private buildToolsConfig(tools: string[]): AgentConfigV1['tools'] {
+  private buildToolsConfig(tools: string[]): AgentConfigV1["tools"] {
     // Categorize tools by prefix
     const fsTools: string[] = [];
     const shellTools: string[] = [];
     const kbLabsTools: string[] = [];
 
     for (const tool of tools) {
-      if (tool.startsWith('fs:')) {
+      if (tool.startsWith("fs:")) {
         fsTools.push(tool);
-      } else if (tool.startsWith('shell:')) {
+      } else if (tool.startsWith("shell:")) {
         shellTools.push(tool);
       } else {
         // Everything else is a KB Labs plugin tool (mind:*, devkit:*, etc.)
@@ -594,13 +629,13 @@ export class IterativeOrchestrator {
       }
     }
 
-    const config: AgentConfigV1['tools'] = {};
+    const config: AgentConfigV1["tools"] = {};
 
     // Configure filesystem tools
     if (fsTools.length > 0) {
       config.filesystem = {
         enabled: true,
-        mode: 'allowlist',
+        mode: "allowlist",
         allow: fsTools,
       };
     }
@@ -609,7 +644,7 @@ export class IterativeOrchestrator {
     if (shellTools.length > 0) {
       config.shell = {
         enabled: true,
-        mode: 'allowlist',
+        mode: "allowlist",
         allow: shellTools,
       };
     }
@@ -617,7 +652,7 @@ export class IterativeOrchestrator {
     // Configure KB Labs plugin tools
     if (kbLabsTools.length > 0) {
       config.kbLabs = {
-        mode: 'allowlist',
+        mode: "allowlist",
         allow: kbLabsTools,
       };
     }

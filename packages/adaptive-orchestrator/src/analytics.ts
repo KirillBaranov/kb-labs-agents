@@ -11,23 +11,23 @@
  * - Execution time
  */
 
-import type { IAnalytics, LLMTier } from '@kb-labs/sdk';
-import type { OrchestratorResult, SubtaskResult } from './types.js';
+import type { IAnalytics } from "@kb-labs/sdk";
+import type { OrchestratorResult, SubtaskResult } from "./types.js";
 
 /**
  * Analytics event names for orchestration.
  */
 export const ORCHESTRATION_EVENTS = {
-  TASK_STARTED: 'orchestration.task.started',
-  TASK_COMPLETED: 'orchestration.task.completed',
-  TASK_FAILED: 'orchestration.task.failed',
-  CLASSIFICATION: 'orchestration.classification',
-  PLANNING_COMPLETED: 'orchestration.planning.completed',
-  SUBTASK_EXECUTED: 'orchestration.subtask.executed',
-  TIER_ESCALATED: 'orchestration.tier.escalated',
-  COST_SAVED: 'orchestration.cost.saved',
-  AGENT_SELECTED: 'orchestration.agent.selected',
-  AGENT_EXECUTED: 'orchestration.agent.executed',
+  TASK_STARTED: "orchestration.task.started",
+  TASK_COMPLETED: "orchestration.task.completed",
+  TASK_FAILED: "orchestration.task.failed",
+  CLASSIFICATION: "orchestration.classification",
+  PLANNING_COMPLETED: "orchestration.planning.completed",
+  SUBTASK_EXECUTED: "orchestration.subtask.executed",
+  TIER_ESCALATED: "orchestration.tier.escalated",
+  COST_SAVED: "orchestration.cost.saved",
+  AGENT_SELECTED: "orchestration.agent.selected",
+  AGENT_EXECUTED: "orchestration.agent.executed",
 } as const;
 
 /**
@@ -40,7 +40,9 @@ export class OrchestrationAnalytics {
    * Track task start.
    */
   trackTaskStarted(taskDescription: string): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATION_EVENTS.TASK_STARTED, {
       task_length: taskDescription.length,
@@ -54,9 +56,11 @@ export class OrchestrationAnalytics {
   trackTaskCompleted(
     taskDescription: string,
     result: OrchestratorResult,
-    duration: number
+    duration: number,
   ): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     // Extract cost values
     const totalCost = this.parseCost(result.costBreakdown.total);
@@ -65,10 +69,8 @@ export class OrchestrationAnalytics {
     const largeCost = this.parseCost(result.costBreakdown.large);
 
     // Calculate naive cost (assume all large)
-    const totalTokens = result.subtaskResults?.reduce(
-      (sum, r) => sum + (r.tokens || 0),
-      0
-    ) || 0;
+    const totalTokens =
+      result.subtaskResults?.reduce((sum, r) => sum + (r.tokens || 0), 0) || 0;
     const naiveCost = totalTokens / 100_000; // Assume large tier pricing
 
     // Calculate savings
@@ -98,8 +100,14 @@ export class OrchestrationAnalytics {
   /**
    * Track task failure.
    */
-  trackTaskFailed(taskDescription: string, error: Error, duration: number): void {
-    if (!this.analytics) return;
+  trackTaskFailed(
+    taskDescription: string,
+    error: Error,
+    duration: number,
+  ): void {
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATION_EVENTS.TASK_FAILED, {
       task_length: taskDescription.length,
@@ -115,10 +123,12 @@ export class OrchestrationAnalytics {
    */
   trackClassification(
     tier: LLMTier,
-    confidence: 'high' | 'low',
-    method: 'heuristic' | 'llm'
+    confidence: "high" | "low",
+    method: "heuristic" | "llm",
   ): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATION_EVENTS.CLASSIFICATION, {
       tier,
@@ -133,10 +143,12 @@ export class OrchestrationAnalytics {
    */
   trackPlanningCompleted(
     subtaskCount: number,
-    tierDistribution: Record<LLMTier, number>,
-    agentDistribution?: Record<string, number>
+    tierDistribution: Record<number>,
+    agentDistribution?: Record<string, number>,
   ): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     const eventData: Record<string, any> = {
       subtask_count: subtaskCount,
@@ -159,7 +171,9 @@ export class OrchestrationAnalytics {
    * Track subtask execution.
    */
   trackSubtaskExecuted(result: SubtaskResult): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     const eventData: Record<string, any> = {
       subtask_id: result.id,
@@ -185,9 +199,11 @@ export class OrchestrationAnalytics {
     subtaskId: number,
     fromTier: LLMTier,
     toTier: LLMTier,
-    reason: string
+    reason: string,
   ): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATION_EVENTS.TIER_ESCALATED, {
       subtask_id: subtaskId,
@@ -202,7 +218,9 @@ export class OrchestrationAnalytics {
    * Track cost savings.
    */
   trackCostSaved(saved: number, savingsPercent: number): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATION_EVENTS.COST_SAVED, {
       amount_saved: saved,
@@ -218,9 +236,11 @@ export class OrchestrationAnalytics {
     subtaskId: number,
     agentId: string,
     reasoning: string,
-    tier: LLMTier
+    tier: LLMTier,
   ): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATION_EVENTS.AGENT_SELECTED, {
       subtask_id: subtaskId,
@@ -237,10 +257,12 @@ export class OrchestrationAnalytics {
   trackAgentExecuted(
     agentId: string,
     tier: LLMTier,
-    status: 'success' | 'failed',
-    tokens: number
+    status: "success" | "failed",
+    tokens: number,
   ): void {
-    if (!this.analytics) return;
+    if (!this.analytics) {
+      return;
+    }
 
     this.analytics.track(ORCHESTRATION_EVENTS.AGENT_EXECUTED, {
       agent_id: agentId,
@@ -255,7 +277,9 @@ export class OrchestrationAnalytics {
    * Parse cost string to number.
    */
   private parseCost(cost: string): number {
-    if (cost === 'N/A') return 0;
-    return parseFloat(cost.replace('$', '')) || 0;
+    if (cost === "N/A") {
+      return 0;
+    }
+    return parseFloat(cost.replace("$", "")) || 0;
   }
 }

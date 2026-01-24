@@ -37,7 +37,7 @@
     "build": "tsup --config tsup.config.ts",
     "dev": "tsup --config tsup.config.ts --watch",
     "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix",
+    "lint:fix": "eslint . --fix",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -47,7 +47,7 @@
     "@kb-labs/agent-contracts": "workspace:*",
     "@kb-labs/agent-tools": "workspace:*",
     "zod": "^3.23.8",
-    "yaml": "^2.3.4",
+    "yaml": "^2.8.0",
     "glob": "^11.0.0"
   },
   "devDependencies": {

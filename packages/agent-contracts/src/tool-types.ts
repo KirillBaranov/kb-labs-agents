@@ -10,7 +10,7 @@
  * This is the schema that LLM sees and uses to generate tool calls
  */
 export interface ToolInputSchema {
-  type: 'object';
+  type: "object";
   properties: Record<string, unknown>;
   required?: string[];
   additionalProperties?: boolean;
@@ -75,7 +75,7 @@ export interface ToolResult {
 /**
  * Tool category
  */
-export type ToolCategory = 'filesystem' | 'shell' | 'kb-labs' | 'builtin';
+export type ToolCategory = "filesystem" | "shell" | "kb-labs" | "builtin";
 
 /**
  * Tool metadata (for internal use)

@@ -45,12 +45,6 @@
       "@kb-labs/progress-reporter/*": [
         "packages/progress-reporter/src/*"
       ],
-      "@kb-labs/sdk": [
-        "../kb-labs-sdk/packages/sdk/src/index.ts"
-      ],
-      "@kb-labs/sdk/*": [
-        "../kb-labs-sdk/packages/sdk/src/*"
-      ],
       "@kb-labs/task-classifier": [
         "packages/task-classifier/src/index.ts"
       ],

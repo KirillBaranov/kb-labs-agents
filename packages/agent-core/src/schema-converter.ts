@@ -5,7 +5,7 @@
  * Fully dynamic - no hardcoding of agent-specific schemas.
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 /**
  * Convert JSON Schema to Zod schema at runtime
@@ -15,42 +15,44 @@ import { z } from 'zod';
  * @throws Error if schema is invalid or unsupported
  */
 export function jsonSchemaToZod(jsonSchema: any): z.ZodType {
-  if (!jsonSchema || typeof jsonSchema !== 'object') {
-    throw new Error('JSON Schema must be an object');
+  if (!jsonSchema || typeof jsonSchema !== "object") {
+    throw new Error("JSON Schema must be an object");
   }
 
   // Handle object type
-  if (jsonSchema.type === 'object') {
+  if (jsonSchema.type === "object") {
     return convertObject(jsonSchema);
   }
 
   // Handle array type
-  if (jsonSchema.type === 'array') {
+  if (jsonSchema.type === "array") {
     return convertArray(jsonSchema);
   }
 
   // Handle string type
-  if (jsonSchema.type === 'string') {
+  if (jsonSchema.type === "string") {
     return convertString(jsonSchema);
   }
 
   // Handle number/integer type
-  if (jsonSchema.type === 'number' || jsonSchema.type === 'integer') {
+  if (jsonSchema.type === "number" || jsonSchema.type === "integer") {
     return convertNumber(jsonSchema);
   }
 
   // Handle boolean type
-  if (jsonSchema.type === 'boolean') {
+  if (jsonSchema.type === "boolean") {
     return z.boolean();
   }
 
   // Handle null type
-  if (jsonSchema.type === 'null') {
+  if (jsonSchema.type === "null") {
     return z.null();
   }
 
   // Fallback for unknown types
-  console.warn(`Unsupported JSON Schema type: ${jsonSchema.type}. Using z.unknown()`);
+  console.warn(
+    `Unsupported JSON Schema type: ${jsonSchema.type}. Using z.unknown()`,
+  );
   return z.unknown();
 }
 
@@ -143,13 +145,13 @@ function convertString(schema: any): z.ZodType {
   // Add format validation (basic support)
   if (schema.format) {
     switch (schema.format) {
-      case 'email':
+      case "email":
         result = result.email();
         break;
-      case 'url':
+      case "url":
         result = result.url();
         break;
-      case 'uuid':
+      case "uuid":
         result = result.uuid();
         break;
       // Add more formats as needed
@@ -163,7 +165,7 @@ function convertString(schema: any): z.ZodType {
  * Convert number/integer schema
  */
 function convertNumber(schema: any): z.ZodNumber {
-  let result = schema.type === 'integer' ? z.number().int() : z.number();
+  let result = schema.type === "integer" ? z.number().int() : z.number();
 
   // Add range constraints
   if (schema.minimum !== undefined) {
@@ -196,21 +198,21 @@ function convertNumber(schema: any): z.ZodNumber {
  * @throws Error with clear message if schema is invalid
  */
 export function validateJsonSchema(schema: any): void {
-  if (!schema || typeof schema !== 'object') {
-    throw new Error('Schema must be an object');
+  if (!schema || typeof schema !== "object") {
+    throw new Error("Schema must be an object");
   }
 
   if (!schema.type) {
     throw new Error('Schema must have a "type" field');
   }
 
-  if (schema.type === 'object') {
-    if (!schema.properties || typeof schema.properties !== 'object') {
+  if (schema.type === "object") {
+    if (!schema.properties || typeof schema.properties !== "object") {
       throw new Error('Object schema must have "properties" field');
     }
 
     if (Object.keys(schema.properties).length === 0) {
-      throw new Error('Object schema must have at least one property');
+      throw new Error("Object schema must have at least one property");
     }
 
     // Recursively validate nested schemas
@@ -218,17 +220,21 @@ export function validateJsonSchema(schema: any): void {
       try {
         validateJsonSchema(propSchema);
       } catch (err) {
-        throw new Error(`Invalid schema for property "${key}": ${(err as Error).message}`);
+        throw new Error(
+          `Invalid schema for property "${key}": ${(err as Error).message}`,
+        );
       }
     }
   }
 
-  if (schema.type === 'array') {
+  if (schema.type === "array") {
     if (schema.items) {
       try {
         validateJsonSchema(schema.items);
       } catch (err) {
-        throw new Error(`Invalid array items schema: ${(err as Error).message}`);
+        throw new Error(
+          `Invalid array items schema: ${(err as Error).message}`,
+        );
       }
     }
   }

@@ -7,15 +7,15 @@
  * - Prevents token explosion while maintaining context
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import { useCache } from '@kb-labs/sdk';
+import type { PluginContextV3 } from "@kb-labs/sdk";
+import { useCache } from "@kb-labs/sdk";
 
 /**
  * Artifact reference (stored inline, content in cache)
  */
 export interface ArtifactReference {
   id: string; // Unique artifact ID
-  type: 'code' | 'search-result' | 'file-content' | 'analysis';
+  type: "code" | "search-result" | "file-content" | "analysis";
   name: string; // Human-readable name
   size: number; // Size in bytes
   summary?: string; // Optional brief summary (1 line)
@@ -47,7 +47,7 @@ export interface SessionState {
  */
 export interface Artifact {
   id: string;
-  type: ArtifactReference['type'];
+  type: ArtifactReference["type"];
   name: string;
   content: unknown; // The actual data
   metadata?: Record<string, unknown>;
@@ -70,12 +70,12 @@ export class SessionStateManager {
 
   constructor(
     private ctx: PluginContextV3,
-    sessionId: string
+    sessionId: string,
   ) {
     this.cacheNamespace = `session:${sessionId}`;
     this.state = {
       sessionId,
-      summary: '',
+      summary: "",
       findings: [],
       artifacts: [],
       tokensEstimate: 0,
@@ -95,7 +95,7 @@ export class SessionStateManager {
    */
   updateSummary(summary: string): void {
     this.state.summary = summary.slice(0, this.MAX_SUMMARY_LENGTH);
-    this.ctx.platform.logger.debug('Session summary updated', {
+    this.ctx.platform.logger.debug("Session summary updated", {
       sessionId: this.state.sessionId,
       summaryLength: this.state.summary.length,
     });
@@ -104,7 +104,7 @@ export class SessionStateManager {
   /**
    * Add a finding to session state
    */
-  addFinding(finding: Omit<SessionFinding, 'timestamp'>): void {
+  addFinding(finding: Omit<SessionFinding, "timestamp">): void {
     const newFinding: SessionFinding = {
       ...finding,
       fact: finding.fact.slice(0, this.MAX_FACT_LENGTH),
@@ -118,7 +118,7 @@ export class SessionStateManager {
       this.state.findings = this.state.findings.slice(-this.MAX_FINDINGS);
     }
 
-    this.ctx.platform.logger.debug('Finding added to session', {
+    this.ctx.platform.logger.debug("Finding added to session", {
       sessionId: this.state.sessionId,
       step: finding.step,
       tool: finding.tool,
@@ -129,13 +129,15 @@ export class SessionStateManager {
   /**
    * Store artifact in cache and add reference to state
    */
-  async storeArtifact(artifact: Omit<Artifact, 'id'>): Promise<string> {
+  async storeArtifact(artifact: Omit<Artifact, "id">): Promise<string> {
     const artifactId = `artifact:${this.state.sessionId}:${Date.now()}:${artifact.name}`;
 
     // Store full artifact in cache
     const cache = useCache();
     if (!cache) {
-      this.ctx.platform.logger.warn('Cache not available, skipping artifact storage');
+      this.ctx.platform.logger.warn(
+        "Cache not available, skipping artifact storage",
+      );
       return artifactId;
     }
 
@@ -154,14 +156,15 @@ export class SessionStateManager {
       type: artifact.type,
       name: artifact.name,
       size: JSON.stringify(artifact.content).length,
-      summary: typeof artifact.content === 'string'
-        ? artifact.content.slice(0, 50) + '...'
-        : undefined,
+      summary:
+        typeof artifact.content === "string"
+          ? artifact.content.slice(0, 50) + "..."
+          : undefined,
     };
 
     this.state.artifacts.push(reference);
 
-    this.ctx.platform.logger.debug('Artifact stored', {
+    this.ctx.platform.logger.debug("Artifact stored", {
       sessionId: this.state.sessionId,
       artifactId,
       type: artifact.type,
@@ -178,7 +181,9 @@ export class SessionStateManager {
   async loadArtifact(artifactId: string): Promise<Artifact | null> {
     const cache = useCache();
     if (!cache) {
-      this.ctx.platform.logger.warn('Cache not available, cannot load artifact');
+      this.ctx.platform.logger.warn(
+        "Cache not available, cannot load artifact",
+      );
       return null;
     }
 
@@ -187,14 +192,14 @@ export class SessionStateManager {
     const artifact = await cache.get<Artifact>(cacheKey);
 
     if (!artifact) {
-      this.ctx.platform.logger.warn('Artifact not found in cache', {
+      this.ctx.platform.logger.warn("Artifact not found in cache", {
         sessionId: this.state.sessionId,
         artifactId,
       });
       return null;
     }
 
-    this.ctx.platform.logger.debug('Artifact loaded from cache', {
+    this.ctx.platform.logger.debug("Artifact loaded from cache", {
       sessionId: this.state.sessionId,
       artifactId,
       type: artifact.type,
@@ -228,11 +233,16 @@ export class SessionStateManager {
     }
 
     // Remove oldest artifacts
-    const toRemove = this.state.artifacts.slice(0, this.state.artifacts.length - keepCount);
+    const toRemove = this.state.artifacts.slice(
+      0,
+      this.state.artifacts.length - keepCount,
+    );
 
     const cache = useCache();
     if (!cache) {
-      this.ctx.platform.logger.warn('Cache not available, cannot prune artifacts');
+      this.ctx.platform.logger.warn(
+        "Cache not available, cannot prune artifacts",
+      );
       return;
     }
 
@@ -243,7 +253,7 @@ export class SessionStateManager {
 
     this.state.artifacts = this.state.artifacts.slice(-keepCount);
 
-    this.ctx.platform.logger.info('Session artifacts pruned', {
+    this.ctx.platform.logger.info("Session artifacts pruned", {
       sessionId: this.state.sessionId,
       removed: toRemove.length,
       remaining: this.state.artifacts.length,
@@ -254,7 +264,7 @@ export class SessionStateManager {
    * Serialize state for LLM context (compact representation)
    */
   serializeForLLM(): string {
-    let output = '';
+    let output = "";
 
     // Summary
     if (this.state.summary) {
@@ -267,7 +277,7 @@ export class SessionStateManager {
       for (const finding of this.state.findings) {
         output += `- [Step ${finding.step}, ${finding.tool}] ${finding.fact}\n`;
       }
-      output += '\n';
+      output += "\n";
     }
 
     // Artifact references (not full content)
@@ -278,9 +288,9 @@ export class SessionStateManager {
         if (artifact.summary) {
           output += ` - ${artifact.summary}`;
         }
-        output += '\n';
+        output += "\n";
       }
-      output += '\n';
+      output += "\n";
     }
 
     return output;
@@ -309,11 +319,13 @@ export class SessionStateManager {
   async clear(): Promise<void> {
     const cache = useCache();
     if (!cache) {
-      this.ctx.platform.logger.warn('Cache not available, cannot clear artifacts');
+      this.ctx.platform.logger.warn(
+        "Cache not available, cannot clear artifacts",
+      );
       // Still reset state even if cache is unavailable
       this.state = {
         sessionId: this.state.sessionId,
-        summary: '',
+        summary: "",
         findings: [],
         artifacts: [],
         tokensEstimate: 0,
@@ -330,13 +342,13 @@ export class SessionStateManager {
     // Reset state
     this.state = {
       sessionId: this.state.sessionId,
-      summary: '',
+      summary: "",
       findings: [],
       artifacts: [],
       tokensEstimate: 0,
     };
 
-    this.ctx.platform.logger.info('Session state cleared', {
+    this.ctx.platform.logger.info("Session state cleared", {
       sessionId: this.state.sessionId,
     });
   }

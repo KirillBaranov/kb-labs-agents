@@ -4,18 +4,18 @@
  * Provides runtime validation for agent configs loaded from YAML
  */
 
-import { z } from 'zod';
-import { ToolStrategyConfigSchema } from './tool-strategy-schemas.js';
+import { z } from "zod";
+import { ToolStrategyConfigSchema } from "./tool-strategy-schemas.js";
 
 /**
  * Agent schema version
  */
-export const AgentSchemaSchema = z.literal('kb.agent/1');
+export const AgentSchemaSchema = z.literal("kb.agent/1");
 
 /**
  * LLM tier schema
  */
-const LLMTierSchema = z.enum(['small', 'medium', 'large']);
+const LLMTierSchema = z.enum(["small", "medium", "large"]);
 
 /**
  * LLM configuration schema
@@ -89,15 +89,15 @@ export const AgentOutputSchemaSchema = z.object({
  * Agent capabilities enum
  */
 export const AgentCapabilitySchema = z.enum([
-  'code-search',
-  'code-reading',
-  'code-writing',
-  'code-editing',
-  'architecture-analysis',
-  'dependency-analysis',
-  'command-execution',
-  'testing',
-  'documentation',
+  "code-search",
+  "code-reading",
+  "code-writing",
+  "code-editing",
+  "architecture-analysis",
+  "dependency-analysis",
+  "command-execution",
+  "testing",
+  "documentation",
 ]);
 
 /**

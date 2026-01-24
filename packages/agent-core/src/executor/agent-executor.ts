@@ -8,30 +8,41 @@
  * - Structured output validation
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import { useLLM, useCache } from '@kb-labs/sdk';
-import type { AgentConfigV1 as AgentConfigV1, ExecutionContext, AgentOutcome, RunMeta, FailureReport, LLMTier } from '@kb-labs/agent-contracts';
-import * as fs from 'fs/promises';
-import * as path from 'path';
+import type { PluginContextV3 } from "@kb-labs/sdk";
+import { useLLM, useCache } from "@kb-labs/sdk";
+import type {
+  AgentConfigV1 as AgentConfigV1,
+  ExecutionContext,
+  AgentOutcome,
+  RunMeta,
+  FailureReport,
+  LLMTier,
+} from "@kb-labs/agent-contracts";
+import * as fs from "fs/promises";
+import * as path from "path";
 import type {
   AgentExecutionStep,
   ToolCall,
   ToolDefinition,
   AgentProgressCallback,
-} from '@kb-labs/agent-contracts';
-import { ToolExecutor } from '../tools/tool-executor.js';
-import { LoopDetector } from './loop-detector.js';
-import { ExecutionMemory } from './execution-memory.js';
-import { ContextCompressor, type Message } from './context-compressor.js';
-import { SessionStateManager } from './session-state-manager.js';
-import { sanitizeToolName, createToolNameMapping, restoreToolName } from './tool-name-sanitizer.js';
+} from "@kb-labs/agent-contracts";
+import { ToolExecutor } from "../tools/tool-executor.js";
+import { LoopDetector } from "./loop-detector.js";
+import { ExecutionMemory } from "./execution-memory.js";
+import { ContextCompressor, type Message } from "./context-compressor.js";
+import { SessionStateManager } from "./session-state-manager.js";
+import {
+  sanitizeToolName,
+  createToolNameMapping,
+  restoreToolName,
+} from "./tool-name-sanitizer.js";
 import {
   createToolTraceStore,
   createToolTraceRecorder,
   createSchemaValidator,
   type IToolTraceStore,
-} from '../trace/index.js';
-import { buildOutputTool, usesStructuredOutput } from '../output-tool-builder.js';
+} from "../trace/index.js";
+import { buildOutputTool } from "../output-tool-builder.js";
 
 /**
  * Agent execution context
@@ -61,7 +72,7 @@ export interface AgentResult {
    * Tool trace object (for Level 2 validation)
    * Contains all tool invocations with inputs/outputs for schema validation.
    */
-  toolTrace?: import('@kb-labs/agent-contracts').ToolTrace;
+  toolTrace?: import("@kb-labs/agent-contracts").ToolTrace;
 }
 
 /**
@@ -126,7 +137,7 @@ export class AgentExecutor {
     task: string,
     executionContext?: ExecutionContext,
     progressCallback?: AgentProgressCallback,
-    tierOverride?: LLMTier
+    tierOverride?: LLMTier,
   ): Promise<AgentOutcome<AgentResult>> {
     const config = context.config;
     const startTime = Date.now();
@@ -149,7 +160,7 @@ export class AgentExecutor {
     const traceRecorder = createToolTraceRecorder({
       traceId: trace.traceId,
       store: this.toolTraceStore,
-      purpose: 'execution',
+      purpose: "execution",
     });
     const schemaValidator = createSchemaValidator();
 
@@ -162,7 +173,6 @@ export class AgentExecutor {
 
     // Build output tool if agent has output schema
     const outputToolWithValidation = buildOutputTool(config);
-    const hasStructuredOutput = usesStructuredOutput(config);
 
     // Combine input tools with output tool (if exists)
     const allTools = outputToolWithValidation
@@ -170,8 +180,8 @@ export class AgentExecutor {
       : context.tools;
 
     // Create tool name mapping for sanitization (OpenAI doesn't allow colons)
-    const toolNameMapping = createToolNameMapping(allTools.map(t => t.name));
-    const sanitizedTools = allTools.map(tool => ({
+    const toolNameMapping = createToolNameMapping(allTools.map((t) => t.name));
+    const sanitizedTools = allTools.map((tool) => ({
       ...tool,
       name: sanitizeToolName(tool.name),
     }));
@@ -191,7 +201,7 @@ export class AgentExecutor {
       forcedReasoningInterval,
     };
 
-    this.ctx.platform.logger.info('Starting agent execution', {
+    this.ctx.platform.logger.info("Starting agent execution", {
       agentId: config.id,
       task,
       tier: effectiveTier,
@@ -204,18 +214,18 @@ export class AgentExecutor {
       config,
       task,
       effectiveTier,
-      executionContext
+      executionContext,
     );
 
     // Add system message
     state.messages.push({
-      role: 'system',
+      role: "system",
       content: systemPrompt,
     });
 
     // Add user message with task
     state.messages.push({
-      role: 'user',
+      role: "user",
       content: this.buildUserPrompt(task),
     });
 
@@ -227,17 +237,20 @@ export class AgentExecutor {
       while (state.currentStep < state.maxSteps) {
         state.currentStep++;
 
-        this.ctx.platform.logger.debug(`Agent step ${state.currentStep}/${state.maxSteps}`, {
-          agentId: config.id,
-          toolCallsSinceReasoning: state.toolCallsSinceReasoning,
-        });
+        this.ctx.platform.logger.debug(
+          `Agent step ${state.currentStep}/${state.maxSteps}`,
+          {
+            agentId: config.id,
+            toolCallsSinceReasoning: state.toolCallsSinceReasoning,
+          },
+        );
 
         // Add reminders as we approach max steps
         if (config.output?.schema) {
           // Halfway reminder
           if (state.currentStep === Math.floor(state.maxSteps / 2)) {
             state.messages.push({
-              role: 'user',
+              role: "user",
               content: `⚠️ REMINDER: Don't forget to call submit_result() when you complete the task. Your text responses won't be captured!`,
             });
           }
@@ -245,7 +258,7 @@ export class AgentExecutor {
           // Final reminder
           if (state.currentStep === state.maxSteps - 1) {
             state.messages.push({
-              role: 'user',
+              role: "user",
               content: `🚨 URGENT: This is your LAST step! You MUST call submit_result() NOW with the required schema:\n\`\`\`json\n${JSON.stringify(config.output.schema, null, 2)}\n\`\`\`\n\nIf you don't call it now, all your work will be LOST!`,
             });
           }
@@ -259,22 +272,26 @@ export class AgentExecutor {
         }, 0);
         const TOKEN_COMPRESSION_THRESHOLD = 8000; // Compress if context exceeds ~8k tokens
 
-        if (state.messages.length > 5 || estimatedTokens > TOKEN_COMPRESSION_THRESHOLD) {
+        if (
+          state.messages.length > 5 ||
+          estimatedTokens > TOKEN_COMPRESSION_THRESHOLD
+        ) {
           const compressed = await this.contextCompressor.compress(
             state.messages,
             task,
-            state.agentId
+            state.agentId,
           );
           state.messages = compressed.compressedMessages;
           state.tokensUsed += compressed.compressedTokens;
 
-          this.ctx.platform.logger.info('Context compressed', {
-            reason: state.messages.length > 5 ? 'message count' : 'token count',
+          this.ctx.platform.logger.info("Context compressed", {
+            reason: state.messages.length > 5 ? "message count" : "token count",
             originalMessages: state.messages.length,
             originalTokens: compressed.originalTokens,
             compressedTokens: compressed.compressedTokens,
             compressionRatio: compressed.compressionRatio,
-            tokensSaved: compressed.originalTokens - compressed.compressedTokens,
+            tokensSaved:
+              compressed.originalTokens - compressed.compressedTokens,
           });
         }
 
@@ -284,7 +301,7 @@ export class AgentExecutor {
           state.toolCallsSinceReasoning > 0;
 
         if (isForcedReasoning) {
-          this.ctx.platform.logger.debug('Forced reasoning step', {
+          this.ctx.platform.logger.debug("Forced reasoning step", {
             toolCallsSinceReasoning: state.toolCallsSinceReasoning,
             forcedReasoningInterval,
           });
@@ -293,7 +310,9 @@ export class AgentExecutor {
         // Call LLM
         const llm = useLLM({ tier: effectiveTier });
         if (!llm || !llm.chatWithTools) {
-          throw new Error('LLM not configured or does not support tool calling');
+          throw new Error(
+            "LLM not configured or does not support tool calling",
+          );
         }
 
         const llmResponse = await llm.chatWithTools(state.messages, {
@@ -303,14 +322,15 @@ export class AgentExecutor {
         });
 
         // Update token usage
-        const tokensUsed = llmResponse.usage.promptTokens + llmResponse.usage.completionTokens;
+        const tokensUsed =
+          llmResponse.usage.promptTokens + llmResponse.usage.completionTokens;
         state.tokensUsed += tokensUsed;
 
         // Add assistant message to history (only if has content - empty content breaks some APIs)
-        const assistantContent = llmResponse.content || '';
+        const assistantContent = llmResponse.content || "";
         if (assistantContent.trim()) {
           state.messages.push({
-            role: 'assistant',
+            role: "assistant",
             content: assistantContent,
           });
         }
@@ -318,7 +338,7 @@ export class AgentExecutor {
         // Create step record
         const step: AgentExecutionStep = {
           step: state.currentStep,
-          response: llmResponse.content || '',
+          response: llmResponse.content || "",
           tokensUsed,
         };
 
@@ -328,16 +348,19 @@ export class AgentExecutor {
           state.steps.push(step);
 
           // Check for completion signals in reasoning
-          if (this.isComplete(llmResponse.content || '')) {
-            this.ctx.platform.logger.info('Agent completed task (detected in reasoning)', {
-              agentId: config.id,
-              steps: state.currentStep,
-            });
+          if (this.isComplete(llmResponse.content || "")) {
+            this.ctx.platform.logger.info(
+              "Agent completed task (detected in reasoning)",
+              {
+                agentId: config.id,
+                steps: state.currentStep,
+              },
+            );
             break;
           }
 
           // After forced reasoning, provide session state summary and remind about output format
-          let reminderContent = '';
+          let reminderContent = "";
 
           // Add session state context
           const sessionStateSummary = sessionState.serializeForLLM();
@@ -352,7 +375,7 @@ export class AgentExecutor {
 
           if (reminderContent) {
             state.messages.push({
-              role: 'system',
+              role: "system",
               content: reminderContent,
             });
           }
@@ -365,12 +388,15 @@ export class AgentExecutor {
 
         if (toolCalls.length === 0) {
           // No tools called - check if complete
-          if (this.isComplete(llmResponse.content || '')) {
+          if (this.isComplete(llmResponse.content || "")) {
             state.steps.push(step);
-            this.ctx.platform.logger.info('Agent completed task (no more tools)', {
-              agentId: config.id,
-              steps: state.currentStep,
-            });
+            this.ctx.platform.logger.info(
+              "Agent completed task (no more tools)",
+              {
+                agentId: config.id,
+                steps: state.currentStep,
+              },
+            );
             break;
           }
 
@@ -384,12 +410,17 @@ export class AgentExecutor {
 
         for (const llmToolCall of toolCalls) {
           // Restore original tool name (mind_rag_query → mind:rag-query)
-          const originalName = restoreToolName(llmToolCall.name, toolNameMapping);
+          const originalName = restoreToolName(
+            llmToolCall.name,
+            toolNameMapping,
+          );
 
           // Check if this is submit_result call (structured output mode)
-          if (originalName === 'submit_result' && outputToolWithValidation) {
+          if (originalName === "submit_result" && outputToolWithValidation) {
             // Validate input against Zod schema
-            const parseResult = outputToolWithValidation.zodSchema.safeParse(llmToolCall.input);
+            const parseResult = outputToolWithValidation.zodSchema.safeParse(
+              llmToolCall.input,
+            );
 
             if (!parseResult.success) {
               // Validation failed - add error to messages and continue
@@ -401,14 +432,14 @@ export class AgentExecutor {
               });
 
               state.messages.push({
-                role: 'user',
+                role: "user",
                 content: `❌ ${errorMessage}\n\nPlease fix the output and call submit_result again.`,
               });
 
               step.toolCalls.push({
-                name: 'submit_result',
+                name: "submit_result",
                 input: llmToolCall.input,
-                output: '',
+                output: "",
                 success: false,
                 error: errorMessage,
               });
@@ -420,13 +451,13 @@ export class AgentExecutor {
             submittedResult = parseResult.data;
 
             step.toolCalls.push({
-              name: 'submit_result',
+              name: "submit_result",
               input: llmToolCall.input,
               output: JSON.stringify(parseResult.data),
               success: true,
             });
 
-            this.ctx.platform.logger.info('Agent submitted structured result', {
+            this.ctx.platform.logger.info("Agent submitted structured result", {
               agentId: config.id,
               step: state.currentStep,
             });
@@ -445,24 +476,30 @@ export class AgentExecutor {
           step.toolCalls.push({
             name: toolCall.name,
             input: toolCall.input,
-            output: result.output || '',
+            output: result.output || "",
             success: result.success,
-            error: result.error ? (typeof result.error === 'string' ? result.error : result.error.message) : undefined,
+            error: result.error
+              ? typeof result.error === "string"
+                ? result.error
+                : result.error.message
+              : undefined,
           });
 
           // Add tool result to messages (with aggressive truncation to prevent context explosion)
-          const rawOutput = JSON.stringify(result.output ?? null, null, 2) ?? ''; // Safety: handle undefined output
+          const rawOutput =
+            JSON.stringify(result.output ?? null, null, 2) ?? ""; // Safety: handle undefined output
           const MAX_TOOL_RESULT_LENGTH = 800; // Aggressive limit - prevents 77k token explosions
 
           let truncatedOutput = rawOutput;
           if (rawOutput && rawOutput.length > MAX_TOOL_RESULT_LENGTH) {
-            truncatedOutput = rawOutput.slice(0, MAX_TOOL_RESULT_LENGTH) +
+            truncatedOutput =
+              rawOutput.slice(0, MAX_TOOL_RESULT_LENGTH) +
               `\n\n...[truncated ${rawOutput.length - MAX_TOOL_RESULT_LENGTH} chars to save ~${Math.floor((rawOutput.length - MAX_TOOL_RESULT_LENGTH) / 4)} tokens]\n\n` +
               `💡 Full result stored in session artifacts. Use findings and context from previous messages.`;
           }
 
           state.messages.push({
-            role: 'user',
+            role: "user",
             content: `Tool result (${toolCall.name}):\n${truncatedOutput}`,
           });
 
@@ -471,17 +508,19 @@ export class AgentExecutor {
             this.executionMemory.addFinding({
               tool: toolCall.name,
               query: JSON.stringify(toolCall.input),
-              fact: typeof result.output === 'string'
-                ? result.output
-                : JSON.stringify(result.output),
+              fact:
+                typeof result.output === "string"
+                  ? result.output
+                  : JSON.stringify(result.output),
               step: state.currentStep,
               success: true,
             });
 
             // Add to session state (V2)
-            const factSummary = typeof result.output === 'string'
-              ? result.output.slice(0, 100)
-              : `${toolCall.name} completed successfully`;
+            const factSummary =
+              typeof result.output === "string"
+                ? result.output.slice(0, 100)
+                : `${toolCall.name} completed successfully`;
 
             sessionState.addFinding({
               step: state.currentStep,
@@ -490,11 +529,14 @@ export class AgentExecutor {
             });
 
             // Store large outputs as artifacts
-            const outputSize = (JSON.stringify(result.output ?? null) ?? '').length;
+            const outputSize = (JSON.stringify(result.output ?? null) ?? "")
+              .length;
             if (outputSize > 500) {
               // Store as artifact if large
               await sessionState.storeArtifact({
-                type: toolCall.name.startsWith('fs:') ? 'file-content' : 'search-result',
+                type: toolCall.name.startsWith("fs:")
+                  ? "file-content"
+                  : "search-result",
                 name: `${toolCall.name}-step-${state.currentStep}`,
                 content: result.output,
                 metadata: {
@@ -512,10 +554,13 @@ export class AgentExecutor {
 
         // If agent submitted structured result, break immediately
         if (submittedResult !== null) {
-          this.ctx.platform.logger.info('Agent completed task with structured output', {
-            agentId: config.id,
-            steps: state.currentStep,
-          });
+          this.ctx.platform.logger.info(
+            "Agent completed task with structured output",
+            {
+              agentId: config.id,
+              steps: state.currentStep,
+            },
+          );
           break;
         }
 
@@ -523,7 +568,7 @@ export class AgentExecutor {
         const loopDetection = this.loopDetector.checkForLoop(state.steps);
 
         if (loopDetection.detected) {
-          this.ctx.platform.logger.warn('Loop detected in agent execution', {
+          this.ctx.platform.logger.warn("Loop detected in agent execution", {
             agentId: config.id,
             type: loopDetection.type,
             description: loopDetection.description,
@@ -532,7 +577,7 @@ export class AgentExecutor {
 
           // Add warning to messages
           state.messages.push({
-            role: 'system',
+            role: "system",
             content: `⚠️ Warning: Loop detected (${loopDetection.type}). ${loopDetection.description}. Try a different approach.`,
           });
         }
@@ -551,32 +596,41 @@ export class AgentExecutor {
       if (submittedResult !== null) {
         // Structured output mode: use submitted result
         rawOutput = submittedResult;
-        this.ctx.platform.logger.info('Using structured output from submit_result', {
-          agentId: config.id,
-        });
+        this.ctx.platform.logger.info(
+          "Using structured output from submit_result",
+          {
+            agentId: config.id,
+          },
+        );
       } else {
         // Legacy mode: extract from text
-        const lastMessage = state.messages.filter(m => m.role === 'assistant').pop();
-        rawOutput = this.extractOutput(lastMessage?.content || '', config);
-        this.ctx.platform.logger.info('Using legacy text-based output', {
+        const lastMessage = state.messages
+          .filter((m) => m.role === "assistant")
+          .pop();
+        rawOutput = this.extractOutput(lastMessage?.content || "", config);
+        this.ctx.platform.logger.info("Using legacy text-based output", {
           agentId: config.id,
         });
       }
 
       // ADR-0002: Ensure output includes traceRef for verification
       // If extracted output is an object, inject traceRef. Otherwise wrap in AgentOutput structure.
-      const output = typeof rawOutput === 'object' && rawOutput !== null
-        ? { ...rawOutput, traceRef: `trace:${trace.traceId}` }
-        : {
-            summary: typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput),
-            traceRef: `trace:${trace.traceId}`,
-          };
+      const output =
+        typeof rawOutput === "object" && rawOutput !== null
+          ? { ...rawOutput, traceRef: `trace:${trace.traceId}` }
+          : {
+              summary:
+                typeof rawOutput === "string"
+                  ? rawOutput
+                  : JSON.stringify(rawOutput),
+              traceRef: `trace:${trace.traceId}`,
+            };
 
       // Log session state metrics
       const sessionTokens = sessionState.getTokenEstimate();
       const sessionStats = sessionState.getState();
 
-      this.ctx.platform.logger.info('Agent execution completed', {
+      this.ctx.platform.logger.info("Agent execution completed", {
         agentId: config.id,
         success: true,
         steps: state.currentStep,
@@ -596,7 +650,9 @@ export class AgentExecutor {
       await this.toolTraceStore.complete(trace.traceId);
 
       // Retrieve tool trace for verification (ADR-0002 Level 2)
-      const toolTrace = await this.toolTraceStore.load(`trace:${trace.traceId}`);
+      const toolTrace = await this.toolTraceStore.load(
+        `trace:${trace.traceId}`,
+      );
 
       // Phase 3: Return AgentOutcome with success
       const result: AgentResult = {
@@ -615,7 +671,10 @@ export class AgentExecutor {
           prompt: Math.floor(state.tokensUsed * 0.4), // Rough estimate (40% prompt, 60% completion)
           completion: Math.floor(state.tokensUsed * 0.6),
         },
-        toolCalls: state.steps.reduce((sum, step) => sum + (step.toolCalls?.length || 0), 0),
+        toolCalls: state.steps.reduce(
+          (sum, step) => sum + (step.toolCalls?.length || 0),
+          0,
+        ),
         modelTier: effectiveTier,
       };
 
@@ -624,27 +683,36 @@ export class AgentExecutor {
         result,
         meta,
       };
-
     } catch (error) {
       const durationMs = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
 
-      this.ctx.platform.logger.error('Agent execution failed', new Error(
-        `[${config.id}] ${errorMessage} (steps: ${state.currentStep}, duration: ${durationMs}ms)`
-      ));
+      this.ctx.platform.logger.error(
+        "Agent execution failed",
+        new Error(
+          `[${config.id}] ${errorMessage} (steps: ${state.currentStep}, duration: ${durationMs}ms)`,
+        ),
+      );
 
       // Complete tool trace even on error
       await this.toolTraceStore.complete(trace.traceId);
 
       // Retrieve tool trace for verification (ADR-0002 Level 2)
-      let toolTrace: import('@kb-labs/agent-contracts').ToolTrace | undefined;
+      let toolTrace: import("@kb-labs/agent-contracts").ToolTrace | undefined;
       try {
         toolTrace = await this.toolTraceStore.load(`trace:${trace.traceId}`);
       } catch (loadError) {
         // Trace load failed - not critical in error path
-        this.ctx.platform.logger.warn('Failed to load tool trace in error path', {
-          error: loadError instanceof Error ? loadError.message : String(loadError),
-        });
+        this.ctx.platform.logger.warn(
+          "Failed to load tool trace in error path",
+          {
+            error:
+              loadError instanceof Error
+                ? loadError.message
+                : String(loadError),
+          },
+        );
       }
 
       // Phase 3: Classify error and build failure report
@@ -673,7 +741,10 @@ export class AgentExecutor {
           prompt: Math.floor(state.tokensUsed * 0.4),
           completion: Math.floor(state.tokensUsed * 0.6),
         },
-        toolCalls: state.steps.reduce((sum, step) => sum + (step.toolCalls?.length || 0), 0),
+        toolCalls: state.steps.reduce(
+          (sum, step) => sum + (step.toolCalls?.length || 0),
+          0,
+        ),
         modelTier: effectiveTier,
       };
 
@@ -696,13 +767,13 @@ export class AgentExecutor {
     config: AgentConfigV1,
     task: string,
     tier: LLMTier,
-    inputData?: unknown
+    inputData?: unknown,
   ): string {
-    let prompt = '';
+    let prompt = "";
 
     // Add static context if provided
     if (config.context?.static?.system) {
-      prompt += config.context.static.system + '\n\n';
+      prompt += config.context.static.system + "\n\n";
     }
 
     // Add capabilities
@@ -711,7 +782,7 @@ export class AgentExecutor {
       for (const capability of config.capabilities) {
         prompt += `- ${capability}\n`;
       }
-      prompt += '\n';
+      prompt += "\n";
     }
 
     // Add constraints
@@ -720,7 +791,7 @@ export class AgentExecutor {
       for (const constraint of config.constraints) {
         prompt += `${constraint}\n`;
       }
-      prompt += '\n';
+      prompt += "\n";
     }
 
     // SYSTEM: Add structured output instructions (auto-injected, not user-defined)
@@ -761,9 +832,9 @@ export class AgentExecutor {
     config: AgentConfigV1,
     task: string,
     tier: LLMTier,
-    executionContext?: ExecutionContext
+    executionContext?: ExecutionContext,
   ): Promise<string> {
-    let prompt = '';
+    let prompt = "";
 
     // CRITICAL: Add structured output instructions FIRST (most important)
     if (config.output?.schema) {
@@ -776,12 +847,12 @@ export class AgentExecutor {
       prompt += JSON.stringify(config.output.schema, null, 2);
       prompt += `\n\`\`\`\n\n`;
       prompt += `Workflow: Use tools → Complete task → Call submit_result() with above schema → DONE\n\n`;
-      prompt += `─`.repeat(60) + '\n\n';
+      prompt += `─`.repeat(60) + "\n\n";
     }
 
     // Add static context from config (backward compatibility)
     if (config.context?.static?.system) {
-      prompt += config.context.static.system + '\n\n';
+      prompt += config.context.static.system + "\n\n";
     }
 
     // V2: Load context.md from agent directory
@@ -806,7 +877,7 @@ export class AgentExecutor {
         prompt += `*Note: Edit files directly in projectRoot*\n`;
       }
 
-      prompt += '\n';
+      prompt += "\n";
 
       // Add findings from previous agents
       if (executionContext.findings && executionContext.findings.length > 0) {
@@ -814,7 +885,7 @@ export class AgentExecutor {
         for (const finding of executionContext.findings) {
           prompt += `- ${finding}\n`;
         }
-        prompt += '\n';
+        prompt += "\n";
       }
 
       // Add available files
@@ -823,7 +894,7 @@ export class AgentExecutor {
         for (const file of executionContext.availableFiles.created) {
           prompt += `- ${file}\n`;
         }
-        prompt += '\n';
+        prompt += "\n";
       }
 
       if (executionContext.availableFiles.modified.length > 0) {
@@ -831,7 +902,7 @@ export class AgentExecutor {
         for (const file of executionContext.availableFiles.modified) {
           prompt += `- ${file}\n`;
         }
-        prompt += '\n';
+        prompt += "\n";
       }
     }
 
@@ -852,7 +923,7 @@ export class AgentExecutor {
       for (const capability of config.capabilities) {
         prompt += `- ${capability}\n`;
       }
-      prompt += '\n';
+      prompt += "\n";
     }
 
     // Add constraints
@@ -861,7 +932,7 @@ export class AgentExecutor {
       for (const constraint of config.constraints) {
         prompt += `${constraint}\n`;
       }
-      prompt += '\n';
+      prompt += "\n";
     }
 
     // SYSTEM: Add structured output instructions (auto-injected, not user-defined)
@@ -899,9 +970,9 @@ export class AgentExecutor {
    */
   private adaptContextForTier(contextMd: string, tier: LLMTier): string {
     const limits = {
-      small: 2048,      // 2KB (~500 tokens)
-      medium: 5120,     // 5KB (~1200 tokens)
-      large: Infinity,  // No limit
+      small: 2048, // 2KB (~500 tokens)
+      medium: 5120, // 5KB (~1200 tokens)
+      large: Infinity, // No limit
     } as const;
 
     const maxChars = limits[tier];
@@ -923,7 +994,9 @@ export class AgentExecutor {
    * @param agentId - Agent ID
    * @returns Context markdown content or undefined
    */
-  private async loadContextMarkdown(agentId: string): Promise<string | undefined> {
+  private async loadContextMarkdown(
+    agentId: string,
+  ): Promise<string | undefined> {
     const cache = useCache();
     const cacheKey = `agent:${agentId}:context`;
 
@@ -937,8 +1010,13 @@ export class AgentExecutor {
 
     // Load from filesystem
     try {
-      const contextPath = path.join(process.cwd(), '.kb/agents', agentId, 'context.md');
-      const content = await fs.readFile(contextPath, 'utf-8');
+      const contextPath = path.join(
+        process.cwd(),
+        ".kb/agents",
+        agentId,
+        "context.md",
+      );
+      const content = await fs.readFile(contextPath, "utf-8");
 
       // Cache for 1 hour (3600000ms)
       if (cache) {
@@ -948,7 +1026,7 @@ export class AgentExecutor {
       return content;
     } catch (error) {
       // File not found or read error - not critical
-      this.ctx.platform.logger.debug('Failed to load context.md', {
+      this.ctx.platform.logger.debug("Failed to load context.md", {
         agentId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -964,13 +1042,20 @@ export class AgentExecutor {
    * @param agentId - Agent ID
    * @returns Array of examples or undefined
    */
-  private async loadExamples(agentId: string): Promise<Array<{ task: string; approach: string; outcome: string }> | undefined> {
+  private async loadExamples(
+    agentId: string,
+  ): Promise<
+    Array<{ task: string; approach: string; outcome: string }> | undefined
+  > {
     const cache = useCache();
     const cacheKey = `agent:${agentId}:examples`;
 
     // Try cache first
     if (cache) {
-      const cached = await cache.get<Array<{ task: string; approach: string; outcome: string }>>(cacheKey);
+      const cached =
+        await cache.get<
+          Array<{ task: string; approach: string; outcome: string }>
+        >(cacheKey);
       if (cached) {
         return cached;
       }
@@ -978,8 +1063,13 @@ export class AgentExecutor {
 
     // Load from filesystem
     try {
-      const examplesPath = path.join(process.cwd(), '.kb/agents', agentId, 'examples.yml');
-      const content = await fs.readFile(examplesPath, 'utf-8');
+      const examplesPath = path.join(
+        process.cwd(),
+        ".kb/agents",
+        agentId,
+        "examples.yml",
+      );
+      const content = await fs.readFile(examplesPath, "utf-8");
 
       // Simple YAML parsing (examples is an array)
       const examples = this.parseExamplesYaml(content);
@@ -992,7 +1082,7 @@ export class AgentExecutor {
       return examples;
     } catch (error) {
       // File not found or read error - not critical
-      this.ctx.platform.logger.debug('Failed to load examples.yml', {
+      this.ctx.platform.logger.debug("Failed to load examples.yml", {
         agentId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1013,21 +1103,26 @@ export class AgentExecutor {
    * @param content - YAML content
    * @returns Parsed examples
    */
-  private parseExamplesYaml(content: string): Array<{ task: string; approach: string; outcome: string }> {
-    const examples: Array<{ task: string; approach: string; outcome: string }> = [];
+  private parseExamplesYaml(
+    content: string,
+  ): Array<{ task: string; approach: string; outcome: string }> {
+    const examples: Array<{ task: string; approach: string; outcome: string }> =
+      [];
 
     // Simple regex-based parsing for our specific format
     const exampleBlocks = content.split(/^  - task:/m).slice(1);
 
     for (const block of exampleBlocks) {
       const taskMatch = block.match(/^\s*"([^"]+)"/);
-      const approachMatch = block.match(/approach:\s*\|\s*\n((?:(?:      .+|\s*)\n)+)/);
+      const approachMatch = block.match(
+        /approach:\s*\|\s*\n((?:(?:      .+|\s*)\n)+)/,
+      );
       const outcomeMatch = block.match(/outcome:\s*"([^"]+)"/);
 
       if (taskMatch?.[1] && approachMatch?.[1] && outcomeMatch?.[1]) {
         examples.push({
           task: taskMatch[1],
-          approach: approachMatch[1].replace(/^      /gm, '').trim(),
+          approach: approachMatch[1].replace(/^      /gm, "").trim(),
           outcome: outcomeMatch[1],
         });
       }
@@ -1048,18 +1143,36 @@ export class AgentExecutor {
    *
    * Maps error messages to failure kinds for retry logic
    */
-  private classifyError(error: unknown): FailureReport['kind'] {
+  private classifyError(error: unknown): FailureReport["kind"] {
     if (error instanceof Error) {
       const msg = error.message.toLowerCase();
 
-      if (msg.includes('timeout') || msg.includes('timed out')) return 'timeout';
-      if (msg.includes('tool') || msg.includes('execution failed')) return 'tool_error';
-      if (msg.includes('validation') || msg.includes('schema')) return 'validation_failed';
-      if (msg.includes('stuck') || msg.includes('loop') || msg.includes('infinite')) return 'stuck';
-      if (msg.includes('policy') || msg.includes('denied') || msg.includes('budget')) return 'policy_denied';
+      if (msg.includes("timeout") || msg.includes("timed out")) {
+        return "timeout";
+      }
+      if (msg.includes("tool") || msg.includes("execution failed")) {
+        return "tool_error";
+      }
+      if (msg.includes("validation") || msg.includes("schema")) {
+        return "validation_failed";
+      }
+      if (
+        msg.includes("stuck") ||
+        msg.includes("loop") ||
+        msg.includes("infinite")
+      ) {
+        return "stuck";
+      }
+      if (
+        msg.includes("policy") ||
+        msg.includes("denied") ||
+        msg.includes("budget")
+      ) {
+        return "policy_denied";
+      }
     }
 
-    return 'unknown';
+    return "unknown";
   }
 
   /**
@@ -1072,13 +1185,23 @@ export class AgentExecutor {
     const kind = this.classifyError(error);
 
     // Don't retry permanent failures
-    if (kind === 'validation_failed') return false;
-    if (kind === 'policy_denied') return false;
+    if (kind === "validation_failed") {
+      return false;
+    }
+    if (kind === "policy_denied") {
+      return false;
+    }
 
     // Retry transient failures
-    if (kind === 'timeout') return true;
-    if (kind === 'tool_error') return true;
-    if (kind === 'stuck') return true;
+    if (kind === "timeout") {
+      return true;
+    }
+    if (kind === "tool_error") {
+      return true;
+    }
+    if (kind === "stuck") {
+      return true;
+    }
 
     // Default: retry unknown errors
     return true;
@@ -1087,7 +1210,10 @@ export class AgentExecutor {
   /**
    * Get last N tool calls for debugging (Phase 3)
    */
-  private getLastToolCalls(steps: AgentExecutionStep[], count: number): Array<{ tool: string; args: unknown; error?: string }> {
+  private getLastToolCalls(
+    steps: AgentExecutionStep[],
+    count: number,
+  ): Array<{ tool: string; args: unknown; error?: string }> {
     const lastSteps = steps.slice(-count);
     const calls: Array<{ tool: string; args: unknown; error?: string }> = [];
 
@@ -1113,15 +1239,16 @@ export class AgentExecutor {
     const lowerMessage = message.toLowerCase();
 
     // Check for explicit completion signals
-    const hasCompletionSignal = (
-      lowerMessage.includes('task complete') ||
-      lowerMessage.includes('done') ||
-      lowerMessage.includes('finished') ||
-      lowerMessage.includes('completed')
-    );
+    const hasCompletionSignal =
+      lowerMessage.includes("task complete") ||
+      lowerMessage.includes("done") ||
+      lowerMessage.includes("finished") ||
+      lowerMessage.includes("completed");
 
     // Check for JSON output (indicates structured result ready)
-    const hasJsonOutput = message.includes('```json') || /\{[\s\S]*"summary"[\s\S]*\}/.test(message);
+    const hasJsonOutput =
+      message.includes("```json") ||
+      /\{[\s\S]*"summary"[\s\S]*\}/.test(message);
 
     return hasCompletionSignal || hasJsonOutput;
   }
@@ -1130,7 +1257,7 @@ export class AgentExecutor {
    * Extract structured output from message
    */
   private extractOutput(message: string, config: AgentConfigV1): unknown {
-    this.ctx.platform.logger.debug('Extracting output from agent response', {
+    this.ctx.platform.logger.debug("Extracting output from agent response", {
       messageLength: message.length,
       hasSchema: !!config.output?.schema,
     });
@@ -1140,10 +1267,13 @@ export class AgentExecutor {
     if (jsonBlockMatch && jsonBlockMatch[1]) {
       try {
         const parsed = JSON.parse(jsonBlockMatch[1]);
-        this.ctx.platform.logger.debug('Extracted output from JSON code block', { parsed });
+        this.ctx.platform.logger.debug(
+          "Extracted output from JSON code block",
+          { parsed },
+        );
         return parsed;
       } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse JSON from code block', {
+        this.ctx.platform.logger.warn("Failed to parse JSON from code block", {
           error: error instanceof Error ? error.message : String(error),
           content: jsonBlockMatch[1].slice(0, 200),
         });
@@ -1151,15 +1281,17 @@ export class AgentExecutor {
     }
 
     // Strategy 2: Try to extract any JSON object (greedy match from last {)
-    const lines = message.split('\n');
+    const lines = message.split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i];
-      if (line && line.trim().startsWith('{')) {
+      if (line && line.trim().startsWith("{")) {
         // Found potential JSON start, try to parse from here to end
-        const jsonCandidate = lines.slice(i).join('\n');
+        const jsonCandidate = lines.slice(i).join("\n");
         try {
           const parsed = JSON.parse(jsonCandidate);
-          this.ctx.platform.logger.debug('Extracted output from JSON object', { parsed });
+          this.ctx.platform.logger.debug("Extracted output from JSON object", {
+            parsed,
+          });
           return parsed;
         } catch {
           // Continue searching
@@ -1172,22 +1304,27 @@ export class AgentExecutor {
     if (objectMatch) {
       try {
         const parsed = JSON.parse(objectMatch[0]);
-        this.ctx.platform.logger.debug('Extracted output from inline JSON', { parsed });
+        this.ctx.platform.logger.debug("Extracted output from inline JSON", {
+          parsed,
+        });
         return parsed;
       } catch (error) {
-        this.ctx.platform.logger.warn('Failed to parse inline JSON', {
+        this.ctx.platform.logger.warn("Failed to parse inline JSON", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
 
     // Fallback: Wrap raw message in summary field
-    this.ctx.platform.logger.warn('Could not extract structured output, using fallback', {
-      messageSample: message.slice(0, 200),
-    });
+    this.ctx.platform.logger.warn(
+      "Could not extract structured output, using fallback",
+      {
+        messageSample: message.slice(0, 200),
+      },
+    );
     return {
-      summary: message || '(empty response)',
-      _warning: 'Output was not in expected JSON format',
+      summary: message || "(empty response)",
+      _warning: "Output was not in expected JSON format",
     };
   }
 }

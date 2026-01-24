@@ -8,7 +8,7 @@ export interface Greeting {
   createdAt: Date;
 }
 
-const DEFAULT_TARGET = 'World';
+const DEFAULT_TARGET = "World";
 
 /**
  * Creates a greeting with the given name
@@ -22,7 +22,10 @@ const DEFAULT_TARGET = 'World';
  * // { message: 'Hello, World!', target: 'World', createdAt: Date }
  * ```
  */
-export function createGreeting(name?: string, customMessage?: string): Greeting {
+export function createGreeting(
+  name?: string,
+  customMessage?: string,
+): Greeting {
   const target = name?.trim() || DEFAULT_TARGET;
   const message = customMessage ?? `Hello, ${target}!`;
 

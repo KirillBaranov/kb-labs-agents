@@ -23,26 +23,23 @@ export {
   CommandExecutedClaimSchema,
   CodeInsertedClaimSchema,
   type AgentOutputValidated,
-} from './agent-output-schema.js';
+} from "./agent-output-schema.js";
 
 // Level 2: Plugin schema validation
 export {
   PluginSchemaLoader,
   getSchemaLoader,
   type SchemaRef,
-} from './plugin-schema-loader.js';
+} from "./plugin-schema-loader.js";
 
 // Level 3: Filesystem validation
 export {
   BuiltInToolVerifier,
   type ClaimVerificationResult,
-} from './built-in-verifier.js';
+} from "./built-in-verifier.js";
 
 // Main verifier (orchestrates all 3 levels)
-export {
-  TaskVerifier,
-  type VerificationResult,
-} from './task-verifier.js';
+export { TaskVerifier, type VerificationResult } from "./task-verifier.js";
 
 // Metrics (for A/B testing and analysis)
 export {
@@ -52,4 +49,4 @@ export {
   type VerificationLevel,
   type VerificationStatus,
   type VerificationErrorCategory,
-} from './verification-metrics.js';
+} from "./verification-metrics.js";

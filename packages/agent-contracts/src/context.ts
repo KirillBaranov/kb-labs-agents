@@ -9,7 +9,7 @@
  * - Available files created by previous agents
  */
 
-import type { DelegatedResult } from './callbacks.js';
+import type { DelegatedResult } from "./callbacks.js";
 
 /**
  * Execution context passed from orchestrator to agent

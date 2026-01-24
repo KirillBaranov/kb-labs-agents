@@ -9,8 +9,12 @@
  * - Performance analytics
  */
 
-import type { LLMTier } from '@kb-labs/sdk';
-import type { ExecutionPlan, SubtaskResult, OrchestratorResult } from './types.js';
+import type { LLMTier } from "@kb-labs/sdk";
+import type {
+  ExecutionPlan,
+  SubtaskResult,
+  OrchestratorResult,
+} from "./types.js";
 
 /**
  * Tool call record from agent execution.
@@ -35,7 +39,7 @@ export interface ToolCallRecord {
  */
 export interface LLMInteraction {
   /** Type of LLM call */
-  type: 'complete' | 'chat' | 'chatWithTools';
+  type: "complete" | "chat" | "chatWithTools";
   /** LLM tier used */
   tier: LLMTier;
   /** Input prompt or messages */
@@ -89,9 +93,9 @@ export interface OrchestrationHistory {
   /** Classified tier */
   classifiedTier: LLMTier;
   /** Classification confidence */
-  classificationConfidence: 'high' | 'low';
+  classificationConfidence: "high" | "low";
   /** Classification method */
-  classificationMethod: 'llm' | 'heuristic' | 'hybrid';
+  classificationMethod: "llm" | "heuristic" | "hybrid";
   /** Execution plan created */
   plan: ExecutionPlan;
   /** Number of agent agents loaded */

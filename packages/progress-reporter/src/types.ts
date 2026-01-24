@@ -3,22 +3,22 @@
  * Type definitions for progress feedback system.
  */
 
-import type { LLMTier } from '@kb-labs/sdk';
+import type { LLMTier } from "@kb-labs/sdk";
 
 /**
  * Progress event types.
  */
 export type ProgressEventType =
-  | 'task_started'
-  | 'task_classified'
-  | 'planning_started'
-  | 'planning_completed'
-  | 'subtask_started'
-  | 'subtask_progress'
-  | 'subtask_completed'
-  | 'subtask_failed'
-  | 'tier_escalated'
-  | 'task_completed';
+  | "task_started"
+  | "task_classified"
+  | "planning_started"
+  | "planning_completed"
+  | "subtask_started"
+  | "subtask_progress"
+  | "subtask_completed"
+  | "subtask_failed"
+  | "tier_escalated"
+  | "task_completed";
 
 /**
  * Base progress event.
@@ -32,7 +32,7 @@ export interface BaseProgressEvent {
  * Task started event.
  */
 export interface TaskStartedEvent extends BaseProgressEvent {
-  type: 'task_started';
+  type: "task_started";
   data: {
     taskDescription: string;
   };
@@ -42,11 +42,11 @@ export interface TaskStartedEvent extends BaseProgressEvent {
  * Task classified event.
  */
 export interface TaskClassifiedEvent extends BaseProgressEvent {
-  type: 'task_classified';
+  type: "task_classified";
   data: {
     tier: LLMTier;
-    confidence: 'high' | 'low';
-    method: 'heuristic' | 'llm';
+    confidence: "high" | "low";
+    method: "heuristic" | "llm";
   };
 }
 
@@ -54,7 +54,7 @@ export interface TaskClassifiedEvent extends BaseProgressEvent {
  * Planning phase event.
  */
 export interface PlanningEvent extends BaseProgressEvent {
-  type: 'planning_started' | 'planning_completed';
+  type: "planning_started" | "planning_completed";
   data: {
     subtaskCount?: number; // Only for 'completed'
   };
@@ -64,7 +64,11 @@ export interface PlanningEvent extends BaseProgressEvent {
  * Subtask event.
  */
 export interface SubtaskEvent extends BaseProgressEvent {
-  type: 'subtask_started' | 'subtask_progress' | 'subtask_completed' | 'subtask_failed';
+  type:
+    | "subtask_started"
+    | "subtask_progress"
+    | "subtask_completed"
+    | "subtask_failed";
   data: {
     subtaskId: number;
     description: string;
@@ -79,7 +83,7 @@ export interface SubtaskEvent extends BaseProgressEvent {
  * Tier escalation event.
  */
 export interface TierEscalatedEvent extends BaseProgressEvent {
-  type: 'tier_escalated';
+  type: "tier_escalated";
   data: {
     subtaskId: number;
     fromTier: LLMTier;
@@ -92,9 +96,9 @@ export interface TierEscalatedEvent extends BaseProgressEvent {
  * Task completed event.
  */
 export interface TaskCompletedEvent extends BaseProgressEvent {
-  type: 'task_completed';
+  type: "task_completed";
   data: {
-    status: 'success' | 'failed';
+    status: "success" | "failed";
     totalDuration: number;
     costBreakdown: {
       total: string;

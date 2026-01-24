@@ -13,9 +13,9 @@
  * - Enables adaptive strategies (retry, escalate, give up)
  */
 
-import type { AgentExecutionStep } from '@kb-labs/agent-contracts';
-import type { ExecutionMemory } from './execution-memory.js';
-import type { ILLM } from '@kb-labs/sdk';
+import type { AgentExecutionStep } from "@kb-labs/agent-contracts";
+import type { ExecutionMemory } from "./execution-memory.js";
+import type { ILLM } from "@kb-labs/sdk";
 
 /**
  * Progress estimation result
@@ -68,7 +68,7 @@ export class ProgressTracker {
   async estimateProgress(
     memory: ExecutionMemory,
     task: string,
-    latestStep: AgentExecutionStep
+    latestStep: AgentExecutionStep,
   ): Promise<ProgressEstimate> {
     const prompt = this.buildProgressPrompt(memory, latestStep);
 
@@ -95,12 +95,13 @@ export class ProgressTracker {
     } catch (error) {
       // Fallback: assume progress based on tool calls
       const hasToolCalls = (latestStep.toolCalls?.length || 0) > 0;
-      const hasSuccess = latestStep.toolCalls?.some((tc) => tc.success) || false;
+      const hasSuccess =
+        latestStep.toolCalls?.some((tc) => tc.success) || false;
 
       return {
         progressPercent: hasSuccess ? 50 : 0,
-        reasoning: 'Failed to estimate progress (LLM error)',
-        nextMilestone: 'Unknown',
+        reasoning: "Failed to estimate progress (LLM error)",
+        nextMilestone: "Unknown",
         blockers: [],
         isStuck: false,
       };
@@ -145,14 +146,15 @@ export class ProgressTracker {
    */
   private buildProgressPrompt(
     memory: ExecutionMemory,
-    latestStep: AgentExecutionStep
+    latestStep: AgentExecutionStep,
   ): string {
-    const latestAction = latestStep.toolCalls?.map((tc) => tc.name).join(', ') || 'none';
+    const latestAction =
+      latestStep.toolCalls?.map((tc) => tc.name).join(", ") || "none";
     const latestOutcome = latestStep.toolCalls?.every((tc) => tc.success)
-      ? 'success'
+      ? "success"
       : latestStep.toolCalls?.some((tc) => tc.success)
-      ? 'partial'
-      : 'failure';
+        ? "partial"
+        : "failure";
 
     return `
 Task Goal: ${memory.taskGoal}
@@ -162,7 +164,7 @@ Latest Action: ${latestAction}
 Latest Outcome: ${latestOutcome}
 
 Known Facts:
-${memory.knownFacts.length > 0 ? memory.knownFacts.map((f) => `- ${f}`).join('\n') : '(None yet)'}
+${memory.knownFacts.length > 0 ? memory.knownFacts.map((f) => `- ${f}`).join("\n") : "(None yet)"}
 
 Estimate progress toward goal (0-100%):
 Consider:
@@ -218,19 +220,24 @@ Respond ONLY with valid JSON.
       // Extract JSON from response (LLM might add text around it)
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        throw new Error('No JSON found in response');
+        throw new Error("No JSON found in response");
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
 
       // Validate and clamp progress
-      const progressPercent = Math.max(0, Math.min(100, Number(parsed.progressPercent) || 0));
+      const progressPercent = Math.max(
+        0,
+        Math.min(100, Number(parsed.progressPercent) || 0),
+      );
 
       return {
         progressPercent,
-        reasoning: String(parsed.reasoning || 'No reasoning provided'),
-        nextMilestone: String(parsed.nextMilestone || 'Unknown'),
-        blockers: Array.isArray(parsed.blockers) ? parsed.blockers.map(String) : [],
+        reasoning: String(parsed.reasoning || "No reasoning provided"),
+        nextMilestone: String(parsed.nextMilestone || "Unknown"),
+        blockers: Array.isArray(parsed.blockers)
+          ? parsed.blockers.map(String)
+          : [],
         isStuck: false, // Will be set by caller
       };
     } catch (error) {
@@ -238,8 +245,8 @@ Respond ONLY with valid JSON.
       return {
         progressPercent: 0,
         reasoning: `Failed to parse progress estimate: ${error}`,
-        nextMilestone: 'Unknown',
-        blockers: ['LLM response parsing failed'],
+        nextMilestone: "Unknown",
+        blockers: ["LLM response parsing failed"],
         isStuck: false,
       };
     }

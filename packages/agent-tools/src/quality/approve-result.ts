@@ -3,7 +3,7 @@
  * Tool for approving agent results.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Result approval.
@@ -30,7 +30,7 @@ export interface ResultApproval {
  */
 export function createApproveResultTool(): LLMTool {
   return {
-    name: 'approve_result',
+    name: "approve_result",
     description: `Formally approve agent result after validation.
 
 **Use this tool when:**
@@ -45,40 +45,46 @@ export function createApproveResultTool(): LLMTool {
 - Can be used as input for next subtasks`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'agentId', 'approvedDeliverables', 'qualityHighlights', 'notes'],
+      type: "object",
+      required: [
+        "subtaskId",
+        "agentId",
+        "approvedDeliverables",
+        "qualityHighlights",
+        "notes",
+      ],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'ID of subtask being approved',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "ID of subtask being approved",
+          pattern: "^subtask-\\d+$",
         },
         agentId: {
-          type: 'string',
-          description: 'Agent who produced this result',
+          type: "string",
+          description: "Agent who produced this result",
         },
         approvedDeliverables: {
-          type: 'array',
-          description: 'Key deliverables that are approved',
+          type: "array",
+          description: "Key deliverables that are approved",
           minItems: 1,
           items: {
-            type: 'string',
+            type: "string",
             minLength: 5,
             maxLength: 200,
           },
         },
         qualityHighlights: {
-          type: 'array',
-          description: 'Positive quality aspects worth highlighting',
+          type: "array",
+          description: "Positive quality aspects worth highlighting",
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 200,
           },
         },
         notes: {
-          type: 'string',
-          description: 'Approval notes and any additional context',
+          type: "string",
+          description: "Approval notes and any additional context",
           minLength: 20,
           maxLength: 500,
         },

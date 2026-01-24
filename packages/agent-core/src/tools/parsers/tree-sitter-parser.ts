@@ -50,7 +50,7 @@ export interface CodeStructure {
     name: string;
     startLine: number;
     endLine: number;
-    kind: 'const' | 'let' | 'var';
+    kind: "const" | "let" | "var";
   }>;
 
   /** Import statements */
@@ -63,7 +63,7 @@ export interface CodeStructure {
   /** Export statements */
   exports: Array<{
     name: string;
-    type: 'function' | 'class' | 'const' | 'type' | 'interface' | 'default';
+    type: "function" | "class" | "const" | "type" | "interface" | "default";
     line: number;
   }>;
 }
@@ -73,7 +73,14 @@ export interface CodeStructure {
  */
 export interface SymbolDefinition {
   name: string;
-  type: 'class' | 'function' | 'variable' | 'type' | 'interface' | 'method' | 'property';
+  type:
+    | "class"
+    | "function"
+    | "variable"
+    | "type"
+    | "interface"
+    | "method"
+    | "property";
   startLine: number;
   endLine: number;
   signature?: string;
@@ -124,20 +131,20 @@ export class TreeSitterCodeParser {
 
   /**
    * Lazy load Tree-sitter parser and language grammar
-   * 
+   *
    * Dynamically imports tree-sitter and the appropriate language grammar based on
    * the language specified in the constructor. This method is idempotent - subsequent
    * calls will return the cached result without re-loading.
-   * 
+   *
    * @returns Promise that resolves to `true` if parser loaded successfully, `false` otherwise
-   * 
+   *
    * @remarks
    * - First call triggers dynamic import of tree-sitter and language grammar
    * - Subsequent calls return cached result immediately
    * - Supports: TypeScript, TSX, JavaScript, JSX, Python, Go, Rust
    * - If grammar not found or import fails, sets `loadError` and returns `false`
    * - Use `getLoadError()` to retrieve error details after failed load
-   * 
+   *
    * @example
    * ```typescript
    * const parser = new TreeSitterCodeParser('typescript');
@@ -154,7 +161,7 @@ export class TreeSitterCodeParser {
 
     try {
       // Try to dynamically import tree-sitter
-      const Parser = await import('tree-sitter').then(m => m.default || m);
+      const Parser = await import("tree-sitter").then((m) => m.default || m);
       this.parser = new Parser();
 
       // Load language grammar
@@ -165,11 +172,14 @@ export class TreeSitterCodeParser {
         return true;
       }
 
-      this.loadError = new Error(`Grammar not found for language: ${this.language}`);
+      this.loadError = new Error(
+        `Grammar not found for language: ${this.language}`,
+      );
       this.isLoaded = true;
       return false;
     } catch (error) {
-      this.loadError = error instanceof Error ? error : new Error(String(error));
+      this.loadError =
+        error instanceof Error ? error : new Error(String(error));
       this.isLoaded = true;
       return false;
     }
@@ -181,26 +191,26 @@ export class TreeSitterCodeParser {
   private async loadGrammar(lang: string): Promise<any> {
     try {
       switch (lang) {
-        case 'typescript':
-        case 'tsx':
-          const ts = await import('tree-sitter-typescript');
-          return lang === 'tsx' ? ts.tsx : ts.typescript;
+        case "typescript":
+        case "tsx":
+          const ts = await import("tree-sitter-typescript");
+          return lang === "tsx" ? ts.tsx : ts.typescript;
 
-        case 'javascript':
-        case 'jsx':
-          const js = await import('tree-sitter-javascript');
+        case "javascript":
+        case "jsx":
+          const js = await import("tree-sitter-javascript");
           return js.default || js;
 
-        case 'python':
-          const py = await import('tree-sitter-python');
+        case "python":
+          const py = await import("tree-sitter-python");
           return py.default || py;
 
-        case 'go':
-          const go = await import('tree-sitter-go');
+        case "go":
+          const go = await import("tree-sitter-go");
           return go.default || go;
 
-        case 'rust':
-          const rust = await import('tree-sitter-rust');
+        case "rust":
+          const rust = await import("tree-sitter-rust");
           return rust.default || rust;
 
         default:
@@ -261,7 +271,7 @@ export class TreeSitterCodeParser {
         }
 
         // Extract interfaces
-        if (node.type === 'interface_declaration') {
+        if (node.type === "interface_declaration") {
           const name = this.extractNodeName(node, code);
           if (name) {
             structure.interfaces.push({
@@ -273,7 +283,7 @@ export class TreeSitterCodeParser {
         }
 
         // Extract type aliases
-        if (node.type === 'type_alias_declaration') {
+        if (node.type === "type_alias_declaration") {
           const name = this.extractNodeName(node, code);
           if (name) {
             structure.types.push({
@@ -285,7 +295,10 @@ export class TreeSitterCodeParser {
         }
 
         // Extract variables
-        if (node.type === 'lexical_declaration' || node.type === 'variable_declaration') {
+        if (
+          node.type === "lexical_declaration" ||
+          node.type === "variable_declaration"
+        ) {
           const kind = this.extractDeclarationKind(node, code);
           const names = this.extractVariableNames(node, code);
           for (const name of names) {
@@ -299,7 +312,7 @@ export class TreeSitterCodeParser {
         }
 
         // Extract imports
-        if (node.type === 'import_statement') {
+        if (node.type === "import_statement") {
           const source = this.extractImportSource(node, code);
           if (source) {
             structure.imports.push({
@@ -311,7 +324,7 @@ export class TreeSitterCodeParser {
         }
 
         // Extract exports
-        if (node.type.includes('export')) {
+        if (node.type.includes("export")) {
           const exportInfo = this.extractExportInfo(node, code);
           if (exportInfo) {
             structure.exports.push(exportInfo);
@@ -339,24 +352,35 @@ export class TreeSitterCodeParser {
 
       this.traverseAST(tree.rootNode, code, (node: any) => {
         const name = this.extractNodeName(node, code);
-        if (name !== symbolName) return;
+        if (name !== symbolName) {
+          return;
+        }
 
-        let type: SymbolDefinition['type'] | null = null;
+        let type: SymbolDefinition["type"] | null = null;
 
         if (this.isClassNode(node.type)) {
-          type = 'class';
+          type = "class";
         } else if (this.isFunctionNode(node.type)) {
-          type = 'function';
-        } else if (node.type === 'interface_declaration') {
-          type = 'interface';
-        } else if (node.type === 'type_alias_declaration') {
-          type = 'type';
-        } else if (node.type === 'method_definition' || node.type === 'method_signature') {
-          type = 'method';
-        } else if (node.type === 'public_field_definition' || node.type === 'property_signature') {
-          type = 'property';
-        } else if (node.type === 'lexical_declaration' || node.type === 'variable_declaration') {
-          type = 'variable';
+          type = "function";
+        } else if (node.type === "interface_declaration") {
+          type = "interface";
+        } else if (node.type === "type_alias_declaration") {
+          type = "type";
+        } else if (
+          node.type === "method_definition" ||
+          node.type === "method_signature"
+        ) {
+          type = "method";
+        } else if (
+          node.type === "public_field_definition" ||
+          node.type === "property_signature"
+        ) {
+          type = "property";
+        } else if (
+          node.type === "lexical_declaration" ||
+          node.type === "variable_declaration"
+        ) {
+          type = "variable";
         }
 
         if (type) {
@@ -379,15 +403,15 @@ export class TreeSitterCodeParser {
 
   /**
    * Find all usages of a symbol in source code
-   * 
+   *
    * Searches through the parsed AST to locate all occurrences of a symbol (variable,
    * function, class, etc.) and returns detailed information about each usage including
    * line number, column position, context, and whether it's a definition or reference.
-   * 
+   *
    * @param code - Source code to search within
    * @param symbolName - Name of the symbol to find usages of
    * @returns Array of symbol usages with location and context information
-   * 
+   *
    * @remarks
    * - Uses tree-sitter AST parsing for accurate symbol identification
    * - Falls back to regex-based search if parser is not available
@@ -395,18 +419,18 @@ export class TreeSitterCodeParser {
    * - Checks identifier and property_identifier nodes in the AST
    * - Returns empty array if parsing fails or symbol not found
    * - Each usage includes line number (1-indexed), column (1-indexed), and context line
-   * 
+   *
    * @example
    * ```typescript
    * const parser = new TreeSitterCodeParser('typescript');
    * await parser.loadParser();
-   * 
+   *
    * const code = `
    *   const myVar = 42;
    *   console.log(myVar);
    *   function test() { return myVar; }
    * `;
-   * 
+   *
    * const usages = parser.findUsages(code, 'myVar');
    * // Returns:
    * // [
@@ -424,11 +448,11 @@ export class TreeSitterCodeParser {
     try {
       const tree = this.parser.parse(code);
       const usages: SymbolUsage[] = [];
-      const lines = code.split('\n');
+      const lines = code.split("\n");
 
       this.traverseAST(tree.rootNode, code, (node: any) => {
         // Check identifier nodes
-        if (node.type === 'identifier' || node.type === 'property_identifier') {
+        if (node.type === "identifier" || node.type === "property_identifier") {
           const nodeText = code.substring(node.startIndex, node.endIndex);
           if (nodeText === symbolName) {
             const line = node.startPosition.row;
@@ -437,7 +461,7 @@ export class TreeSitterCodeParser {
             usages.push({
               line: line + 1,
               column: node.startPosition.column + 1,
-              context: lines[line]?.trim() || '',
+              context: lines[line]?.trim() || "",
               isDefinition,
             });
           }
@@ -453,7 +477,10 @@ export class TreeSitterCodeParser {
   /**
    * Get file outline (structure summary)
    */
-  getOutline(code: string, maxDepth: number = 2): Array<{
+  getOutline(
+    code: string,
+    maxDepth: number = 2,
+  ): Array<{
     type: string;
     name: string;
     line: number;
@@ -472,7 +499,7 @@ export class TreeSitterCodeParser {
     // Add imports first
     for (const imp of structure.imports) {
       outline.push({
-        type: 'import',
+        type: "import",
         name: imp.source,
         line: imp.line,
         depth: 0,
@@ -481,8 +508,8 @@ export class TreeSitterCodeParser {
 
     // Add classes with methods
     for (const cls of structure.classes) {
-      const item: typeof outline[0] = {
-        type: 'class',
+      const item: (typeof outline)[0] = {
+        type: "class",
         name: cls.name,
         line: cls.startLine,
         depth: 0,
@@ -490,7 +517,7 @@ export class TreeSitterCodeParser {
 
       if (maxDepth > 0 && cls.methods && cls.methods.length > 0) {
         item.children = cls.methods.map((method, i) => ({
-          type: 'method',
+          type: "method",
           name: method,
           line: cls.startLine + i + 1, // Approximate
         }));
@@ -502,7 +529,7 @@ export class TreeSitterCodeParser {
     // Add interfaces
     for (const iface of structure.interfaces) {
       outline.push({
-        type: 'interface',
+        type: "interface",
         name: iface.name,
         line: iface.startLine,
         depth: 0,
@@ -512,7 +539,7 @@ export class TreeSitterCodeParser {
     // Add type aliases
     for (const type of structure.types) {
       outline.push({
-        type: 'type',
+        type: "type",
         name: type.name,
         line: type.startLine,
         depth: 0,
@@ -522,7 +549,7 @@ export class TreeSitterCodeParser {
     // Add functions
     for (const func of structure.functions) {
       outline.push({
-        type: 'function',
+        type: "function",
         name: func.name,
         line: func.startLine,
         depth: 0,
@@ -549,7 +576,11 @@ export class TreeSitterCodeParser {
   // Helper methods for tree-sitter
   // ============================================
 
-  private traverseAST(node: any, code: string, callback: (node: any) => void): void {
+  private traverseAST(
+    node: any,
+    code: string,
+    callback: (node: any) => void,
+  ): void {
     callback(node);
     for (let i = 0; i < node.childCount; i++) {
       this.traverseAST(node.child(i), code, callback);
@@ -558,38 +589,40 @@ export class TreeSitterCodeParser {
 
   private isFunctionNode(nodeType: string): boolean {
     return [
-      'function_declaration',
-      'function_definition',
-      'arrow_function',
-      'function_expression',
-      'method_definition',
-      'function_item', // Rust
-      'func_literal',  // Go
+      "function_declaration",
+      "function_definition",
+      "arrow_function",
+      "function_expression",
+      "method_definition",
+      "function_item", // Rust
+      "func_literal", // Go
     ].includes(nodeType);
   }
 
   private isClassNode(nodeType: string): boolean {
     return [
-      'class_declaration',
-      'class_definition',
-      'struct_item',    // Rust
-      'type_declaration', // Go
+      "class_declaration",
+      "class_definition",
+      "struct_item", // Rust
+      "type_declaration", // Go
     ].includes(nodeType);
   }
 
   private isDefinitionNode(node: any): boolean {
-    if (!node) return false;
+    if (!node) {
+      return false;
+    }
     return [
-      'function_declaration',
-      'class_declaration',
-      'interface_declaration',
-      'type_alias_declaration',
-      'lexical_declaration',
-      'variable_declaration',
-      'method_definition',
-      'public_field_definition',
-      'property_signature',
-      'parameter',
+      "function_declaration",
+      "class_declaration",
+      "interface_declaration",
+      "type_alias_declaration",
+      "lexical_declaration",
+      "variable_declaration",
+      "method_definition",
+      "public_field_definition",
+      "property_signature",
+      "parameter",
     ].includes(node.type);
   }
 
@@ -597,7 +630,7 @@ export class TreeSitterCodeParser {
     // Check if parent is export statement
     let current = node.parent;
     while (current) {
-      if (current.type === 'export_statement') {
+      if (current.type === "export_statement") {
         return true;
       }
       current = current.parent;
@@ -606,7 +639,7 @@ export class TreeSitterCodeParser {
   }
 
   private extractNodeName(node: any, code: string): string | undefined {
-    const nameNode = node.childForFieldName('name');
+    const nameNode = node.childForFieldName("name");
     if (nameNode) {
       return code.substring(nameNode.startIndex, nameNode.endIndex);
     }
@@ -616,7 +649,7 @@ export class TreeSitterCodeParser {
   private extractSignature(node: any, code: string): string {
     // Get first line of node as signature
     const text = code.substring(node.startIndex, node.endIndex);
-    const firstLine = text.split('\n')[0] || '';
+    const firstLine = text.split("\n")[0] || "";
     // Clean up and truncate
     return firstLine.trim().substring(0, 200);
   }
@@ -625,12 +658,14 @@ export class TreeSitterCodeParser {
     const methods: string[] = [];
     for (let i = 0; i < node.childCount; i++) {
       const child = node.child(i);
-      if (child.type === 'class_body') {
+      if (child.type === "class_body") {
         for (let j = 0; j < child.childCount; j++) {
           const member = child.child(j);
-          if (member.type === 'method_definition') {
+          if (member.type === "method_definition") {
             const name = this.extractNodeName(member, code);
-            if (name) methods.push(name);
+            if (name) {
+              methods.push(name);
+            }
           }
         }
       }
@@ -638,30 +673,39 @@ export class TreeSitterCodeParser {
     return methods;
   }
 
-  private extractDeclarationKind(node: any, code: string): 'const' | 'let' | 'var' {
+  private extractDeclarationKind(
+    node: any,
+    code: string,
+  ): "const" | "let" | "var" {
     const text = code.substring(node.startIndex, node.startIndex + 5);
-    if (text.startsWith('const')) return 'const';
-    if (text.startsWith('let')) return 'let';
-    return 'var';
+    if (text.startsWith("const")) {
+      return "const";
+    }
+    if (text.startsWith("let")) {
+      return "let";
+    }
+    return "var";
   }
 
   private extractVariableNames(node: any, code: string): string[] {
     const names: string[] = [];
     for (let i = 0; i < node.childCount; i++) {
       const child = node.child(i);
-      if (child.type === 'variable_declarator') {
+      if (child.type === "variable_declarator") {
         const name = this.extractNodeName(child, code);
-        if (name) names.push(name);
+        if (name) {
+          names.push(name);
+        }
       }
     }
     return names;
   }
 
   private extractImportSource(node: any, code: string): string | undefined {
-    const sourceNode = node.childForFieldName('source');
+    const sourceNode = node.childForFieldName("source");
     if (sourceNode) {
       const source = code.substring(sourceNode.startIndex, sourceNode.endIndex);
-      return source.replace(/['"]/g, '');
+      return source.replace(/['"]/g, "");
     }
     return undefined;
   }
@@ -669,48 +713,53 @@ export class TreeSitterCodeParser {
   private extractImportedNames(node: any, code: string): string[] {
     const names: string[] = [];
     this.traverseAST(node, code, (child: any) => {
-      if (child.type === 'import_specifier') {
+      if (child.type === "import_specifier") {
         const name = this.extractNodeName(child, code);
-        if (name) names.push(name);
+        if (name) {
+          names.push(name);
+        }
       }
     });
     return names;
   }
 
-  private extractExportInfo(node: any, code: string): CodeStructure['exports'][0] | null {
+  private extractExportInfo(
+    node: any,
+    code: string,
+  ): CodeStructure["exports"][0] | null {
     let name: string | undefined;
-    let type: CodeStructure['exports'][0]['type'] = 'const';
+    let type: CodeStructure["exports"][0]["type"] = "const";
 
     // Check for default export
-    if (node.type === 'export_statement') {
+    if (node.type === "export_statement") {
       const text = code.substring(node.startIndex, node.endIndex);
-      if (text.includes('default')) {
-        type = 'default';
+      if (text.includes("default")) {
+        type = "default";
         // Try to extract name from default export
-        name = 'default';
+        name = "default";
       }
     }
 
     // Look for declaration inside export
     for (let i = 0; i < node.childCount; i++) {
       const child = node.child(i);
-      if (child.type === 'function_declaration') {
+      if (child.type === "function_declaration") {
         name = this.extractNodeName(child, code);
-        type = 'function';
-      } else if (child.type === 'class_declaration') {
+        type = "function";
+      } else if (child.type === "class_declaration") {
         name = this.extractNodeName(child, code);
-        type = 'class';
-      } else if (child.type === 'type_alias_declaration') {
+        type = "class";
+      } else if (child.type === "type_alias_declaration") {
         name = this.extractNodeName(child, code);
-        type = 'type';
-      } else if (child.type === 'interface_declaration') {
+        type = "type";
+      } else if (child.type === "interface_declaration") {
         name = this.extractNodeName(child, code);
-        type = 'interface';
-      } else if (child.type === 'lexical_declaration') {
+        type = "interface";
+      } else if (child.type === "lexical_declaration") {
         const names = this.extractVariableNames(child, code);
         if (names[0]) {
           name = names[0];
-          type = 'const';
+          type = "const";
         }
       }
     }
@@ -731,7 +780,7 @@ export class TreeSitterCodeParser {
   // ============================================
 
   private extractStructureRegex(code: string): CodeStructure {
-    const lines = code.split('\n');
+    const lines = code.split("\n");
     const structure: CodeStructure = {
       functions: [],
       classes: [],
@@ -743,14 +792,16 @@ export class TreeSitterCodeParser {
     };
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] || '';
+      const line = lines[i] || "";
       const trimmed = line.trim();
 
       // Functions
-      const funcMatch = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)/);
+      const funcMatch = trimmed.match(
+        /^(?:export\s+)?(?:async\s+)?function\s+(\w+)/,
+      );
       if (funcMatch) {
         structure.functions.push({
-          name: funcMatch[1] || 'anonymous',
+          name: funcMatch[1] || "anonymous",
           startLine: i + 1,
           endLine: this.findBlockEnd(lines, i),
           signature: trimmed,
@@ -758,10 +809,12 @@ export class TreeSitterCodeParser {
       }
 
       // Arrow functions assigned to const
-      const arrowMatch = trimmed.match(/^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[^=])\s*=>/);
+      const arrowMatch = trimmed.match(
+        /^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[^=])\s*=>/,
+      );
       if (arrowMatch) {
         structure.functions.push({
-          name: arrowMatch[1] || 'anonymous',
+          name: arrowMatch[1] || "anonymous",
           startLine: i + 1,
           endLine: this.findBlockEnd(lines, i),
           signature: trimmed,
@@ -769,10 +822,12 @@ export class TreeSitterCodeParser {
       }
 
       // Classes
-      const classMatch = trimmed.match(/^(?:export\s+)?(?:abstract\s+)?class\s+(\w+)/);
+      const classMatch = trimmed.match(
+        /^(?:export\s+)?(?:abstract\s+)?class\s+(\w+)/,
+      );
       if (classMatch) {
         structure.classes.push({
-          name: classMatch[1] || 'Anonymous',
+          name: classMatch[1] || "Anonymous",
           startLine: i + 1,
           endLine: this.findBlockEnd(lines, i),
         });
@@ -782,7 +837,7 @@ export class TreeSitterCodeParser {
       const interfaceMatch = trimmed.match(/^(?:export\s+)?interface\s+(\w+)/);
       if (interfaceMatch) {
         structure.interfaces.push({
-          name: interfaceMatch[1] || 'Anonymous',
+          name: interfaceMatch[1] || "Anonymous",
           startLine: i + 1,
           endLine: this.findBlockEnd(lines, i),
         });
@@ -792,7 +847,7 @@ export class TreeSitterCodeParser {
       const typeMatch = trimmed.match(/^(?:export\s+)?type\s+(\w+)/);
       if (typeMatch) {
         structure.types.push({
-          name: typeMatch[1] || 'Anonymous',
+          name: typeMatch[1] || "Anonymous",
           startLine: i + 1,
           endLine: i + 1,
         });
@@ -802,28 +857,32 @@ export class TreeSitterCodeParser {
       const varMatch = trimmed.match(/^(?:export\s+)?(const|let|var)\s+(\w+)/);
       if (varMatch && !arrowMatch) {
         structure.variables.push({
-          name: varMatch[2] || 'unknown',
+          name: varMatch[2] || "unknown",
           startLine: i + 1,
           endLine: i + 1,
-          kind: varMatch[1] as 'const' | 'let' | 'var',
+          kind: varMatch[1] as "const" | "let" | "var",
         });
       }
 
       // Imports
-      const importMatch = trimmed.match(/^import\s+(?:\{[^}]+\}|[^;]+)\s+from\s+['"]([^'"]+)['"]/);
+      const importMatch = trimmed.match(
+        /^import\s+(?:\{[^}]+\}|[^;]+)\s+from\s+['"]([^'"]+)['"]/,
+      );
       if (importMatch) {
         structure.imports.push({
-          source: importMatch[1] || '',
+          source: importMatch[1] || "",
           line: i + 1,
         });
       }
 
       // Exports
-      if (trimmed.startsWith('export ')) {
-        const exportMatch = trimmed.match(/export\s+(?:default\s+)?(?:(const|let|var|function|class|type|interface)\s+)?(\w+)/);
+      if (trimmed.startsWith("export ")) {
+        const exportMatch = trimmed.match(
+          /export\s+(?:default\s+)?(?:(const|let|var|function|class|type|interface)\s+)?(\w+)/,
+        );
         if (exportMatch) {
           structure.exports.push({
-            name: exportMatch[2] || '',
+            name: exportMatch[2] || "",
             type: this.inferExportType(exportMatch[1]),
             line: i + 1,
           });
@@ -834,21 +893,50 @@ export class TreeSitterCodeParser {
     return structure;
   }
 
-  private findDefinitionsRegex(code: string, symbolName: string): SymbolDefinition[] {
+  private findDefinitionsRegex(
+    code: string,
+    symbolName: string,
+  ): SymbolDefinition[] {
     const definitions: SymbolDefinition[] = [];
-    const lines = code.split('\n');
+    const lines = code.split("\n");
 
-    const patterns: Array<{ regex: RegExp; type: SymbolDefinition['type'] }> = [
-      { regex: new RegExp(`^\\s*(?:export\\s+)?(?:abstract\\s+)?class\\s+${symbolName}\\b`), type: 'class' },
-      { regex: new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbolName}\\s*[(<]`), type: 'function' },
-      { regex: new RegExp(`^\\s*(?:export\\s+)?const\\s+${symbolName}\\s*=\\s*(?:async\\s+)?(?:\\([^)]*\\)|[^=])\\s*=>`), type: 'function' },
-      { regex: new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${symbolName}\\s*[=:]`), type: 'variable' },
-      { regex: new RegExp(`^\\s*(?:export\\s+)?type\\s+${symbolName}\\b`), type: 'type' },
-      { regex: new RegExp(`^\\s*(?:export\\s+)?interface\\s+${symbolName}\\b`), type: 'interface' },
+    const patterns: Array<{ regex: RegExp; type: SymbolDefinition["type"] }> = [
+      {
+        regex: new RegExp(
+          `^\\s*(?:export\\s+)?(?:abstract\\s+)?class\\s+${symbolName}\\b`,
+        ),
+        type: "class",
+      },
+      {
+        regex: new RegExp(
+          `^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbolName}\\s*[(<]`,
+        ),
+        type: "function",
+      },
+      {
+        regex: new RegExp(
+          `^\\s*(?:export\\s+)?const\\s+${symbolName}\\s*=\\s*(?:async\\s+)?(?:\\([^)]*\\)|[^=])\\s*=>`,
+        ),
+        type: "function",
+      },
+      {
+        regex: new RegExp(
+          `^\\s*(?:export\\s+)?(?:const|let|var)\\s+${symbolName}\\s*[=:]`,
+        ),
+        type: "variable",
+      },
+      {
+        regex: new RegExp(`^\\s*(?:export\\s+)?type\\s+${symbolName}\\b`),
+        type: "type",
+      },
+      {
+        regex: new RegExp(`^\\s*(?:export\\s+)?interface\\s+${symbolName}\\b`),
+        type: "interface",
+      },
     ];
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] || '';
+      const line = lines[i] || "";
       for (const { regex, type } of patterns) {
         if (regex.test(line)) {
           definitions.push({
@@ -857,7 +945,7 @@ export class TreeSitterCodeParser {
             startLine: i + 1,
             endLine: this.findBlockEnd(lines, i),
             signature: line.trim(),
-            exported: line.includes('export'),
+            exported: line.includes("export"),
           });
           break;
         }
@@ -869,23 +957,29 @@ export class TreeSitterCodeParser {
 
   private findUsagesRegex(code: string, symbolName: string): SymbolUsage[] {
     const usages: SymbolUsage[] = [];
-    const lines = code.split('\n');
-    const pattern = new RegExp(`\\b${symbolName}\\b`, 'g');
+    const lines = code.split("\n");
+    const pattern = new RegExp(`\\b${symbolName}\\b`, "g");
 
     const definitionPatterns = [
-      new RegExp(`^\\s*(?:export\\s+)?(?:abstract\\s+)?class\\s+${symbolName}\\b`),
-      new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbolName}\\s*[(<]`),
-      new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${symbolName}\\s*[=:]`),
+      new RegExp(
+        `^\\s*(?:export\\s+)?(?:abstract\\s+)?class\\s+${symbolName}\\b`,
+      ),
+      new RegExp(
+        `^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbolName}\\s*[(<]`,
+      ),
+      new RegExp(
+        `^\\s*(?:export\\s+)?(?:const|let|var)\\s+${symbolName}\\s*[=:]`,
+      ),
       new RegExp(`^\\s*(?:export\\s+)?type\\s+${symbolName}\\b`),
       new RegExp(`^\\s*(?:export\\s+)?interface\\s+${symbolName}\\b`),
     ];
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] || '';
+      const line = lines[i] || "";
       let match: RegExpExecArray | null;
 
       while ((match = pattern.exec(line)) !== null) {
-        const isDefinition = definitionPatterns.some(p => p.test(line));
+        const isDefinition = definitionPatterns.some((p) => p.test(line));
 
         usages.push({
           line: i + 1,
@@ -902,11 +996,15 @@ export class TreeSitterCodeParser {
   private findBlockEnd(lines: string[], start: number): number {
     let depth = 0;
     for (let i = start; i < lines.length; i++) {
-      const line = lines[i] || '';
+      const line = lines[i] || "";
       for (const char of line) {
-        if (char === '{') depth++;
-        if (char === '}') depth--;
-        if (depth === 0 && char === '}') {
+        if (char === "{") {
+          depth++;
+        }
+        if (char === "}") {
+          depth--;
+        }
+        if (depth === 0 && char === "}") {
           return i + 1;
         }
       }
@@ -914,17 +1012,23 @@ export class TreeSitterCodeParser {
     return lines.length;
   }
 
-  private inferExportType(keyword: string | undefined): CodeStructure['exports'][0]['type'] {
+  private inferExportType(
+    keyword: string | undefined,
+  ): CodeStructure["exports"][0]["type"] {
     switch (keyword) {
-      case 'function': return 'function';
-      case 'class': return 'class';
-      case 'type': return 'type';
-      case 'interface': return 'interface';
-      case 'const':
-      case 'let':
-      case 'var':
+      case "function":
+        return "function";
+      case "class":
+        return "class";
+      case "type":
+        return "type";
+      case "interface":
+        return "interface";
+      case "const":
+      case "let":
+      case "var":
       default:
-        return 'const';
+        return "const";
     }
   }
 }
@@ -951,26 +1055,26 @@ export function getParser(language: string): TreeSitterCodeParser {
  * Detect language from file extension
  */
 export function detectLanguage(filePath: string): string {
-  const ext = filePath.split('.').pop()?.toLowerCase();
+  const ext = filePath.split(".").pop()?.toLowerCase();
 
   switch (ext) {
-    case 'ts':
-      return 'typescript';
-    case 'tsx':
-      return 'tsx';
-    case 'js':
-    case 'mjs':
-    case 'cjs':
-      return 'javascript';
-    case 'jsx':
-      return 'jsx';
-    case 'py':
-      return 'python';
-    case 'go':
-      return 'go';
-    case 'rs':
-      return 'rust';
+    case "ts":
+      return "typescript";
+    case "tsx":
+      return "tsx";
+    case "js":
+    case "mjs":
+    case "cjs":
+      return "javascript";
+    case "jsx":
+      return "jsx";
+    case "py":
+      return "python";
+    case "go":
+      return "go";
+    case "rs":
+      return "rust";
     default:
-      return 'typescript'; // Default to TypeScript
+      return "typescript"; // Default to TypeScript
   }
 }

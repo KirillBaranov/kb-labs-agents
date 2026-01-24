@@ -3,7 +3,7 @@
  * Tool for estimating task complexity before planning.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Complexity factors identified.
@@ -12,7 +12,7 @@ export interface ComplexityFactor {
   /** Factor name (e.g., "multiple files", "external dependencies") */
   factor: string;
   /** Impact on complexity (low/medium/high) */
-  impact: 'low' | 'medium' | 'high';
+  impact: "low" | "medium" | "high";
   /** Explanation of why this factor matters */
   explanation: string;
 }
@@ -22,7 +22,7 @@ export interface ComplexityFactor {
  */
 export interface ComplexityEstimate {
   /** Overall complexity level */
-  overallComplexity: 'low' | 'medium' | 'high';
+  overallComplexity: "low" | "medium" | "high";
   /** Estimated number of subtasks needed */
   estimatedSubtasks: number;
   /** Factors contributing to complexity */
@@ -52,7 +52,7 @@ export interface ComplexityEstimate {
  */
 export function createEstimateComplexityTool(): LLMTool {
   return {
-    name: 'estimate_complexity',
+    name: "estimate_complexity",
     description: `Estimate the complexity of a task before creating an execution plan.
 
 **Use this tool to:**
@@ -70,42 +70,48 @@ export function createEstimateComplexityTool(): LLMTool {
 - Cross-cutting concerns (affects multiple components)`,
 
     inputSchema: {
-      type: 'object',
-      required: ['overallComplexity', 'estimatedSubtasks', 'factors', 'recommendedSpecialists', 'reasoning'],
+      type: "object",
+      required: [
+        "overallComplexity",
+        "estimatedSubtasks",
+        "factors",
+        "recommendedSpecialists",
+        "reasoning",
+      ],
       properties: {
         overallComplexity: {
-          type: 'string',
-          description: 'Overall complexity assessment',
-          enum: ['low', 'medium', 'high'],
+          type: "string",
+          description: "Overall complexity assessment",
+          enum: ["low", "medium", "high"],
         },
         estimatedSubtasks: {
-          type: 'number',
-          description: 'Estimated number of subtasks needed (1-10)',
+          type: "number",
+          description: "Estimated number of subtasks needed (1-10)",
           minimum: 1,
           maximum: 10,
         },
         factors: {
-          type: 'array',
-          description: 'Complexity factors identified',
+          type: "array",
+          description: "Complexity factors identified",
           minItems: 1,
           items: {
-            type: 'object',
-            required: ['factor', 'impact', 'explanation'],
+            type: "object",
+            required: ["factor", "impact", "explanation"],
             properties: {
               factor: {
-                type: 'string',
-                description: 'Name of complexity factor',
+                type: "string",
+                description: "Name of complexity factor",
                 minLength: 5,
                 maxLength: 100,
               },
               impact: {
-                type: 'string',
-                description: 'Impact level of this factor',
-                enum: ['low', 'medium', 'high'],
+                type: "string",
+                description: "Impact level of this factor",
+                enum: ["low", "medium", "high"],
               },
               explanation: {
-                type: 'string',
-                description: 'Why this factor affects complexity',
+                type: "string",
+                description: "Why this factor affects complexity",
                 minLength: 10,
                 maxLength: 200,
               },
@@ -113,17 +119,17 @@ export function createEstimateComplexityTool(): LLMTool {
           },
         },
         recommendedSpecialists: {
-          type: 'array',
-          description: 'Recommended agent types for this task',
+          type: "array",
+          description: "Recommended agent types for this task",
           minItems: 1,
           items: {
-            type: 'string',
-            description: 'Agent type (e.g., implementer, researcher, tester)',
+            type: "string",
+            description: "Agent type (e.g., implementer, researcher, tester)",
           },
         },
         reasoning: {
-          type: 'string',
-          description: 'Summary of complexity assessment reasoning',
+          type: "string",
+          description: "Summary of complexity assessment reasoning",
           minLength: 50,
           maxLength: 500,
         },

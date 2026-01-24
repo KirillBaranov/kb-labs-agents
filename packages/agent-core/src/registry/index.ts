@@ -1,2 +1,2 @@
 // Agent Registry exports
-export { AgentRegistry } from './agent-registry.js';
+export { AgentRegistry } from "./agent-registry.js";

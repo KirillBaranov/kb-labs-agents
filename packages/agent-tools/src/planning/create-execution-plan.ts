@@ -3,7 +3,7 @@
  * Tool for creating structured execution plans with agent delegation.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Subtask in execution plan.
@@ -20,7 +20,7 @@ export interface SubTask {
   /** Priority 1-10 (10 = critical, 1 = optional) */
   priority: number;
   /** Estimated complexity */
-  estimatedComplexity: 'low' | 'medium' | 'high';
+  estimatedComplexity: "low" | "medium" | "high";
 }
 
 /**
@@ -54,7 +54,7 @@ export interface ExecutionPlan {
  */
 export function createExecutionPlanTool(validSpecialistIds: string[]): LLMTool {
   return {
-    name: 'create_execution_plan',
+    name: "create_execution_plan",
     description: `Create a structured execution plan by delegating tasks to agent team members.
 
 **Your role as orchestrator:**
@@ -65,7 +65,7 @@ export function createExecutionPlanTool(validSpecialistIds: string[]): LLMTool {
 - Set priorities (higher number = more critical)
 
 **Available agents:**
-${validSpecialistIds.map(id => `- ${id}`).join('\n')}
+${validSpecialistIds.map((id) => `- ${id}`).join("\n")}
 
 **Guidelines:**
 - ALWAYS create at least 1 subtask (NEVER return empty array)
@@ -81,51 +81,62 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 - Complex task: researcher → implementer → reviewer → tester (with parallel paths)`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtasks'],
+      type: "object",
+      required: ["subtasks"],
       properties: {
         subtasks: {
-          type: 'array',
-          description: 'Array of subtasks to execute (minimum 1 required)',
+          type: "array",
+          description: "Array of subtasks to execute (minimum 1 required)",
           minItems: 1, // CRITICAL: Prevents empty array
           items: {
-            type: 'object',
-            required: ['id', 'description', 'agentId', 'dependencies', 'priority', 'estimatedComplexity'],
+            type: "object",
+            required: [
+              "id",
+              "description",
+              "agentId",
+              "dependencies",
+              "priority",
+              "estimatedComplexity",
+            ],
             properties: {
               id: {
-                type: 'string',
-                description: 'Unique identifier (e.g., "subtask-1", "subtask-2")',
-                pattern: '^subtask-\\d+$',
+                type: "string",
+                description:
+                  'Unique identifier (e.g., "subtask-1", "subtask-2")',
+                pattern: "^subtask-\\d+$",
               },
               description: {
-                type: 'string',
-                description: 'Clear, actionable description of what this subtask should accomplish',
+                type: "string",
+                description:
+                  "Clear, actionable description of what this subtask should accomplish",
                 minLength: 10,
                 maxLength: 500,
               },
               agentId: {
-                type: 'string',
-                description: 'ID of agent to delegate this subtask to',
+                type: "string",
+                description: "ID of agent to delegate this subtask to",
                 enum: validSpecialistIds,
               },
               dependencies: {
-                type: 'array',
-                description: 'Array of subtask IDs that must complete before this one (use [] if no dependencies)',
+                type: "array",
+                description:
+                  "Array of subtask IDs that must complete before this one (use [] if no dependencies)",
                 items: {
-                  type: 'string',
-                  pattern: '^subtask-\\d+$',
+                  type: "string",
+                  pattern: "^subtask-\\d+$",
                 },
               },
               priority: {
-                type: 'number',
-                description: 'Priority level: 10 = critical blocker, 1 = optional nice-to-have',
+                type: "number",
+                description:
+                  "Priority level: 10 = critical blocker, 1 = optional nice-to-have",
                 minimum: 1,
                 maximum: 10,
               },
               estimatedComplexity: {
-                type: 'string',
-                description: 'Estimated complexity for resource allocation',
-                enum: ['low', 'medium', 'high'],
+                type: "string",
+                description: "Estimated complexity for resource allocation",
+                enum: ["low", "medium", "high"],
               },
             },
           },

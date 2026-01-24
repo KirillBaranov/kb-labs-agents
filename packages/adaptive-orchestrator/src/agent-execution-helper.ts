@@ -5,14 +5,17 @@
  * Uses AgentExecutor for real agent execution with tools.
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import type { Subtask, SubtaskResult } from './types.js';
-import type { ToolCallRecord, LLMInteraction } from './history-types.js';
-import type { LLMTier } from '@kb-labs/sdk';
-import type { AgentContext, AgentExecutionStep } from '@kb-labs/agent-contracts';
-import { AgentExecutor } from '@kb-labs/agent-core';
-import { ToolDiscoverer } from '@kb-labs/agent-core';
-import { AgentRegistry } from '@kb-labs/agent-core';
+import type { PluginContextV3 } from "@kb-labs/sdk";
+import type { Subtask, SubtaskResult } from "./types.js";
+import type { ToolCallRecord, LLMInteraction } from "./history-types.js";
+import type { LLMTier } from "@kb-labs/sdk";
+import type {
+  AgentContext,
+  AgentExecutionStep,
+} from "@kb-labs/agent-contracts";
+import { AgentExecutor } from "@kb-labs/agent-core";
+import { ToolDiscoverer } from "@kb-labs/agent-core";
+import { AgentRegistry } from "@kb-labs/agent-core";
 
 /**
  * Execute subtask with an agent agent using full AgentExecutor.
@@ -27,18 +30,20 @@ import { AgentRegistry } from '@kb-labs/agent-core';
 export async function executeWithAgent(
   ctx: PluginContextV3,
   subtask: Subtask,
-  tier: LLMTier
+  tier: LLMTier,
 ): Promise<{
   result: SubtaskResult;
   toolCalls: ToolCallRecord[];
   llmInteractions: LLMInteraction[];
 }> {
   if (!subtask.agentId) {
-    throw new Error('Agent ID required for executeWithAgent');
+    throw new Error("Agent ID required for executeWithAgent");
   }
 
   const logger = ctx.platform.logger;
-  logger.debug(`Executing subtask ${subtask.id} with agent: ${subtask.agentId}`);
+  logger.debug(
+    `Executing subtask ${subtask.id} with agent: ${subtask.agentId}`,
+  );
 
   const startTime = Date.now();
 
@@ -64,7 +69,10 @@ export async function executeWithAgent(
 
     // 4. Execute agent with AgentExecutor
     const executor = new AgentExecutor(ctx);
-    const agentResult = await executor.execute(fullContext, subtask.description);
+    const agentResult = await executor.execute(
+      fullContext,
+      subtask.description,
+    );
 
     const endTime = Date.now();
     const durationMs = endTime - startTime;
@@ -73,13 +81,13 @@ export async function executeWithAgent(
     const { toolCalls, llmInteractions } = extractExecutionHistory(
       agentResult.steps || [],
       tier,
-      startTime
+      startTime,
     );
 
     // 6. Build SubtaskResult
     const result: SubtaskResult = {
       id: subtask.id,
-      status: agentResult.success ? 'success' : 'failed',
+      status: agentResult.success ? "success" : "failed",
       tier,
       agentId: subtask.agentId,
       content: agentResult.result,
@@ -88,7 +96,7 @@ export async function executeWithAgent(
     };
 
     logger.debug(
-      `Agent ${subtask.agentId} completed subtask ${subtask.id} in ${durationMs}ms (${agentResult.totalTokens || 0} tokens, ${toolCalls.length} tool calls)`
+      `Agent ${subtask.agentId} completed subtask ${subtask.id} in ${durationMs}ms (${agentResult.totalTokens || 0} tokens, ${toolCalls.length} tool calls)`,
     );
 
     return {
@@ -99,19 +107,17 @@ export async function executeWithAgent(
   } catch (error) {
     logger.error(
       `Failed to execute subtask ${subtask.id} with agent ${subtask.agentId}:`,
-      error instanceof Error ? error : undefined
+      error instanceof Error ? error : undefined,
     );
-
-    const endTime = Date.now();
 
     // Return failed result
     return {
       result: {
         id: subtask.id,
-        status: 'failed',
+        status: "failed",
         tier,
         agentId: subtask.agentId,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : "Unknown error",
         tokens: 0,
       },
       toolCalls: [],
@@ -128,7 +134,7 @@ export async function executeWithAgent(
 function extractExecutionHistory(
   steps: AgentExecutionStep[],
   tier: LLMTier,
-  baseTimestamp: number
+  baseTimestamp: number,
 ): {
   toolCalls: ToolCallRecord[];
   llmInteractions: LLMInteraction[];
@@ -137,14 +143,14 @@ function extractExecutionHistory(
   const llmInteractions: LLMInteraction[] = [];
 
   for (const step of steps) {
-    const stepTimestamp = baseTimestamp + (steps.indexOf(step) * 1000); // Estimate timestamp
+    const stepTimestamp = baseTimestamp + steps.indexOf(step) * 1000; // Estimate timestamp
 
     // Extract LLM interaction from this step
     if (step.response) {
       llmInteractions.push({
-        type: 'chatWithTools', // AgentExecutor uses chat with tools
+        type: "chatWithTools", // AgentExecutor uses chat with tools
         tier,
-        input: '', // We don't have input in AgentExecutionStep (would need to track separately)
+        input: "", // We don't have input in AgentExecutionStep (would need to track separately)
         output: step.response,
         tokens: step.tokensUsed || 0,
         durationMs: step.durationMs || 0,

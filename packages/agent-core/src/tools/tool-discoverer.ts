@@ -4,11 +4,14 @@
  * Discovers available tools from KB Labs plugin manifests using auto-discovery
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import type { ToolDefinition, ToolStrategyConfig } from '@kb-labs/agent-contracts';
-import { glob } from 'glob';
-import { join, dirname } from 'path';
-import { readFileSync, existsSync } from 'fs';
+import type { PluginContextV3 } from "@kb-labs/sdk";
+import type {
+  ToolDefinition,
+  ToolStrategyConfig,
+} from "@kb-labs/agent-contracts";
+import { glob } from "glob";
+import { join, dirname } from "path";
+import { readFileSync, existsSync } from "fs";
 
 /**
  * Discovered plugin manifest (KB Labs v3 schema)
@@ -35,7 +38,7 @@ interface DiscoveredManifest {
  * Uses auto-discovery to find plugin manifests similar to CLI API approach
  */
 export class ToolDiscoverer {
-  private static readonly CACHE_KEY = 'agent:discovered-manifests';
+  private static readonly CACHE_KEY = "agent:discovered-manifests";
   private static readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
   constructor(private ctx: PluginContextV3) {}
@@ -47,9 +50,23 @@ export class ToolDiscoverer {
    * @returns Array of ToolDefinitions
    */
   async discover(config: {
-    filesystem?: { enabled: boolean; mode?: 'allowlist' | 'denylist'; allow?: string[]; deny?: string[] };
-    shell?: { enabled: boolean; mode?: 'allowlist' | 'denylist'; allow?: string[]; deny?: string[] };
-    kbLabs?: { mode: 'allowlist' | 'denylist'; allow?: string[]; deny?: string[] };
+    filesystem?: {
+      enabled: boolean;
+      mode?: "allowlist" | "denylist";
+      allow?: string[];
+      deny?: string[];
+    };
+    shell?: {
+      enabled: boolean;
+      mode?: "allowlist" | "denylist";
+      allow?: string[];
+      deny?: string[];
+    };
+    kbLabs?: {
+      mode: "allowlist" | "denylist";
+      allow?: string[];
+      deny?: string[];
+    };
   }): Promise<ToolDefinition[]> {
     const tools: ToolDefinition[] = [];
 
@@ -60,7 +77,7 @@ export class ToolDiscoverer {
         fsTools,
         config.filesystem.mode,
         config.filesystem.allow,
-        config.filesystem.deny
+        config.filesystem.deny,
       );
       tools.push(...filtered);
     }
@@ -72,7 +89,7 @@ export class ToolDiscoverer {
         shellTools,
         config.shell.mode,
         config.shell.allow,
-        config.shell.deny
+        config.shell.deny,
       );
       tools.push(...filtered);
     }
@@ -83,7 +100,7 @@ export class ToolDiscoverer {
       tools.push(...kbLabsTools);
     }
 
-    this.ctx.platform.logger.debug('Discovered tools', {
+    this.ctx.platform.logger.debug("Discovered tools", {
       count: tools.length,
       tools: tools.map((t) => t.name),
     });
@@ -97,7 +114,9 @@ export class ToolDiscoverer {
    * @param config - Tool strategy configuration
    * @returns Array of ToolDefinitions
    */
-  async discoverWithStrategy(config: ToolStrategyConfig): Promise<ToolDefinition[]> {
+  async discoverWithStrategy(
+    config: ToolStrategyConfig,
+  ): Promise<ToolDefinition[]> {
     const tools: ToolDefinition[] = [];
 
     // Add built-in tools based on builtIn config
@@ -127,7 +146,7 @@ export class ToolDiscoverer {
     // Add KB Labs plugin tools based on permissions
     if (config.permissions?.kbLabs) {
       const kbLabsTools = await this.discoverKBLabsTools({
-        mode: config.permissions.kbLabs.allow ? 'allowlist' : 'denylist',
+        mode: config.permissions.kbLabs.allow ? "allowlist" : "denylist",
         allow: config.permissions.kbLabs.allow,
         deny: config.permissions.kbLabs.deny,
       });
@@ -135,13 +154,13 @@ export class ToolDiscoverer {
     } else {
       // Default: discover all KB Labs tools
       const kbLabsTools = await this.discoverKBLabsTools({
-        mode: 'denylist',
+        mode: "denylist",
         deny: [],
       });
       tools.push(...kbLabsTools);
     }
 
-    this.ctx.platform.logger.debug('Discovered tools with strategy', {
+    this.ctx.platform.logger.debug("Discovered tools with strategy", {
       strategy: config.strategy,
       count: tools.length,
       tools: tools.map((t) => t.name),
@@ -156,146 +175,154 @@ export class ToolDiscoverer {
   private getFilesystemTools(): ToolDefinition[] {
     return [
       {
-        name: 'fs:read',
-        description: 'Read contents of a file. Large files are automatically truncated. Use startLine/maxLines to read specific sections.',
+        name: "fs:read",
+        description:
+          "Read contents of a file. Large files are automatically truncated. Use startLine/maxLines to read specific sections.",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             path: {
-              type: 'string',
-              description: 'Path to file to read',
+              type: "string",
+              description: "Path to file to read",
             },
             startLine: {
-              type: 'number',
-              description: 'Start reading from this line (1-indexed, default: 1)',
+              type: "number",
+              description:
+                "Start reading from this line (1-indexed, default: 1)",
             },
             maxLines: {
-              type: 'number',
-              description: 'Maximum number of lines to read (default: 2000, max file size: 1MB)',
+              type: "number",
+              description:
+                "Maximum number of lines to read (default: 2000, max file size: 1MB)",
             },
           },
-          required: ['path'],
+          required: ["path"],
         },
       },
       {
-        name: 'fs:write',
-        description: 'Write content to a file (creates or overwrites)',
+        name: "fs:write",
+        description: "Write content to a file (creates or overwrites)",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             path: {
-              type: 'string',
-              description: 'Path to file to write',
+              type: "string",
+              description: "Path to file to write",
             },
             content: {
-              type: 'string',
-              description: 'Content to write to file',
+              type: "string",
+              description: "Content to write to file",
             },
           },
-          required: ['path', 'content'],
+          required: ["path", "content"],
         },
       },
       {
-        name: 'fs:edit',
-        description: 'Edit a file using search/replace',
+        name: "fs:edit",
+        description: "Edit a file using search/replace",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             path: {
-              type: 'string',
-              description: 'Path to file to edit',
+              type: "string",
+              description: "Path to file to edit",
             },
             search: {
-              type: 'string',
-              description: 'Text to search for',
+              type: "string",
+              description: "Text to search for",
             },
             replace: {
-              type: 'string',
-              description: 'Text to replace with',
+              type: "string",
+              description: "Text to replace with",
             },
           },
-          required: ['path', 'search', 'replace'],
+          required: ["path", "search", "replace"],
         },
       },
       {
-        name: 'fs:list',
-        description: 'List files and directories in a path',
+        name: "fs:list",
+        description: "List files and directories in a path",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             path: {
-              type: 'string',
-              description: 'Path to list (defaults to current directory)',
+              type: "string",
+              description: "Path to list (defaults to current directory)",
             },
             recursive: {
-              type: 'boolean',
-              description: 'List recursively',
+              type: "boolean",
+              description: "List recursively",
             },
           },
         },
       },
       {
-        name: 'fs:search',
-        description: 'Search for text in files using glob patterns. You fully control what to ignore via the ignore parameter.',
+        name: "fs:search",
+        description:
+          "Search for text in files using glob patterns. You fully control what to ignore via the ignore parameter.",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             pattern: {
-              type: 'string',
+              type: "string",
               description: 'Glob pattern for files to search (e.g., "**/*.ts")',
             },
             text: {
-              type: 'string',
-              description: 'Text to search for',
+              type: "string",
+              description: "Text to search for",
             },
             caseInsensitive: {
-              type: 'boolean',
-              description: 'Case insensitive search',
+              type: "boolean",
+              description: "Case insensitive search",
             },
             ignore: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Glob patterns to ignore (e.g., ["**/node_modules/**", "**/dist/**"]). No defaults - you control what to exclude.',
+              type: "array",
+              items: { type: "string" },
+              description:
+                'Glob patterns to ignore (e.g., ["**/node_modules/**", "**/dist/**"]). No defaults - you control what to exclude.',
             },
           },
-          required: ['pattern', 'text'],
+          required: ["pattern", "text"],
         },
       },
       {
-        name: 'fs:glob',
-        description: 'Find files matching a glob pattern. Returns file paths only, not contents.',
+        name: "fs:glob",
+        description:
+          "Find files matching a glob pattern. Returns file paths only, not contents.",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             pattern: {
-              type: 'string',
-              description: 'Glob pattern to match (e.g., "**/*.ts", "src/**/index.ts")',
+              type: "string",
+              description:
+                'Glob pattern to match (e.g., "**/*.ts", "src/**/index.ts")',
             },
             ignore: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Glob patterns to ignore (e.g., ["**/node_modules/**", "**/dist/**"])',
+              type: "array",
+              items: { type: "string" },
+              description:
+                'Glob patterns to ignore (e.g., ["**/node_modules/**", "**/dist/**"])',
             },
             maxResults: {
-              type: 'number',
-              description: 'Maximum number of results to return (default: 100)',
+              type: "number",
+              description: "Maximum number of results to return (default: 100)",
             },
           },
-          required: ['pattern'],
+          required: ["pattern"],
         },
       },
       {
-        name: 'fs:exists',
-        description: 'Check if a file or directory exists',
+        name: "fs:exists",
+        description: "Check if a file or directory exists",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             path: {
-              type: 'string',
-              description: 'Path to check',
+              type: "string",
+              description: "Path to check",
             },
           },
-          required: ['path'],
+          required: ["path"],
         },
       },
     ];
@@ -307,17 +334,17 @@ export class ToolDiscoverer {
   private getShellTools(): ToolDefinition[] {
     return [
       {
-        name: 'shell:exec',
-        description: 'Execute a shell command',
+        name: "shell:exec",
+        description: "Execute a shell command",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             command: {
-              type: 'string',
-              description: 'Command to execute',
+              type: "string",
+              description: "Command to execute",
             },
           },
-          required: ['command'],
+          required: ["command"],
         },
       },
     ];
@@ -332,66 +359,78 @@ export class ToolDiscoverer {
   private getCodeTools(): ToolDefinition[] {
     return [
       {
-        name: 'code:find-definition',
-        description: 'Find the definition of a symbol (class, function, variable, type) in the codebase',
+        name: "code:find-definition",
+        description:
+          "Find the definition of a symbol (class, function, variable, type) in the codebase",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             symbol: {
-              type: 'string',
-              description: 'Symbol name to find (e.g., "ToolDiscoverer", "useAnalytics")',
+              type: "string",
+              description:
+                'Symbol name to find (e.g., "ToolDiscoverer", "useAnalytics")',
             },
             type: {
-              type: 'string',
-              enum: ['class', 'function', 'variable', 'type', 'interface', 'any'],
-              description: 'Type of symbol to find (default: any)',
+              type: "string",
+              enum: [
+                "class",
+                "function",
+                "variable",
+                "type",
+                "interface",
+                "any",
+              ],
+              description: "Type of symbol to find (default: any)",
             },
             scope: {
-              type: 'string',
-              description: 'Glob pattern to limit search scope (e.g., "src/**/*.ts")',
+              type: "string",
+              description:
+                'Glob pattern to limit search scope (e.g., "src/**/*.ts")',
             },
           },
-          required: ['symbol'],
+          required: ["symbol"],
         },
       },
       {
-        name: 'code:find-usages',
-        description: 'Find all usages/references of a symbol in the codebase',
+        name: "code:find-usages",
+        description: "Find all usages/references of a symbol in the codebase",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             symbol: {
-              type: 'string',
-              description: 'Symbol name to find usages of',
+              type: "string",
+              description: "Symbol name to find usages of",
             },
             scope: {
-              type: 'string',
-              description: 'Glob pattern to limit search scope (e.g., "src/**/*.ts")',
+              type: "string",
+              description:
+                'Glob pattern to limit search scope (e.g., "src/**/*.ts")',
             },
             includeDefinition: {
-              type: 'boolean',
-              description: 'Include the definition in results (default: false)',
+              type: "boolean",
+              description: "Include the definition in results (default: false)",
             },
           },
-          required: ['symbol'],
+          required: ["symbol"],
         },
       },
       {
-        name: 'code:outline',
-        description: 'Get the structural outline of a file (classes, functions, exports)',
+        name: "code:outline",
+        description:
+          "Get the structural outline of a file (classes, functions, exports)",
         inputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             path: {
-              type: 'string',
-              description: 'Path to file to outline',
+              type: "string",
+              description: "Path to file to outline",
             },
             depth: {
-              type: 'number',
-              description: 'Maximum depth of outline (default: 2)',
+              type: "number",
+              description: "Maximum depth of outline (default: 2)",
             },
           },
-          required: ['path'],
+          required: ["path"],
         },
       },
     ];
@@ -401,7 +440,7 @@ export class ToolDiscoverer {
    * Discover KB Labs plugin tools from manifests using auto-discovery
    */
   private async discoverKBLabsTools(config: {
-    mode: 'allowlist' | 'denylist';
+    mode: "allowlist" | "denylist";
     allow?: string[];
     deny?: string[];
   }): Promise<ToolDefinition[]> {
@@ -436,12 +475,12 @@ export class ToolDiscoverer {
         }
       }
 
-      this.ctx.platform.logger.info('Discovered KB Labs tools', {
+      this.ctx.platform.logger.info("Discovered KB Labs tools", {
         count: tools.length,
         manifests: manifests.length,
       });
     } catch (error) {
-      this.ctx.platform.logger.warn('Failed to discover KB Labs tools', {
+      this.ctx.platform.logger.warn("Failed to discover KB Labs tools", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -457,7 +496,9 @@ export class ToolDiscoverer {
    */
   private async discoverManifests(): Promise<DiscoveredManifest[]> {
     // Check cache first
-    const cached = await this.ctx.platform.cache.get<DiscoveredManifest[]>(ToolDiscoverer.CACHE_KEY);
+    const cached = await this.ctx.platform.cache.get<DiscoveredManifest[]>(
+      ToolDiscoverer.CACHE_KEY,
+    );
     if (cached) {
       return cached;
     }
@@ -468,8 +509,8 @@ export class ToolDiscoverer {
 
     // Find all packages in node_modules (prefer .pnpm for pnpm workspaces)
     const patterns = [
-      'node_modules/.pnpm/node_modules/@*/*/package.json',
-      'node_modules/@*/*/package.json',
+      "node_modules/.pnpm/node_modules/@*/*/package.json",
+      "node_modules/@*/*/package.json",
     ];
 
     try {
@@ -483,7 +524,7 @@ export class ToolDiscoverer {
           try {
             const pkgPath = join(rootDir, pkgFile);
             // Use Node.js fs to read package.json (not runtime.fs which is sandboxed)
-            const pkgContent = readFileSync(pkgPath, 'utf-8');
+            const pkgContent = readFileSync(pkgPath, "utf-8");
             const pkg = JSON.parse(pkgContent);
 
             // Check for manifest path in kbLabs.manifest or kb.manifest
@@ -503,7 +544,9 @@ export class ToolDiscoverer {
             // Dynamic import of manifest module
             const manifestUrl = `file://${manifestPath}`;
             const manifestModule = await import(manifestUrl);
-            const manifest = (manifestModule.default || manifestModule.manifest || manifestModule) as DiscoveredManifest;
+            const manifest = (manifestModule.default ||
+              manifestModule.manifest ||
+              manifestModule) as DiscoveredManifest;
 
             // Validate manifest has required fields (KB Labs v3: cli.commands)
             if (manifest.id && manifest.cli?.commands) {
@@ -511,7 +554,7 @@ export class ToolDiscoverer {
             }
           } catch (error) {
             // Skip invalid packages/manifests
-            this.ctx.platform.logger.debug('Failed to load manifest', {
+            this.ctx.platform.logger.debug("Failed to load manifest", {
               file: pkgFile,
               error: error instanceof Error ? error.message : String(error),
             });
@@ -523,14 +566,14 @@ export class ToolDiscoverer {
       await this.ctx.platform.cache.set(
         ToolDiscoverer.CACHE_KEY,
         manifests,
-        ToolDiscoverer.CACHE_TTL
+        ToolDiscoverer.CACHE_TTL,
       );
 
-      this.ctx.platform.logger.debug('Discovered and cached manifests', {
+      this.ctx.platform.logger.debug("Discovered and cached manifests", {
         count: manifests.length,
       });
     } catch (error) {
-      this.ctx.platform.logger.warn('Failed to discover manifests', {
+      this.ctx.platform.logger.warn("Failed to discover manifests", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -548,13 +591,13 @@ export class ToolDiscoverer {
    */
   private extractPluginName(manifestId: string): string {
     // Remove scope if present
-    const withoutScope = manifestId.replace(/^@[^/]+\//, '');
+    const withoutScope = manifestId.replace(/^@[^/]+\//, "");
 
     // Remove -cli suffix if present
-    const withoutCli = withoutScope.replace(/-cli$/, '');
+    const withoutCli = withoutScope.replace(/-cli$/, "");
 
     // Remove kb-labs- prefix if present
-    const withoutPrefix = withoutCli.replace(/^kb-labs-/, '');
+    const withoutPrefix = withoutCli.replace(/^kb-labs-/, "");
 
     return withoutPrefix;
   }
@@ -570,9 +613,9 @@ export class ToolDiscoverer {
    */
   private filterTools(
     tools: ToolDefinition[],
-    mode?: 'allowlist' | 'denylist',
+    mode?: "allowlist" | "denylist",
     allow?: string[],
-    deny?: string[]
+    deny?: string[],
   ): ToolDefinition[] {
     // No filtering if mode not specified
     if (!mode) {
@@ -580,14 +623,18 @@ export class ToolDiscoverer {
     }
 
     return tools.filter((tool) => {
-      if (mode === 'allowlist') {
+      if (mode === "allowlist") {
         // Only include if matches allow patterns
         const allowPatterns = allow || [];
-        return allowPatterns.some((pattern) => this.matchesPattern(tool.name, pattern));
+        return allowPatterns.some((pattern) =>
+          this.matchesPattern(tool.name, pattern),
+        );
       } else {
         // Include unless matches deny patterns
         const denyPatterns = deny || [];
-        return !denyPatterns.some((pattern) => this.matchesPattern(tool.name, pattern));
+        return !denyPatterns.some((pattern) =>
+          this.matchesPattern(tool.name, pattern),
+        );
       }
     });
   }
@@ -597,16 +644,24 @@ export class ToolDiscoverer {
    */
   private shouldIncludeTool(
     toolName: string,
-    config: { mode: 'allowlist' | 'denylist'; allow?: string[]; deny?: string[] }
+    config: {
+      mode: "allowlist" | "denylist";
+      allow?: string[];
+      deny?: string[];
+    },
   ): boolean {
-    if (config.mode === 'allowlist') {
+    if (config.mode === "allowlist") {
       // Only include if matches allow patterns
       const allowPatterns = config.allow || [];
-      return allowPatterns.some((pattern) => this.matchesPattern(toolName, pattern));
+      return allowPatterns.some((pattern) =>
+        this.matchesPattern(toolName, pattern),
+      );
     } else {
       // Include unless matches deny patterns
       const denyPatterns = config.deny || [];
-      return !denyPatterns.some((pattern) => this.matchesPattern(toolName, pattern));
+      return !denyPatterns.some((pattern) =>
+        this.matchesPattern(toolName, pattern),
+      );
     }
   }
 
@@ -620,18 +675,18 @@ export class ToolDiscoverer {
    */
   private matchesPattern(toolName: string, pattern: string): boolean {
     // Input validation
-    if (toolName === '') {
-      throw new Error('matchesPattern: toolName cannot be an empty string');
+    if (toolName === "") {
+      throw new Error("matchesPattern: toolName cannot be an empty string");
     }
-    if (pattern === '') {
-      throw new Error('matchesPattern: pattern cannot be an empty string');
+    if (pattern === "") {
+      throw new Error("matchesPattern: pattern cannot be an empty string");
     }
 
     // Convert glob pattern to regex
     // Example: "devkit:*" -> /^devkit:.*$/
     const regexPattern = pattern
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // Escape regex special chars
-      .replace(/\*/g, '.*'); // Replace * with .*
+      .replace(/[.+?^${}()|[\]\\]/g, "\\$&") // Escape regex special chars
+      .replace(/\*/g, ".*"); // Replace * with .*
 
     const regex = new RegExp(`^${regexPattern}$`);
     return regex.test(toolName);
@@ -640,37 +695,39 @@ export class ToolDiscoverer {
   /**
    * Convert plugin command to ToolDefinition input schema
    */
-  private commandToInputSchema(command: any): ToolDefinition['inputSchema'] {
+  private commandToInputSchema(command: any): ToolDefinition["inputSchema"] {
     const properties: Record<string, any> = {};
     const required: string[] = [];
 
     // Hardcoded schemas for known commands (TODO: parse from Zod schemas in handlers)
-    const knownSchemas: Record<string, ToolDefinition['inputSchema']> = {
-      'mind:rag-query': {
-        type: 'object',
+    const knownSchemas: Record<string, ToolDefinition["inputSchema"]> = {
+      "mind:rag-query": {
+        type: "object",
         properties: {
           text: {
-            type: 'string',
-            description: 'Semantic question or query to search for in the codebase',
+            type: "string",
+            description:
+              "Semantic question or query to search for in the codebase",
           },
           mode: {
-            type: 'string',
-            description: 'Query mode: instant (fast), auto (balanced), or thinking (deep analysis)',
-            enum: ['instant', 'auto', 'thinking'],
+            type: "string",
+            description:
+              "Query mode: instant (fast), auto (balanced), or thinking (deep analysis)",
+            enum: ["instant", "auto", "thinking"],
           },
           scope: {
-            type: 'string',
+            type: "string",
             description: 'Scope ID to search within (default: "default")',
           },
         },
-        required: ['text'],
+        required: ["text"],
       },
-      'mind:rag-status': {
-        type: 'object',
+      "mind:rag-status": {
+        type: "object",
         properties: {
           scope: {
-            type: 'string',
-            description: 'Scope ID to check status for',
+            type: "string",
+            description: "Scope ID to check status for",
           },
         },
       },
@@ -684,10 +741,12 @@ export class ToolDiscoverer {
 
     // Extract flags from command (legacy support)
     if (command.flags) {
-      for (const [flagName, flagConfig] of Object.entries(command.flags as Record<string, any>)) {
+      for (const [flagName, flagConfig] of Object.entries(
+        command.flags as Record<string, any>,
+      )) {
         properties[flagName] = {
           type: this.flagTypeToJsonType(flagConfig.type),
-          description: flagConfig.description || '',
+          description: flagConfig.description || "",
         };
 
         if (flagConfig.required) {
@@ -697,7 +756,7 @@ export class ToolDiscoverer {
     }
 
     return {
-      type: 'object',
+      type: "object",
       properties,
       ...(required.length > 0 ? { required } : {}),
     };
@@ -708,16 +767,16 @@ export class ToolDiscoverer {
    */
   private flagTypeToJsonType(flagType: string): string {
     switch (flagType) {
-      case 'string':
-        return 'string';
-      case 'number':
-        return 'number';
-      case 'boolean':
-        return 'boolean';
-      case 'array':
-        return 'array';
+      case "string":
+        return "string";
+      case "number":
+        return "number";
+      case "boolean":
+        return "boolean";
+      case "array":
+        return "array";
       default:
-        return 'string';
+        return "string";
     }
   }
 }

@@ -3,7 +3,7 @@
  * Tool for explicit subtask delegation to agents.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Delegation instruction.
@@ -29,13 +29,15 @@ export interface DelegationInstruction {
  * @param validSpecialistIds - Array of valid agent IDs
  * @returns LLM tool definition
  */
-export function createDelegateSubtaskTool(validSpecialistIds: string[]): LLMTool {
+export function createDelegateSubtaskTool(
+  validSpecialistIds: string[],
+): LLMTool {
   return {
-    name: 'delegate_subtask',
+    name: "delegate_subtask",
     description: `Delegate a subtask to an agent with clear instructions and context.
 
 **Available agents:**
-${validSpecialistIds.map(id => `- ${id}`).join('\n')}
+${validSpecialistIds.map((id) => `- ${id}`).join("\n")}
 
 **Use this tool to:**
 - Provide context from previous subtasks
@@ -43,34 +45,40 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 - Adjust priority based on current state`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'agentId', 'context', 'expectedOutput', 'priority'],
+      type: "object",
+      required: [
+        "subtaskId",
+        "agentId",
+        "context",
+        "expectedOutput",
+        "priority",
+      ],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'ID of subtask being delegated',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "ID of subtask being delegated",
+          pattern: "^subtask-\\d+$",
         },
         agentId: {
-          type: 'string',
-          description: 'Agent to delegate to',
+          type: "string",
+          description: "Agent to delegate to",
           enum: validSpecialistIds,
         },
         context: {
-          type: 'string',
-          description: 'Context and background information for agent',
+          type: "string",
+          description: "Context and background information for agent",
           minLength: 20,
           maxLength: 1000,
         },
         expectedOutput: {
-          type: 'string',
-          description: 'Clear description of expected deliverable',
+          type: "string",
+          description: "Clear description of expected deliverable",
           minLength: 20,
           maxLength: 500,
         },
         priority: {
-          type: 'number',
-          description: 'Priority level (10 = critical, 1 = optional)',
+          type: "number",
+          description: "Priority level (10 = critical, 1 = optional)",
           minimum: 1,
           maximum: 10,
         },

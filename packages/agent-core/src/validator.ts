@@ -4,8 +4,8 @@
  * Validates agent configs at load time to catch errors early.
  */
 
-import { validateJsonSchema } from './schema-converter.js';
-import type { AgentConfigV1 } from '@kb-labs/agent-contracts';
+import { validateJsonSchema } from "./schema-converter.js";
+import type { AgentConfigV1 } from "@kb-labs/agent-contracts";
 
 /**
  * Validate agent output schema
@@ -23,24 +23,24 @@ export function validateAgentOutputSchema(agentConfig: AgentConfigV1): void {
   const agentId = agentConfig.id;
 
   // Must be object type (agents must return structured data, not primitives)
-  if (schema.type !== 'object') {
+  if (schema.type !== "object") {
     throw new Error(
       `Agent "${agentId}": output.schema.type must be "object", got "${schema.type}". ` +
-        `Agents must return structured objects, not primitive values.`
+        `Agents must return structured objects, not primitive values.`,
     );
   }
 
   // Must have properties
-  if (!schema.properties || typeof schema.properties !== 'object') {
+  if (!schema.properties || typeof schema.properties !== "object") {
     throw new Error(
-      `Agent "${agentId}": output.schema must have "properties" field defining the output structure.`
+      `Agent "${agentId}": output.schema must have "properties" field defining the output structure.`,
     );
   }
 
   if (Object.keys(schema.properties).length === 0) {
     throw new Error(
       `Agent "${agentId}": output.schema.properties must have at least one property. ` +
-        `Empty schemas are not allowed.`
+        `Empty schemas are not allowed.`,
     );
   }
 
@@ -50,7 +50,7 @@ export function validateAgentOutputSchema(agentConfig: AgentConfigV1): void {
   } catch (err) {
     throw new Error(
       `Agent "${agentId}": Invalid output schema: ${(err as Error).message}\n\n` +
-        `Make sure your schema follows JSON Schema specification.`
+        `Make sure your schema follows JSON Schema specification.`,
     );
   }
 }

@@ -13,12 +13,12 @@
  * ```
  */
 
-import { defineError, PluginError, commonErrors } from '@kb-labs/sdk';
+import { defineError, PluginError, commonErrors } from "@kb-labs/sdk";
 
 /**
  * Template-specific errors
  */
-export const TemplateError = defineError('TEMPLATE', {
+export const TemplateError = defineError("TEMPLATE", {
   BusinessRuleViolation: {
     code: 400,
     message: (rule: string) => `Business rule violated: ${rule}`,
@@ -36,6 +36,6 @@ export const TemplateError = defineError('TEMPLATE', {
 /**
  * Common errors (validation, not found, etc.)
  */
-export const CommonError = defineError('COMMON', commonErrors);
+export const CommonError = defineError("COMMON", commonErrors);
 
 export { PluginError };

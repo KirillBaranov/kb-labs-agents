@@ -3,17 +3,22 @@
  * Tool for identifying and reporting blockers.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Blocker severity levels.
  */
-export type BlockerSeverity = 'low' | 'medium' | 'high' | 'critical';
+export type BlockerSeverity = "low" | "medium" | "high" | "critical";
 
 /**
  * Blocker type.
  */
-export type BlockerType = 'dependency' | 'resource' | 'technical' | 'external' | 'unknown';
+export type BlockerType =
+  | "dependency"
+  | "resource"
+  | "technical"
+  | "external"
+  | "unknown";
 
 /**
  * Blocker identification.
@@ -44,7 +49,7 @@ export interface BlockerIdentification {
  */
 export function createIdentifyBlockerTool(): LLMTool {
   return {
-    name: 'identify_blocker',
+    name: "identify_blocker",
     description: `Identify and report a blocker preventing subtask progress.
 
 **Blocker types:**
@@ -67,49 +72,58 @@ export function createIdentifyBlockerTool(): LLMTool {
 - Technical limitation discovered`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'type', 'severity', 'description', 'impact', 'suggestedResolution', 'canProceedWithout'],
+      type: "object",
+      required: [
+        "subtaskId",
+        "type",
+        "severity",
+        "description",
+        "impact",
+        "suggestedResolution",
+        "canProceedWithout",
+      ],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'ID of blocked subtask',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "ID of blocked subtask",
+          pattern: "^subtask-\\d+$",
         },
         type: {
-          type: 'string',
-          description: 'Type of blocker',
-          enum: ['dependency', 'resource', 'technical', 'external', 'unknown'],
+          type: "string",
+          description: "Type of blocker",
+          enum: ["dependency", "resource", "technical", "external", "unknown"],
         },
         severity: {
-          type: 'string',
-          description: 'Severity level',
-          enum: ['low', 'medium', 'high', 'critical'],
+          type: "string",
+          description: "Severity level",
+          enum: ["low", "medium", "high", "critical"],
         },
         description: {
-          type: 'string',
-          description: 'Clear description of what is blocking progress',
+          type: "string",
+          description: "Clear description of what is blocking progress",
           minLength: 20,
           maxLength: 500,
         },
         impact: {
-          type: 'string',
-          description: 'How this blocker affects execution',
+          type: "string",
+          description: "How this blocker affects execution",
           minLength: 20,
           maxLength: 300,
         },
         suggestedResolution: {
-          type: 'array',
-          description: 'Steps to resolve this blocker',
+          type: "array",
+          description: "Steps to resolve this blocker",
           minItems: 1,
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 200,
           },
         },
         canProceedWithout: {
-          type: 'boolean',
-          description: 'Whether execution can continue without resolving this blocker',
+          type: "boolean",
+          description:
+            "Whether execution can continue without resolving this blocker",
         },
       },
     },

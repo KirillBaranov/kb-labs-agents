@@ -3,7 +3,7 @@
  * Tool for requesting context from previous agents.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Context request.
@@ -33,7 +33,7 @@ export interface ContextRequest {
  */
 export function createRequestContextTool(): LLMTool {
   return {
-    name: 'request_context',
+    name: "request_context",
     description: `Request additional context or information from a previous agent.
 
 **Use this tool when:**
@@ -55,40 +55,47 @@ export function createRequestContextTool(): LLMTool {
 - Improves collaboration`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'requesterId', 'sourceSubtaskId', 'sourceSpecialistId', 'questions', 'reason'],
+      type: "object",
+      required: [
+        "subtaskId",
+        "requesterId",
+        "sourceSubtaskId",
+        "sourceSpecialistId",
+        "questions",
+        "reason",
+      ],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'ID of current subtask',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "ID of current subtask",
+          pattern: "^subtask-\\d+$",
         },
         requesterId: {
-          type: 'string',
-          description: 'Agent requesting context',
+          type: "string",
+          description: "Agent requesting context",
         },
         sourceSubtaskId: {
-          type: 'string',
-          description: 'Subtask to get context from',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "Subtask to get context from",
+          pattern: "^subtask-\\d+$",
         },
         sourceSpecialistId: {
-          type: 'string',
-          description: 'Agent to request context from',
+          type: "string",
+          description: "Agent to request context from",
         },
         questions: {
-          type: 'array',
-          description: 'Specific questions to ask',
+          type: "array",
+          description: "Specific questions to ask",
           minItems: 1,
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 200,
           },
         },
         reason: {
-          type: 'string',
-          description: 'Why this context is needed',
+          type: "string",
+          description: "Why this context is needed",
           minLength: 20,
           maxLength: 300,
         },

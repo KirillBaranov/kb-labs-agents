@@ -5,14 +5,14 @@
  * Supports prioritized, gated, and unrestricted modes.
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
+import type { PluginContextV3 } from "@kb-labs/sdk";
 import type {
   ToolStrategyConfig,
   ToolGroup,
   ToolExecutionState,
   ToolAvailability,
   ToolDefinition,
-} from '@kb-labs/agent-contracts';
+} from "@kb-labs/agent-contracts";
 
 /**
  * Tool Strategy Manager
@@ -30,7 +30,7 @@ export class ToolStrategyManager {
 
   constructor(
     private ctx: PluginContextV3,
-    private config: ToolStrategyConfig
+    private config: ToolStrategyConfig,
   ) {
     // Initialize state
     this.state = {
@@ -50,20 +50,20 @@ export class ToolStrategyManager {
         // Map tools to groups (expand patterns later)
         for (const toolPattern of group.tools) {
           // For exact tool names, map directly
-          if (!toolPattern.includes('*')) {
+          if (!toolPattern.includes("*")) {
             this.toolToGroup.set(toolPattern, group);
           }
         }
 
         // Auto-unlock groups without unlockAfter in gated mode
-        if (config.strategy === 'gated' && !group.unlockAfter) {
+        if (config.strategy === "gated" && !group.unlockAfter) {
           this.state.unlockedGroups.add(group.name);
         }
       }
     }
 
     // In non-gated modes, all groups are unlocked
-    if (config.strategy !== 'gated') {
+    if (config.strategy !== "gated") {
       for (const group of config.groups || []) {
         this.state.unlockedGroups.add(group.name);
       }
@@ -84,12 +84,16 @@ export class ToolStrategyManager {
     // Check if group is unlocked
     if (!this.state.unlockedGroups.has(group.name)) {
       const unlockAfter = group.unlockAfter;
-      const prerequisiteGroup = unlockAfter ? this.groupsByName.get(unlockAfter) : undefined;
+      const prerequisiteGroup = unlockAfter
+        ? this.groupsByName.get(unlockAfter)
+        : undefined;
 
       return {
         available: false,
         reason: `Tool "${toolName}" is in group "${group.name}" which requires using "${unlockAfter}" group first`,
-        hint: prerequisiteGroup?.hints?.[0] || `Try using tools from "${unlockAfter}" group first`,
+        hint:
+          prerequisiteGroup?.hints?.[0] ||
+          `Try using tools from "${unlockAfter}" group first`,
         group: group.name,
       };
     }
@@ -106,7 +110,7 @@ export class ToolStrategyManager {
    */
   recordToolCall(toolName: string, confidence?: number): void {
     const group = this.findGroupForTool(toolName);
-    const groupName = group?.name || 'unknown';
+    const groupName = group?.name || "unknown";
 
     // Record the call
     this.state.toolCalls.push({
@@ -122,7 +126,7 @@ export class ToolStrategyManager {
     }
 
     // Check if we should unlock any gated groups
-    if (this.config.strategy === 'gated' && this.config.groups) {
+    if (this.config.strategy === "gated" && this.config.groups) {
       for (const g of this.config.groups) {
         if (
           !this.state.unlockedGroups.has(g.name) &&
@@ -130,19 +134,25 @@ export class ToolStrategyManager {
           this.state.usedGroups.has(g.unlockAfter)
         ) {
           // Check confidence threshold if specified
-          if (g.unlockWhenConfidenceBelow !== undefined && confidence !== undefined) {
+          if (
+            g.unlockWhenConfidenceBelow !== undefined &&
+            confidence !== undefined
+          ) {
             if (confidence < g.unlockWhenConfidenceBelow) {
               this.state.unlockedGroups.add(g.name);
-              this.ctx.platform.logger.info('Unlocked tool group due to low confidence', {
-                group: g.name,
-                confidence,
-                threshold: g.unlockWhenConfidenceBelow,
-              });
+              this.ctx.platform.logger.info(
+                "Unlocked tool group due to low confidence",
+                {
+                  group: g.name,
+                  confidence,
+                  threshold: g.unlockWhenConfidenceBelow,
+                },
+              );
             }
           } else {
             // No confidence check, unlock immediately
             this.state.unlockedGroups.add(g.name);
-            this.ctx.platform.logger.info('Unlocked tool group', {
+            this.ctx.platform.logger.info("Unlocked tool group", {
               group: g.name,
               triggeredBy: g.unlockAfter,
             });
@@ -156,29 +166,35 @@ export class ToolStrategyManager {
    * Generate hints for LLM system prompt based on strategy
    */
   generateSystemPromptHints(): string {
-    if (this.config.strategy === 'unrestricted' || !this.config.groups) {
-      return '';
+    if (this.config.strategy === "unrestricted" || !this.config.groups) {
+      return "";
     }
 
     // Sort groups by priority
-    const sortedGroups = [...this.config.groups].sort((a, b) => a.priority - b.priority);
+    const sortedGroups = [...this.config.groups].sort(
+      (a, b) => a.priority - b.priority,
+    );
 
-    const lines: string[] = ['## Tool Usage Strategy', ''];
+    const lines: string[] = ["## Tool Usage Strategy", ""];
 
-    if (this.config.strategy === 'prioritized') {
-      lines.push('Use tools in priority order. Try higher priority groups first:');
-      lines.push('');
-    } else if (this.config.strategy === 'gated') {
-      lines.push('Some tool groups are gated. You must use prerequisite groups first:');
-      lines.push('');
+    if (this.config.strategy === "prioritized") {
+      lines.push(
+        "Use tools in priority order. Try higher priority groups first:",
+      );
+      lines.push("");
+    } else if (this.config.strategy === "gated") {
+      lines.push(
+        "Some tool groups are gated. You must use prerequisite groups first:",
+      );
+      lines.push("");
     }
 
     for (const group of sortedGroups) {
       const locked = !this.state.unlockedGroups.has(group.name);
-      const lockIcon = locked ? '🔒' : '✅';
+      const lockIcon = locked ? "🔒" : "✅";
 
       lines.push(`### ${lockIcon} ${group.name} (Priority ${group.priority})`);
-      lines.push(`Tools: ${group.tools.join(', ')}`);
+      lines.push(`Tools: ${group.tools.join(", ")}`);
 
       if (group.hints && group.hints.length > 0) {
         for (const hint of group.hints) {
@@ -187,13 +203,15 @@ export class ToolStrategyManager {
       }
 
       if (locked && group.unlockAfter) {
-        lines.push(`⚠️ Locked: Use "${group.unlockAfter}" group first to unlock`);
+        lines.push(
+          `⚠️ Locked: Use "${group.unlockAfter}" group first to unlock`,
+        );
       }
 
-      lines.push('');
+      lines.push("");
     }
 
-    return lines.join('\n');
+    return lines.join("\n");
   }
 
   /**
@@ -203,11 +221,11 @@ export class ToolStrategyManager {
    * In prioritized mode, all tools are available but ordered by priority.
    */
   filterAvailableTools(tools: ToolDefinition[]): ToolDefinition[] {
-    if (this.config.strategy === 'unrestricted') {
+    if (this.config.strategy === "unrestricted") {
       return tools;
     }
 
-    if (this.config.strategy === 'gated') {
+    if (this.config.strategy === "gated") {
       // Filter out tools from locked groups
       return tools.filter((tool) => {
         const availability = this.checkAvailability(tool.name);
@@ -249,7 +267,7 @@ export class ToolStrategyManager {
     // Re-initialize unlocked groups
     if (this.config.groups) {
       for (const group of this.config.groups) {
-        if (this.config.strategy !== 'gated' || !group.unlockAfter) {
+        if (this.config.strategy !== "gated" || !group.unlockAfter) {
           this.state.unlockedGroups.add(group.name);
         }
       }
@@ -284,14 +302,14 @@ export class ToolStrategyManager {
    * Match tool name against pattern (supports wildcards)
    */
   private matchesPattern(toolName: string, pattern: string): boolean {
-    if (!pattern.includes('*')) {
+    if (!pattern.includes("*")) {
       return toolName === pattern;
     }
 
     // Convert glob to regex
     const regexPattern = pattern
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*/g, '.*');
+      .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*");
 
     const regex = new RegExp(`^${regexPattern}$`);
     return regex.test(toolName);

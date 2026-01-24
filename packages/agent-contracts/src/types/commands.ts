@@ -1,4 +1,4 @@
-import type { SchemaReference } from './api';
+import type { SchemaReference } from "./api";
 
 export interface CommandContract {
   id: string;
@@ -11,4 +11,3 @@ export interface CommandContract {
 }
 
 export type CommandContractsMap = Record<string, CommandContract>;
-

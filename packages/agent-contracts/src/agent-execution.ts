@@ -4,8 +4,8 @@
  * Defines types for agent execution context, results, and runtime state
  */
 
-import type { AgentConfigV1 } from './agent-config.js';
-import type { ToolDefinition } from './tool-types.js';
+import type { AgentConfigV1 } from "./agent-config.js";
+import type { ToolDefinition } from "./tool-types.js";
 
 /**
  * Agent context (loaded from disk)
@@ -85,7 +85,11 @@ export interface LoopDetectionResult {
   /** Whether a loop was detected */
   detected: boolean;
   /** Loop type if detected */
-  type?: 'exact_repeat' | 'similar_pattern' | 'tool_sequence_repeat' | 'stuck_reasoning';
+  type?:
+    | "exact_repeat"
+    | "similar_pattern"
+    | "tool_sequence_repeat"
+    | "stuck_reasoning";
   /** Description of the loop pattern */
   description?: string;
   /** Steps involved in the loop */
@@ -145,7 +149,7 @@ export interface AgentProgressCallback {
     success: boolean,
     output?: string,
     error?: string,
-    durationMs?: number
+    durationMs?: number,
   ) => void;
 
   /**
@@ -154,7 +158,11 @@ export interface AgentProgressCallback {
    * @param totalTokens - Cumulative tokens used so far
    * @param toolCallCount - Number of tool calls in this step
    */
-  onStepComplete?: (step: number, totalTokens: number, toolCallCount: number) => void;
+  onStepComplete?: (
+    step: number,
+    totalTokens: number,
+    toolCallCount: number,
+  ) => void;
 
   /**
    * Called when execution completes (success or failure)
@@ -162,7 +170,6 @@ export interface AgentProgressCallback {
    */
   onComplete?: (result: AgentResult) => void;
 }
-
 
 /**
  * Agent execution result
@@ -226,7 +233,7 @@ export interface AgentRuntimeState {
 /**
  * Agent template type
  */
-export type AgentTemplate = 'basic' | 'coding' | 'testing';
+export type AgentTemplate = "basic" | "coding" | "testing";
 
 /**
  * Agent template metadata

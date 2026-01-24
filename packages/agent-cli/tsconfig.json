@@ -1,10 +1,9 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@kb-labs/devkit/tsconfig/node.json",
   "compilerOptions": {
-    "noEmit": true,
-    "jsx": "react-jsx"
+    "rootDir": "src",
+    "outDir": "dist"
   },
-  "include": ["src", "tests"],
-  "exclude": ["dist", "node_modules"],
-  "references": []
+  "include": ["src"]
 }

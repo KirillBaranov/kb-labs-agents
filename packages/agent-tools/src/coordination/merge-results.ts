@@ -3,7 +3,7 @@
  * Tool for merging results from multiple agents.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Result to merge.
@@ -40,7 +40,7 @@ export interface MergedResults {
  */
 export function createMergeResultsTool(): LLMTool {
   return {
-    name: 'merge_results',
+    name: "merge_results",
     description: `Merge and synthesize results from multiple agents.
 
 **Use this tool to:**
@@ -50,53 +50,53 @@ export function createMergeResultsTool(): LLMTool {
 - Determine next steps based on combined results`,
 
     inputSchema: {
-      type: 'object',
-      required: ['results', 'synthesis', 'nextSteps'],
+      type: "object",
+      required: ["results", "synthesis", "nextSteps"],
       properties: {
         results: {
-          type: 'array',
-          description: 'Results to merge',
+          type: "array",
+          description: "Results to merge",
           minItems: 2,
           items: {
-            type: 'object',
-            required: ['subtaskId', 'agentId', 'keyFindings'],
+            type: "object",
+            required: ["subtaskId", "agentId", "keyFindings"],
             properties: {
               subtaskId: {
-                type: 'string',
-                pattern: '^subtask-\\d+$',
+                type: "string",
+                pattern: "^subtask-\\d+$",
               },
               agentId: {
-                type: 'string',
+                type: "string",
               },
               keyFindings: {
-                type: 'array',
+                type: "array",
                 minItems: 1,
-                items: { type: 'string' },
+                items: { type: "string" },
               },
             },
           },
         },
         synthesis: {
-          type: 'string',
-          description: 'Synthesized summary of all results',
+          type: "string",
+          description: "Synthesized summary of all results",
           minLength: 50,
           maxLength: 1000,
         },
         conflicts: {
-          type: 'array',
-          description: 'Conflicts or inconsistencies found (optional)',
+          type: "array",
+          description: "Conflicts or inconsistencies found (optional)",
           items: {
-            type: 'string',
+            type: "string",
             minLength: 20,
             maxLength: 300,
           },
         },
         nextSteps: {
-          type: 'array',
-          description: 'Recommended next steps based on merged results',
+          type: "array",
+          description: "Recommended next steps based on merged results",
           minItems: 1,
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 200,
           },

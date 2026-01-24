@@ -8,8 +8,8 @@ import type {
   AgentExecutionStep,
   LoopDetectionState,
   LoopDetectionResult,
-} from '@kb-labs/agent-contracts';
-import { createHash } from 'crypto';
+} from "@kb-labs/agent-contracts";
+import { createHash } from "crypto";
 
 /**
  * Loop Detector for agent execution
@@ -23,10 +23,7 @@ import { createHash } from 'crypto';
 export class LoopDetector {
   private state: LoopDetectionState;
 
-  constructor(options?: {
-    maxHistorySize?: number;
-    loopThreshold?: number;
-  }) {
+  constructor(options?: { maxHistorySize?: number; loopThreshold?: number }) {
     this.state = {
       stateHashes: [],
       maxHistorySize: options?.maxHistorySize ?? 10, // Increased from 5 to allow more exploration
@@ -90,7 +87,7 @@ export class LoopDetector {
 
       return {
         detected: true,
-        type: 'exact_repeat',
+        type: "exact_repeat",
         description: `Exact state repeated after ${stepsSinceLastSeen} steps`,
         loopSteps: [step.step - stepsSinceLastSeen, step.step],
         confidence: 1.0, // 100% confidence for exact repeats
@@ -113,7 +110,9 @@ export class LoopDetector {
    *
    * Detects patterns like: [fs:read, fs:write] → [fs:read, fs:write] → [fs:read, fs:write]
    */
-  private checkToolSequenceRepeat(steps: AgentExecutionStep[]): LoopDetectionResult {
+  private checkToolSequenceRepeat(
+    steps: AgentExecutionStep[],
+  ): LoopDetectionResult {
     if (steps.length < 4) {
       return { detected: false };
     }
@@ -131,9 +130,9 @@ export class LoopDetector {
     }
 
     // Find matching sequence in history
-    const sequenceKey = currentSequence.join('→');
-    let matchingSeq = this.state.toolCallSequences.find(
-      (seq) => seq.sequence.join('→') === sequenceKey
+    const sequenceKey = currentSequence.join("→");
+    const matchingSeq = this.state.toolCallSequences.find(
+      (seq) => seq.sequence.join("→") === sequenceKey,
     );
 
     if (matchingSeq) {
@@ -144,7 +143,7 @@ export class LoopDetector {
       if (matchingSeq.count >= this.state.loopThreshold) {
         return {
           detected: true,
-          type: 'tool_sequence_repeat',
+          type: "tool_sequence_repeat",
           description: `Tool sequence [${sequenceKey}] repeated ${matchingSeq.count} times`,
           confidence: 0.9,
         };
@@ -160,7 +159,7 @@ export class LoopDetector {
 
     // Clean up old sequences (not seen in last 10 steps)
     this.state.toolCallSequences = this.state.toolCallSequences.filter(
-      (seq) => currentStep.step - seq.lastSeen < 10
+      (seq) => currentStep.step - seq.lastSeen < 10,
     );
 
     return { detected: false };
@@ -171,7 +170,9 @@ export class LoopDetector {
    *
    * Detects when agent keeps trying same tools but making no progress
    */
-  private checkStuckReasoning(steps: AgentExecutionStep[]): LoopDetectionResult {
+  private checkStuckReasoning(
+    steps: AgentExecutionStep[],
+  ): LoopDetectionResult {
     if (steps.length < 6) {
       return { detected: false };
     }
@@ -180,8 +181,8 @@ export class LoopDetector {
     const recentSteps = steps.slice(-5);
 
     // Extract all tool names from recent steps
-    const allTools = recentSteps.flatMap((step) =>
-      step.toolCalls?.map((tc) => tc.name) || []
+    const allTools = recentSteps.flatMap(
+      (step) => step.toolCalls?.map((tc) => tc.name) || [],
     );
 
     // Count unique tools vs total tools
@@ -194,7 +195,7 @@ export class LoopDetector {
       const failedCount = recentSteps.reduce(
         (count, step) =>
           count + (step.toolCalls?.filter((tc) => !tc.success).length || 0),
-        0
+        0,
       );
 
       // Check if responses are very similar (indicating no progress)
@@ -207,8 +208,8 @@ export class LoopDetector {
       if (failedCount > recentSteps.length * 0.6 && uniqueResponses.size <= 2) {
         return {
           detected: true,
-          type: 'stuck_reasoning',
-          description: `Agent stuck using ${Array.from(uniqueTools).join(', ')} repeatedly with ${failedCount} failures`,
+          type: "stuck_reasoning",
+          description: `Agent stuck using ${Array.from(uniqueTools).join(", ")} repeatedly with ${failedCount} failures`,
           confidence: 0.75,
         };
       }
@@ -230,8 +231,8 @@ export class LoopDetector {
     const toolCallsStr = step.toolCalls
       ? step.toolCalls
           .map((tc) => `${tc.name}:${JSON.stringify(tc.input)}`)
-          .join('|')
-      : '';
+          .join("|")
+      : "";
 
     // For reasoning-only steps, each step is unique (forced reasoning pattern)
     if (!toolCallsStr) {
@@ -253,7 +254,7 @@ export class LoopDetector {
    * Hash a string using MD5
    */
   private hashString(str: string): string {
-    return createHash('md5').update(str).digest('hex');
+    return createHash("md5").update(str).digest("hex");
   }
 
   /**

@@ -17,7 +17,11 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "clean": "rimraf dist",
-    "test": "vitest"
+    "test": "vitest",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint . --fix",
+    "type-check": "tsc --noEmit",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@kb-labs/sdk": "link:../../../kb-labs-sdk/packages/sdk",
@@ -26,11 +30,12 @@
     "@kb-labs/progress-reporter": "workspace:*"
   },
   "devDependencies": {
-    "tsup": "^8.0.1",
-    "typescript": "^5.3.3",
-    "vitest": "^1.1.0",
-    "rimraf": "^5.0.5",
-    "@types/node": "^20.0.0"
+    "tsup": "^8.5.0",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.4",
+    "rimraf": "^6.0.1",
+    "@types/node": "^24.3.3",
+    "@kb-labs/devkit": "link:../../../kb-labs-devkit"
   },
   "keywords": [
     "kb-labs",
@@ -40,5 +45,9 @@
     "llm"
   ],
   "author": "KB Labs",
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
 }

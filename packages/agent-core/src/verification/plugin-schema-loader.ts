@@ -7,8 +7,8 @@
  * Part of the anti-hallucination verification system (ADR-0002).
  */
 
-import type { z } from 'zod';
-import { useLogger } from '@kb-labs/sdk';
+import type { z } from "zod";
+import { useLogger } from "@kb-labs/sdk";
 
 /**
  * Schema reference format
@@ -54,7 +54,7 @@ export class PluginSchemaLoader {
     // Parse reference
     const parsed = this.parseRef(ref);
     if (!parsed) {
-      await logger.warn('Invalid schema ref', { ref });
+      await logger.warn("Invalid schema ref", { ref });
       return null;
     }
 
@@ -69,7 +69,7 @@ export class PluginSchemaLoader {
       const schema = module[schemaName];
 
       if (!schema) {
-        await logger.warn('Schema not found', { schemaName, moduleName });
+        await logger.warn("Schema not found", { schemaName, moduleName });
         return null;
       }
 
@@ -77,7 +77,7 @@ export class PluginSchemaLoader {
       this.schemaCache.set(ref, schema);
       return schema;
     } catch (error) {
-      await logger.warn('Failed to load schema', {
+      await logger.warn("Failed to load schema", {
         ref,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -95,7 +95,7 @@ export class PluginSchemaLoader {
    */
   private parseRef(ref: string): SchemaRef | null {
     // Split by '#'
-    const parts = ref.split('#');
+    const parts = ref.split("#");
     if (parts.length !== 2) {
       return null;
     }
@@ -115,27 +115,27 @@ export class PluginSchemaLoader {
     let packageName: string;
     let modulePath: string;
 
-    if (modulePart.startsWith('@')) {
+    if (modulePart.startsWith("@")) {
       // Scoped package: '@org/package/path'
-      const slashIndex = modulePart.indexOf('/', modulePart.indexOf('/') + 1);
+      const slashIndex = modulePart.indexOf("/", modulePart.indexOf("/") + 1);
       if (slashIndex === -1) {
         // No path: '@org/package'
         packageName = modulePart;
-        modulePath = '';
+        modulePath = "";
       } else {
         packageName = modulePart.substring(0, slashIndex);
         modulePath = modulePart.substring(slashIndex);
       }
-    } else if (modulePart.startsWith('.')) {
+    } else if (modulePart.startsWith(".")) {
       // Relative path: './schemas/query'
-      packageName = '.';
+      packageName = ".";
       modulePath = modulePart.substring(1);
     } else {
       // Unscoped package: 'package/path'
-      const slashIndex = modulePart.indexOf('/');
+      const slashIndex = modulePart.indexOf("/");
       if (slashIndex === -1) {
         packageName = modulePart;
-        modulePath = '';
+        modulePath = "";
       } else {
         packageName = modulePart.substring(0, slashIndex);
         modulePath = modulePart.substring(slashIndex);

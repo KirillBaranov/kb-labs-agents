@@ -9,7 +9,7 @@
  * descriptions without any predefined constraints.
  */
 
-import type { LLMTier } from './outcome.js';
+import type { LLMTier } from "./outcome.js";
 
 /**
  * Agent metadata for orchestrator discovery (FLEXIBLE SCHEMA)

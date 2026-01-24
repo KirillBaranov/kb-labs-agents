@@ -3,7 +3,7 @@
  * Tool for requesting revisions to agent output.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Revision request.
@@ -31,13 +31,15 @@ export interface RevisionRequest {
  * @param validSpecialistIds - Array of valid agent IDs
  * @returns LLM tool definition
  */
-export function createRequestRevisionTool(validSpecialistIds: string[]): LLMTool {
+export function createRequestRevisionTool(
+  validSpecialistIds: string[],
+): LLMTool {
   return {
-    name: 'request_revision',
+    name: "request_revision",
     description: `Request revision to agent output due to issues or needed improvements.
 
 **Available agents:**
-${validSpecialistIds.map(id => `- ${id}`).join('\n')}
+${validSpecialistIds.map((id) => `- ${id}`).join("\n")}
 
 **Use this tool when:**
 - Validation found issues that need fixing
@@ -51,48 +53,56 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 - Explain why revision is needed`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'agentId', 'issues', 'requestedChanges', 'priority', 'reason'],
+      type: "object",
+      required: [
+        "subtaskId",
+        "agentId",
+        "issues",
+        "requestedChanges",
+        "priority",
+        "reason",
+      ],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'ID of subtask needing revision',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "ID of subtask needing revision",
+          pattern: "^subtask-\\d+$",
         },
         agentId: {
-          type: 'string',
-          description: 'Agent to revise',
+          type: "string",
+          description: "Agent to revise",
           enum: validSpecialistIds,
         },
         issues: {
-          type: 'array',
-          description: 'Issues found that require revision',
+          type: "array",
+          description: "Issues found that require revision",
           minItems: 1,
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 300,
           },
         },
         requestedChanges: {
-          type: 'array',
-          description: 'Specific changes requested',
+          type: "array",
+          description: "Specific changes requested",
           minItems: 1,
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 300,
           },
         },
         priority: {
-          type: 'number',
-          description: 'Priority of this revision (10 = critical, 1 = optional)',
+          type: "number",
+          description:
+            "Priority of this revision (10 = critical, 1 = optional)",
           minimum: 1,
           maximum: 10,
         },
         reason: {
-          type: 'string',
-          description: 'Clear explanation of why revision is needed',
+          type: "string",
+          description: "Clear explanation of why revision is needed",
           minLength: 20,
           maxLength: 500,
         },

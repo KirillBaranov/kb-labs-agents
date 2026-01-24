@@ -5,9 +5,14 @@
  * This is the runtime truth system for verification.
  */
 
-import { randomUUID, createHash } from 'node:crypto';
-import type { ToolCall, ToolResult, ToolInvocation, EvidenceRef } from '@kb-labs/agent-contracts';
-import type { IToolTraceStore } from './tool-trace-store.js';
+import { randomUUID, createHash } from "node:crypto";
+import type {
+  ToolCall,
+  ToolResult,
+  ToolInvocation,
+  EvidenceRef,
+} from "@kb-labs/agent-contracts";
+import type { IToolTraceStore } from "./tool-trace-store.js";
 
 /**
  * Tool trace recorder configuration
@@ -18,7 +23,7 @@ export interface ToolTraceRecorderConfig {
   /** Tool trace store */
   store: IToolTraceStore;
   /** Purpose of tool invocations (execution or verification) */
-  purpose?: 'execution' | 'verification';
+  purpose?: "execution" | "verification";
 }
 
 /**
@@ -54,8 +59,8 @@ export class ToolTraceRecorder {
       argsHash,
       args: toolCall.input,
       timestamp: new Date(),
-      purpose: this.config.purpose || 'execution',
-      status: 'success', // Will be updated
+      purpose: this.config.purpose || "execution",
+      status: "success", // Will be updated
       evidenceRefs: [],
       // output, durationMs, error will be added later
     };
@@ -81,11 +86,13 @@ export class ToolTraceRecorder {
     invocationId: string,
     toolCall: ToolCall,
     result: ToolResult,
-    durationMs: number
+    durationMs: number,
   ): Promise<void> {
     // Load the trace to update the invocation
     const trace = await this.config.store.load(`trace:${this.config.traceId}`);
-    const invocation = trace.invocations.find(inv => inv.invocationId === invocationId);
+    const invocation = trace.invocations.find(
+      (inv) => inv.invocationId === invocationId,
+    );
 
     if (!invocation) {
       throw new Error(`Invocation not found: ${invocationId}`);
@@ -93,15 +100,18 @@ export class ToolTraceRecorder {
 
     // Update status based on result
     if (result.success) {
-      invocation.status = 'success';
+      invocation.status = "success";
       invocation.output = result.output;
     } else {
-      invocation.status = result.error?.code === 'TIMEOUT' ? 'timeout' : 'error';
-      invocation.error = result.error ? {
-        code: result.error.code,
-        message: result.error.message,
-        stack: undefined, // Add if available
-      } : undefined;
+      invocation.status =
+        result.error?.code === "TIMEOUT" ? "timeout" : "error";
+      invocation.error = result.error
+        ? {
+            code: result.error.code,
+            message: result.error.message,
+            stack: undefined, // Add if available
+          }
+        : undefined;
     }
 
     // Add duration
@@ -123,11 +133,12 @@ export class ToolTraceRecorder {
    * @returns SHA-256 hash (hex)
    */
   private hashArgs(args: unknown): string {
-    const normalized = typeof args === 'string'
-      ? args
-      : JSON.stringify(args, Object.keys(args as any || {}).sort());
+    const normalized =
+      typeof args === "string"
+        ? args
+        : JSON.stringify(args, Object.keys((args as any) || {}).sort());
 
-    return createHash('sha256').update(normalized).digest('hex');
+    return createHash("sha256").update(normalized).digest("hex");
   }
 
   /**
@@ -140,17 +151,20 @@ export class ToolTraceRecorder {
    * @param result - Tool execution result
    * @returns Array of evidence references
    */
-  private generateEvidenceRefs(toolCall: ToolCall, result: ToolResult): EvidenceRef[] {
+  private generateEvidenceRefs(
+    toolCall: ToolCall,
+    result: ToolResult,
+  ): EvidenceRef[] {
     const refs: EvidenceRef[] = [];
 
     // For filesystem tools, record file paths as evidence
-    if (toolCall.name.startsWith('fs:')) {
+    if (toolCall.name.startsWith("fs:")) {
       const input = toolCall.input as Record<string, any> | undefined;
       const path = input?.path;
 
       if (path) {
         refs.push({
-          kind: 'file',
+          kind: "file",
           ref: path,
           // TODO: Add SHA-256 hash of file content for verification
         });
@@ -158,13 +172,13 @@ export class ToolTraceRecorder {
     }
 
     // For shell tools, record command as log evidence
-    if (toolCall.name.startsWith('shell:')) {
+    if (toolCall.name.startsWith("shell:")) {
       const input = toolCall.input as Record<string, any> | undefined;
       const command = input?.command;
 
       if (command) {
         refs.push({
-          kind: 'log',
+          kind: "log",
           ref: `shell:${command}`,
           meta: {
             exitCode: result.success ? 0 : 1,
@@ -174,9 +188,13 @@ export class ToolTraceRecorder {
     }
 
     // For plugin tools, record invocation as receipt
-    if (toolCall.name.includes(':') && !toolCall.name.startsWith('fs:') && !toolCall.name.startsWith('shell:')) {
+    if (
+      toolCall.name.includes(":") &&
+      !toolCall.name.startsWith("fs:") &&
+      !toolCall.name.startsWith("shell:")
+    ) {
       refs.push({
-        kind: 'receipt',
+        kind: "receipt",
         ref: toolCall.name,
         sha256: this.hashArgs(toolCall.input),
         meta: {
@@ -199,46 +217,46 @@ export class ToolTraceRecorder {
    */
   private generateDigest(
     toolCall: ToolCall,
-    result: ToolResult
-  ): ToolInvocation['digest'] {
+    result: ToolResult,
+  ): ToolInvocation["digest"] {
     const keyEvents: string[] = [];
     const counters: Record<string, number> = {};
 
     // Track success/failure
     if (result.success) {
-      keyEvents.push('success');
+      keyEvents.push("success");
     } else {
-      keyEvents.push('failed');
+      keyEvents.push("failed");
       counters.errors = 1;
     }
 
     // Track tool category
-    if (toolCall.name.startsWith('fs:')) {
-      keyEvents.push('filesystem');
+    if (toolCall.name.startsWith("fs:")) {
+      keyEvents.push("filesystem");
 
       // Track specific filesystem operations
-      if (toolCall.name === 'fs:write') {
-        keyEvents.push('file_created');
+      if (toolCall.name === "fs:write") {
+        keyEvents.push("file_created");
         counters.files_written = 1;
-      } else if (toolCall.name === 'fs:edit') {
-        keyEvents.push('file_modified');
+      } else if (toolCall.name === "fs:edit") {
+        keyEvents.push("file_modified");
         counters.files_edited = 1;
-      } else if (toolCall.name === 'fs:read') {
-        keyEvents.push('file_read');
+      } else if (toolCall.name === "fs:read") {
+        keyEvents.push("file_read");
         counters.files_read = 1;
       }
-    } else if (toolCall.name.startsWith('shell:')) {
-      keyEvents.push('shell');
+    } else if (toolCall.name.startsWith("shell:")) {
+      keyEvents.push("shell");
       counters.commands_executed = 1;
-    } else if (toolCall.name.startsWith('code:')) {
-      keyEvents.push('code_analysis');
+    } else if (toolCall.name.startsWith("code:")) {
+      keyEvents.push("code_analysis");
     } else {
-      keyEvents.push('plugin_tool');
+      keyEvents.push("plugin_tool");
     }
 
     // Track from cache
     if (result.metadata?.fromCache) {
-      keyEvents.push('from_cache');
+      keyEvents.push("from_cache");
     }
 
     return {
@@ -256,6 +274,8 @@ export class ToolTraceRecorder {
  * @param config - Recorder configuration
  * @returns ToolTraceRecorder instance
  */
-export function createToolTraceRecorder(config: ToolTraceRecorderConfig): ToolTraceRecorder {
+export function createToolTraceRecorder(
+  config: ToolTraceRecorderConfig,
+): ToolTraceRecorder {
   return new ToolTraceRecorder(config);
 }

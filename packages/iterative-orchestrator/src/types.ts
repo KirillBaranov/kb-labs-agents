@@ -17,31 +17,31 @@ export type OrchestratorDecision =
   | AbortDecision;
 
 export interface CompleteDecision {
-  type: 'COMPLETE';
+  type: "COMPLETE";
   answer: string;
   confidence: number;
 }
 
 export interface DelegateDecision {
-  type: 'DELEGATE';
+  type: "DELEGATE";
   agentId: string;
   task: string;
 }
 
 export interface DelegateParallelDecision {
-  type: 'DELEGATE_PARALLEL';
+  type: "DELEGATE_PARALLEL";
   tasks: Array<{ agentId: string; task: string }>;
 }
 
 export interface EscalateDecision {
-  type: 'ESCALATE';
+  type: "ESCALATE";
   reason: string;
   question: string;
   options?: string[];
 }
 
 export interface AbortDecision {
-  type: 'ABORT';
+  type: "ABORT";
   reason: string;
 }
 
@@ -136,5 +136,8 @@ export interface OrchestratorCallbacks {
   onIteration?: (iteration: number, decision: OrchestratorDecision) => void;
   onAgentStart?: (agentId: string, task: string) => void;
   onAgentComplete?: (result: AgentResult) => void;
-  onEscalate?: (reason: string, question: string) => Promise<string | undefined>;
+  onEscalate?: (
+    reason: string,
+    question: string,
+  ) => Promise<string | undefined>;
 }

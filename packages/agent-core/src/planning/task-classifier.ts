@@ -5,18 +5,23 @@
  * Uses LLM for intelligent classification with fallback to heuristics.
  */
 
-import { useLLM, useCache } from '@kb-labs/sdk';
-import type { ToolDefinition } from '@kb-labs/agent-contracts';
+import { useLLM, useCache } from "@kb-labs/sdk";
+import type { ToolDefinition } from "@kb-labs/agent-contracts";
 
 /**
  * Task type classification
  */
-export type TaskType = 'simple-lookup' | 'code-finding' | 'architecture' | 'multi-step' | 'code-generation';
+export type TaskType =
+  | "simple-lookup"
+  | "code-finding"
+  | "architecture"
+  | "multi-step"
+  | "code-generation";
 
 /**
  * Execution strategy for task
  */
-export type ExecutionStrategy = 'direct' | 'explore' | 'plan-then-execute';
+export type ExecutionStrategy = "direct" | "explore" | "plan-then-execute";
 
 /**
  * Task classification result
@@ -42,7 +47,10 @@ export class TaskClassifier {
   /**
    * Classify task using LLM (with cache)
    */
-  async classify(task: string, availableTools: ToolDefinition[]): Promise<TaskClassification> {
+  async classify(
+    task: string,
+    availableTools: ToolDefinition[],
+  ): Promise<TaskClassification> {
     // Check cache first (TTL: 1 hour)
     const cacheKey = `task-classification:${this.hashTask(task)}`;
     const cache = useCache();
@@ -75,14 +83,14 @@ export class TaskClassifier {
    */
   private async classifyWithLLM(
     task: string,
-    availableTools: ToolDefinition[]
+    availableTools: ToolDefinition[],
   ): Promise<TaskClassification> {
     const llm = useLLM();
     if (!llm) {
-      throw new Error('LLM not available');
+      throw new Error("LLM not available");
     }
 
-    const toolNames = availableTools.map((t) => t.name).join(', ');
+    const toolNames = availableTools.map((t) => t.name).join(", ");
 
     const prompt = `Analyze this task and classify it for optimal execution.
 
@@ -140,14 +148,14 @@ Respond with JSON only:
     const content = response.content.trim();
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error('Invalid LLM response format');
+      throw new Error("Invalid LLM response format");
     }
 
     const classification = JSON.parse(jsonMatch[0]) as TaskClassification;
 
     // Validate classification
     if (!this.isValidClassification(classification)) {
-      throw new Error('Invalid classification structure');
+      throw new Error("Invalid classification structure");
     }
 
     return classification;
@@ -158,7 +166,7 @@ Respond with JSON only:
    */
   private classifyWithHeuristics(
     task: string,
-    availableTools: ToolDefinition[]
+    _availableTools: ToolDefinition[],
   ): TaskClassification {
     const taskLower = task.toLowerCase();
 
@@ -175,12 +183,12 @@ Respond with JSON only:
       ])
     ) {
       return {
-        type: 'simple-lookup',
+        type: "simple-lookup",
         complexity: 2,
-        suggestedStrategy: 'direct',
+        suggestedStrategy: "direct",
         estimatedSteps: 2,
-        requiredTools: ['mind:rag-query', 'fs:read'],
-        reasoning: 'Pattern match: simple lookup query',
+        requiredTools: ["mind:rag-query", "fs:read"],
+        reasoning: "Pattern match: simple lookup query",
       };
     }
 
@@ -195,12 +203,12 @@ Respond with JSON only:
       ])
     ) {
       return {
-        type: 'code-finding',
+        type: "code-finding",
         complexity: 4,
-        suggestedStrategy: 'explore',
+        suggestedStrategy: "explore",
         estimatedSteps: 4,
-        requiredTools: ['mind:rag-query', 'fs:read', 'fs:search'],
-        reasoning: 'Pattern match: code exploration query',
+        requiredTools: ["mind:rag-query", "fs:read", "fs:search"],
+        reasoning: "Pattern match: code exploration query",
       };
     }
 
@@ -216,37 +224,43 @@ Respond with JSON only:
       ])
     ) {
       return {
-        type: 'architecture',
+        type: "architecture",
         complexity: 6,
-        suggestedStrategy: 'explore',
+        suggestedStrategy: "explore",
         estimatedSteps: 6,
-        requiredTools: ['mind:rag-query', 'fs:read', 'fs:list'],
-        reasoning: 'Pattern match: architecture query',
+        requiredTools: ["mind:rag-query", "fs:read", "fs:list"],
+        reasoning: "Pattern match: architecture query",
       };
     }
 
     // Multi-step patterns
     if (
-      this.matchesPattern(taskLower, [/^add\s+/, /^implement\s+/, /^fix\s+/, /^refactor\s+/, /^create\s+/])
+      this.matchesPattern(taskLower, [
+        /^add\s+/,
+        /^implement\s+/,
+        /^fix\s+/,
+        /^refactor\s+/,
+        /^create\s+/,
+      ])
     ) {
       return {
-        type: 'multi-step',
+        type: "multi-step",
         complexity: 7,
-        suggestedStrategy: 'plan-then-execute',
+        suggestedStrategy: "plan-then-execute",
         estimatedSteps: 8,
-        requiredTools: ['mind:rag-query', 'fs:read', 'fs:write', 'shell:exec'],
-        reasoning: 'Pattern match: complex task requiring changes',
+        requiredTools: ["mind:rag-query", "fs:read", "fs:write", "shell:exec"],
+        reasoning: "Pattern match: complex task requiring changes",
       };
     }
 
     // Default: code-finding (safest middle ground)
     return {
-      type: 'code-finding',
+      type: "code-finding",
       complexity: 5,
-      suggestedStrategy: 'explore',
+      suggestedStrategy: "explore",
       estimatedSteps: 5,
-      requiredTools: ['mind:rag-query', 'fs:read'],
-      reasoning: 'Default classification: exploratory task',
+      requiredTools: ["mind:rag-query", "fs:read"],
+      reasoning: "Default classification: exploratory task",
     };
   }
 
@@ -260,15 +274,17 @@ Respond with JSON only:
   /**
    * Validate classification structure
    */
-  private isValidClassification(classification: any): classification is TaskClassification {
+  private isValidClassification(
+    classification: any,
+  ): classification is TaskClassification {
     return (
-      typeof classification === 'object' &&
-      typeof classification.type === 'string' &&
-      typeof classification.complexity === 'number' &&
-      typeof classification.suggestedStrategy === 'string' &&
-      typeof classification.estimatedSteps === 'number' &&
+      typeof classification === "object" &&
+      typeof classification.type === "string" &&
+      typeof classification.complexity === "number" &&
+      typeof classification.suggestedStrategy === "string" &&
+      typeof classification.estimatedSteps === "number" &&
       Array.isArray(classification.requiredTools) &&
-      typeof classification.reasoning === 'string'
+      typeof classification.reasoning === "string"
     );
   }
 

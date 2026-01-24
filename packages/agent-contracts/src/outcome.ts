@@ -18,7 +18,7 @@
  * - `medium`: Balanced models (e.g., claude-sonnet-4-5)
  * - `large`: Powerful models (e.g., claude-opus-4-5)
  */
-export type LLMTier = 'small' | 'medium' | 'large';
+export type LLMTier = "small" | "medium" | "large";
 
 /**
  * Runtime metadata for agent execution
@@ -56,7 +56,13 @@ export interface FailureReport {
    * - `policy_denied`: Budget limit or permission denied
    * - `unknown`: Unexpected error
    */
-  kind: 'tool_error' | 'timeout' | 'validation_failed' | 'stuck' | 'policy_denied' | 'unknown';
+  kind:
+    | "tool_error"
+    | "timeout"
+    | "validation_failed"
+    | "stuck"
+    | "policy_denied"
+    | "unknown";
 
   /** Human-readable error message */
   message: string;

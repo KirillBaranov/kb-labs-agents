@@ -7,13 +7,13 @@
  * Part of the anti-hallucination verification system (ADR-0002).
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 /**
  * Evidence reference schema
  */
 export const EvidenceRefSchema = z.object({
-  kind: z.enum(['file', 'http', 'receipt', 'log', 'hash']),
+  kind: z.enum(["file", "http", "receipt", "log", "hash"]),
   ref: z.string(),
   sha256: z.string().optional(),
   meta: z.unknown().optional(),
@@ -23,7 +23,7 @@ export const EvidenceRefSchema = z.object({
  * File write claim schema
  */
 export const FileWriteClaimSchema = z.object({
-  kind: z.literal('file-write'),
+  kind: z.literal("file-write"),
   filePath: z.string(),
   contentHash: z.string(),
 });
@@ -32,24 +32,26 @@ export const FileWriteClaimSchema = z.object({
  * File edit claim schema
  */
 export const FileEditClaimSchema = z.object({
-  kind: z.literal('file-edit'),
+  kind: z.literal("file-edit"),
   filePath: z.string(),
   anchor: z.object({
     beforeSnippet: z.string(),
     afterSnippet: z.string(),
     contentHash: z.string(),
   }),
-  editedRegion: z.object({
-    start: z.number(),
-    end: z.number(),
-  }).optional(),
+  editedRegion: z
+    .object({
+      start: z.number(),
+      end: z.number(),
+    })
+    .optional(),
 });
 
 /**
  * File delete claim schema
  */
 export const FileDeleteClaimSchema = z.object({
-  kind: z.literal('file-delete'),
+  kind: z.literal("file-delete"),
   filePath: z.string(),
 });
 
@@ -57,7 +59,7 @@ export const FileDeleteClaimSchema = z.object({
  * Command executed claim schema
  */
 export const CommandExecutedClaimSchema = z.object({
-  kind: z.literal('command-executed'),
+  kind: z.literal("command-executed"),
   command: z.string(),
   exitCode: z.number(),
 });
@@ -66,7 +68,7 @@ export const CommandExecutedClaimSchema = z.object({
  * Code inserted claim schema
  */
 export const CodeInsertedClaimSchema = z.object({
-  kind: z.literal('code-inserted'),
+  kind: z.literal("code-inserted"),
   filePath: z.string(),
   anchor: z.object({
     beforeSnippet: z.string(),
@@ -78,7 +80,7 @@ export const CodeInsertedClaimSchema = z.object({
 /**
  * Claim schema (discriminated union)
  */
-export const ClaimSchema = z.discriminatedUnion('kind', [
+export const ClaimSchema = z.discriminatedUnion("kind", [
   FileWriteClaimSchema,
   FileEditClaimSchema,
   FileDeleteClaimSchema,
@@ -90,9 +92,9 @@ export const ClaimSchema = z.discriminatedUnion('kind', [
  * Compact artifact schema
  */
 export const CompactArtifactSchema = z.object({
-  kind: z.enum(['code-snippet', 'summary', 'data']),
+  kind: z.enum(["code-snippet", "summary", "data"]),
   label: z.string(),
-  content: z.string().max(1024, 'Artifact content must be < 1KB'),
+  content: z.string().max(1024, "Artifact content must be < 1KB"),
   contentHash: z.string(),
   sourceTool: z.string().optional(),
 });
@@ -105,7 +107,7 @@ export const CompactArtifactSchema = z.object({
  */
 export const AgentOutputSchema = z.object({
   /** Summary of what was accomplished */
-  summary: z.string().min(1, 'Summary is required'),
+  summary: z.string().min(1, "Summary is required"),
 
   /**
    * Trace reference (REQUIRED)
@@ -155,7 +157,9 @@ export interface AgentOutputValidationResult {
  * @param output - Raw agent output
  * @returns Validation result
  */
-export function validateAgentOutput(output: unknown): AgentOutputValidationResult {
+export function validateAgentOutput(
+  output: unknown,
+): AgentOutputValidationResult {
   const result = AgentOutputSchema.safeParse(output);
 
   if (result.success) {
@@ -166,8 +170,8 @@ export function validateAgentOutput(output: unknown): AgentOutputValidationResul
   }
 
   // Format Zod errors
-  const errors = result.error.errors.map(err => ({
-    path: err.path.join('.'),
+  const errors = result.error.errors.map((err) => ({
+    path: err.path.join("."),
     message: err.message,
   }));
 

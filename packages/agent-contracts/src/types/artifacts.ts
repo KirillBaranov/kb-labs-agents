@@ -1,4 +1,10 @@
-export type ArtifactKind = 'file' | 'json' | 'markdown' | 'binary' | 'dir' | 'log';
+export type ArtifactKind =
+  | "file"
+  | "json"
+  | "markdown"
+  | "binary"
+  | "dir"
+  | "log";
 
 export interface ArtifactExample {
   summary?: string;
@@ -29,4 +35,3 @@ export interface PluginArtifactContract {
 }
 
 export type ArtifactContractsMap = Record<string, PluginArtifactContract>;
-

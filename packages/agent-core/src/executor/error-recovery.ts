@@ -13,20 +13,20 @@
  * - Foundation for zero-config self-learning (Phase 5)
  */
 
-import type { AgentExecutionStep, ToolCall } from '@kb-labs/agent-contracts';
-import type { ExecutionMemory } from './execution-memory.js';
-import type { ProgressEstimate } from './progress-tracker.js';
-import type { ILLM } from '@kb-labs/sdk';
+import type { AgentExecutionStep, ToolCall } from "@kb-labs/agent-contracts";
+import type { ExecutionMemory } from "./execution-memory.js";
+import type { ProgressEstimate } from "./progress-tracker.js";
+import type { ILLM } from "@kb-labs/sdk";
 
 /**
  * Recovery strategy type
  */
 export type RecoveryStrategyType =
-  | 'retry' // Retry same tool with backoff
-  | 'alternative-tool' // Try different tool for same goal
-  | 'parameter-adjustment' // Modify tool parameters
-  | 'escalate' // Ask user for help
-  | 'give-up'; // Accept failure gracefully
+  | "retry" // Retry same tool with backoff
+  | "alternative-tool" // Try different tool for same goal
+  | "parameter-adjustment" // Modify tool parameters
+  | "escalate" // Ask user for help
+  | "give-up"; // Accept failure gracefully
 
 /**
  * Recovery action to take
@@ -92,7 +92,10 @@ export class ErrorRecovery {
    * @param memory Execution memory with context
    * @returns Whether to attempt recovery
    */
-  shouldAttemptRecovery(progressEstimate: ProgressEstimate, memory: ExecutionMemory): boolean {
+  shouldAttemptRecovery(
+    progressEstimate: ProgressEstimate,
+    memory: ExecutionMemory,
+  ): boolean {
     // Attempt recovery if:
     // 1. Agent is stuck (no progress)
     // 2. OR there are blockers identified
@@ -100,7 +103,8 @@ export class ErrorRecovery {
     const isStuck = progressEstimate.isStuck;
     const hasBlockers = progressEstimate.blockers.length > 0;
     const lowProgressManySteps =
-      progressEstimate.progressPercent < 20 && memory.completedSteps.length >= 5;
+      progressEstimate.progressPercent < 20 &&
+      memory.completedSteps.length >= 5;
 
     return isStuck || hasBlockers || lowProgressManySteps;
   }
@@ -118,9 +122,13 @@ export class ErrorRecovery {
   async generateRecoveryAction(
     progressEstimate: ProgressEstimate,
     memory: ExecutionMemory,
-    latestStep: AgentExecutionStep
+    latestStep: AgentExecutionStep,
   ): Promise<RecoveryAction> {
-    const prompt = this.buildRecoveryPrompt(progressEstimate, memory, latestStep);
+    const prompt = this.buildRecoveryPrompt(
+      progressEstimate,
+      memory,
+      latestStep,
+    );
 
     try {
       const response = await this.llm.complete(prompt, {
@@ -170,27 +178,29 @@ export class ErrorRecovery {
   private buildRecoveryPrompt(
     progressEstimate: ProgressEstimate,
     memory: ExecutionMemory,
-    latestStep: AgentExecutionStep
+    latestStep: AgentExecutionStep,
   ): string {
     const failedTools = latestStep.toolCalls?.filter((tc) => !tc.success) || [];
-    const failedToolNames = failedTools.map((tc) => tc.name).join(', ');
-    const errorMessages = failedTools.map((tc) => tc.error || 'Unknown error').join('; ');
+    const failedToolNames = failedTools.map((tc) => tc.name).join(", ");
+    const errorMessages = failedTools
+      .map((tc) => tc.error || "Unknown error")
+      .join("; ");
 
     return `
 Task Goal: ${memory.taskGoal}
 
 Current Situation:
 - Progress: ${progressEstimate.progressPercent}%
-- Stuck: ${progressEstimate.isStuck ? 'YES' : 'NO'}
-- Blockers: ${progressEstimate.blockers.length > 0 ? progressEstimate.blockers.join(', ') : 'None'}
+- Stuck: ${progressEstimate.isStuck ? "YES" : "NO"}
+- Blockers: ${progressEstimate.blockers.length > 0 ? progressEstimate.blockers.join(", ") : "None"}
 - Next Milestone: ${progressEstimate.nextMilestone}
 
 Latest Failed Action:
-- Tools: ${failedToolNames || 'none'}
-- Errors: ${errorMessages || 'none'}
+- Tools: ${failedToolNames || "none"}
+- Errors: ${errorMessages || "none"}
 
 Known Facts (what we learned so far):
-${memory.knownFacts.length > 0 ? memory.knownFacts.map((f) => `- ${f}`).join('\n') : '(None yet)'}
+${memory.knownFacts.length > 0 ? memory.knownFacts.map((f) => `- ${f}`).join("\n") : "(None yet)"}
 
 Suggest a recovery strategy:
 
@@ -252,32 +262,32 @@ Respond ONLY with valid JSON.
     try {
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        throw new Error('No JSON found in response');
+        throw new Error("No JSON found in response");
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
 
       return {
         strategy: parsed.strategy as RecoveryStrategyType,
-        reasoning: String(parsed.reasoning || 'No reasoning provided'),
+        reasoning: String(parsed.reasoning || "No reasoning provided"),
         action: {
-          toolName: String(parsed.action?.toolName || ''),
+          toolName: String(parsed.action?.toolName || ""),
           parameters: parsed.action?.parameters || undefined,
           escalationMessage: parsed.action?.escalationMessage || undefined,
         },
-        expectedOutcome: String(parsed.expectedOutcome || 'Unknown'),
+        expectedOutcome: String(parsed.expectedOutcome || "Unknown"),
         confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0.5)),
       };
     } catch (error) {
       // Parsing failed, return fallback
       return {
-        strategy: 'escalate',
+        strategy: "escalate",
         reasoning: `Failed to parse recovery strategy: ${error}`,
         action: {
-          toolName: '',
-          escalationMessage: 'Agent encountered an error and needs help',
+          toolName: "",
+          escalationMessage: "Agent encountered an error and needs help",
         },
-        expectedOutcome: 'User provides guidance',
+        expectedOutcome: "User provides guidance",
         confidence: 0.3,
       };
     }
@@ -286,19 +296,22 @@ Respond ONLY with valid JSON.
   /**
    * Fallback recovery action if LLM fails
    */
-  private getFallbackRecoveryAction(latestStep: AgentExecutionStep): RecoveryAction {
+  private getFallbackRecoveryAction(
+    latestStep: AgentExecutionStep,
+  ): RecoveryAction {
     const failedTools = latestStep.toolCalls?.filter((tc) => !tc.success) || [];
 
     if (failedTools.length === 0) {
       // No failed tools, just stuck - escalate
       return {
-        strategy: 'escalate',
-        reasoning: 'No clear failure, but agent is stuck',
+        strategy: "escalate",
+        reasoning: "No clear failure, but agent is stuck",
         action: {
-          toolName: '',
-          escalationMessage: 'Agent is not making progress. Please provide guidance.',
+          toolName: "",
+          escalationMessage:
+            "Agent is not making progress. Please provide guidance.",
         },
-        expectedOutcome: 'User provides guidance',
+        expectedOutcome: "User provides guidance",
         confidence: 0.5,
       };
     }
@@ -307,13 +320,13 @@ Respond ONLY with valid JSON.
     if (!firstFailedTool) {
       // Shouldn't happen but TypeScript needs this check
       return {
-        strategy: 'escalate',
-        reasoning: 'No failed tools found',
+        strategy: "escalate",
+        reasoning: "No failed tools found",
         action: {
-          toolName: '',
-          escalationMessage: 'Agent is stuck but no failed tools found.',
+          toolName: "",
+          escalationMessage: "Agent is stuck but no failed tools found.",
         },
-        expectedOutcome: 'User provides guidance',
+        expectedOutcome: "User provides guidance",
         confidence: 0.5,
       };
     }
@@ -321,24 +334,24 @@ Respond ONLY with valid JSON.
     // Simple heuristic: retry once, then give up
     if (!this.shouldGiveUp(firstFailedTool.name)) {
       return {
-        strategy: 'retry',
-        reasoning: 'Simple retry fallback',
+        strategy: "retry",
+        reasoning: "Simple retry fallback",
         action: {
           toolName: firstFailedTool.name,
           parameters: firstFailedTool.input as Record<string, unknown>,
         },
-        expectedOutcome: 'Tool succeeds on retry',
+        expectedOutcome: "Tool succeeds on retry",
         confidence: 0.4,
       };
     }
 
     return {
-      strategy: 'give-up',
-      reasoning: 'Max retries exceeded',
+      strategy: "give-up",
+      reasoning: "Max retries exceeded",
       action: {
-        toolName: '',
+        toolName: "",
       },
-      expectedOutcome: 'Accept failure gracefully',
+      expectedOutcome: "Accept failure gracefully",
       confidence: 0.8,
     };
   }

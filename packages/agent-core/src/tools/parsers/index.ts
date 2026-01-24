@@ -11,4 +11,4 @@ export {
   type CodeStructure,
   type SymbolDefinition,
   type SymbolUsage,
-} from './tree-sitter-parser';
+} from "./tree-sitter-parser";

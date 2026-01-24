@@ -5,8 +5,8 @@
  * This ensures agents think before acting and use tools proactively.
  */
 
-import type { TaskClassification } from './task-classifier.js';
-import type { ToolDefinition } from '@kb-labs/agent-contracts';
+import type { TaskClassification } from "./task-classifier.js";
+import type { ToolDefinition } from "@kb-labs/agent-contracts";
 
 /**
  * ReAct Prompt Builder
@@ -26,13 +26,13 @@ export class ReActPromptBuilder {
     classification: TaskClassification,
     tools: ToolDefinition[],
     baseSystemPrompt?: string,
-    includeTools: boolean = true
+    includeTools: boolean = true,
   ): string {
-    let prompt = '';
+    let prompt = "";
 
     // Add base system prompt if provided
     if (baseSystemPrompt) {
-      prompt += baseSystemPrompt + '\n\n';
+      prompt += baseSystemPrompt + "\n\n";
     }
 
     // Add ReAct pattern instructions
@@ -200,7 +200,9 @@ Take your time to think. The next step will allow tool usage again.
   /**
    * Task-specific guidance based on classification
    */
-  private buildTaskSpecificGuidance(classification: TaskClassification): string {
+  private buildTaskSpecificGuidance(
+    classification: TaskClassification,
+  ): string {
     let guidance = `# Task Classification\n\n`;
     guidance += `**Type:** ${classification.type}\n`;
     guidance += `**Complexity:** ${classification.complexity}/10\n`;
@@ -210,19 +212,19 @@ Take your time to think. The next step will allow tool usage again.
 
     // Add type-specific instructions
     switch (classification.type) {
-      case 'simple-lookup':
+      case "simple-lookup":
         guidance += this.buildSimpleLookupGuidance();
         break;
-      case 'code-finding':
+      case "code-finding":
         guidance += this.buildCodeFindingGuidance();
         break;
-      case 'architecture':
+      case "architecture":
         guidance += this.buildArchitectureGuidance();
         break;
-      case 'multi-step':
+      case "multi-step":
         guidance += this.buildMultiStepGuidance();
         break;
-      case 'code-generation':
+      case "code-generation":
         guidance += this.buildCodeGenerationGuidance();
         break;
     }
@@ -346,12 +348,15 @@ Always base new code on existing patterns in the codebase!
   /**
    * Tool usage guidelines
    */
-  private buildToolGuidelines(classification: TaskClassification, tools: ToolDefinition[]): string {
+  private buildToolGuidelines(
+    classification: TaskClassification,
+    tools: ToolDefinition[],
+  ): string {
     let guidelines = `# Tool Usage Guidelines\n\n`;
-    guidelines += `**Required Tools for This Task:** ${classification.requiredTools.join(', ')}\n\n`;
+    guidelines += `**Required Tools for This Task:** ${classification.requiredTools.join(", ")}\n\n`;
 
     // Add guidelines for Mind RAG (if available)
-    const hasMindRAG = tools.some((t) => t.name === 'mind:rag-query');
+    const hasMindRAG = tools.some((t) => t.name === "mind:rag-query");
     if (hasMindRAG) {
       guidelines += `## mind:rag-query - PRIORITY TOOL
 
@@ -374,7 +379,7 @@ This is your PRIMARY tool for code search. Use it FIRST before other tools.
     }
 
     // Add guidelines for filesystem tools
-    const hasFsRead = tools.some((t) => t.name === 'fs:read');
+    const hasFsRead = tools.some((t) => t.name === "fs:read");
     if (hasFsRead) {
       guidelines += `## fs:read - Read File Contents
 
@@ -395,7 +400,7 @@ Use after mind:rag-query or fs:search identifies relevant files.
 `;
     }
 
-    const hasFsSearch = tools.some((t) => t.name === 'fs:search');
+    const hasFsSearch = tools.some((t) => t.name === "fs:search");
     if (hasFsSearch) {
       guidelines += `## fs:search - Search File Contents
 
@@ -468,7 +473,7 @@ Use as fallback if mind:rag-query unavailable or for exact string matches.
     let examples = `# Examples\n\n`;
 
     switch (classification.type) {
-      case 'simple-lookup':
+      case "simple-lookup":
         examples += `## Example: Finding an Interface
 
 **Task:** "What is the VectorStore interface?"
@@ -492,7 +497,7 @@ Use as fallback if mind:rag-query unavailable or for exact string matches.
 `;
         break;
 
-      case 'code-finding':
+      case "code-finding":
         examples += `## Example: Understanding Implementation
 
 **Task:** "How does loop detection work?"

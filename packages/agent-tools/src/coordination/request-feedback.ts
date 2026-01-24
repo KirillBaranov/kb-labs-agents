@@ -3,7 +3,7 @@
  * Tool for requesting feedback from agents.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Feedback request.
@@ -27,13 +27,15 @@ export interface FeedbackRequest {
  * @param validSpecialistIds - Array of valid agent IDs
  * @returns LLM tool definition
  */
-export function createRequestFeedbackTool(validSpecialistIds: string[]): LLMTool {
+export function createRequestFeedbackTool(
+  validSpecialistIds: string[],
+): LLMTool {
   return {
-    name: 'request_feedback',
+    name: "request_feedback",
     description: `Request feedback or clarification from an agent about their work.
 
 **Available agents:**
-${validSpecialistIds.map(id => `- ${id}`).join('\n')}
+${validSpecialistIds.map((id) => `- ${id}`).join("\n")}
 
 **Use this tool when:**
 - Agent output needs clarification
@@ -41,33 +43,33 @@ ${validSpecialistIds.map(id => `- ${id}`).join('\n')}
 - Validation of approach or findings is required`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'agentId', 'questions', 'reason'],
+      type: "object",
+      required: ["subtaskId", "agentId", "questions", "reason"],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'Subtask ID to get feedback on',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "Subtask ID to get feedback on",
+          pattern: "^subtask-\\d+$",
         },
         agentId: {
-          type: 'string',
-          description: 'Agent to request feedback from',
+          type: "string",
+          description: "Agent to request feedback from",
           enum: validSpecialistIds,
         },
         questions: {
-          type: 'array',
-          description: 'Specific questions to answer',
+          type: "array",
+          description: "Specific questions to answer",
           minItems: 1,
           maxItems: 5,
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 200,
           },
         },
         reason: {
-          type: 'string',
-          description: 'Why this feedback is needed',
+          type: "string",
+          description: "Why this feedback is needed",
           minLength: 20,
           maxLength: 300,
         },

@@ -3,10 +3,11 @@
  * Type definitions for task complexity classification.
  */
 
-import type { LLMTier, ILLM } from '@kb-labs/sdk';
+import type { ILLM } from "@kb-labs/sdk";
+import type { LLMTier } from "@kb-labs/agent-contracts";
 
 // Re-export for convenience
-export type { LLMTier, ILLM };
+export type { ILLM, LLMTier };
 
 /**
  * Input for task classification.
@@ -23,9 +24,9 @@ export interface ClassificationResult {
   /** Recommended tier for this task */
   tier: LLMTier;
   /** Confidence level in this classification */
-  confidence: 'high' | 'low';
+  confidence: "high" | "low";
   /** Method used for classification */
-  method: 'heuristic' | 'llm';
+  method: "heuristic" | "llm";
   /** Optional reasoning for the classification */
   reasoning?: string;
 }

@@ -8,7 +8,7 @@
  * but doesn't trigger native tool calls.
  */
 
-import type { ToolCall } from '@kb-labs/agent-contracts';
+import type { ToolCall } from "@kb-labs/agent-contracts";
 
 /**
  * Parsed ReAct step
@@ -38,7 +38,9 @@ export class ReActParser {
     };
 
     // Extract Thought
-    const thoughtMatch = content.match(/\*\*Thought:\*\*\s*(.+?)(?=\n\*\*|$)/is);
+    const thoughtMatch = content.match(
+      /\*\*Thought:\*\*\s*(.+?)(?=\n\*\*|$)/is,
+    );
     if (thoughtMatch && thoughtMatch[1]) {
       result.thought = thoughtMatch[1].trim();
     }
@@ -51,14 +53,16 @@ export class ReActParser {
     }
 
     // Extract Action Input
-    const actionInputMatch = content.match(/\*\*Action Input:\*\*\s*(.+?)(?=\n\*\*|$)/is);
+    const actionInputMatch = content.match(
+      /\*\*Action Input:\*\*\s*(.+?)(?=\n\*\*|$)/is,
+    );
     if (actionInputMatch && actionInputMatch[1]) {
       const inputStr = actionInputMatch[1].trim();
 
       // Try to parse as JSON
       try {
         // Handle both JSON objects and JSON strings
-        if (inputStr.startsWith('{') || inputStr.startsWith('[')) {
+        if (inputStr.startsWith("{") || inputStr.startsWith("[")) {
           result.actionInput = JSON.parse(inputStr);
         } else if (inputStr.startsWith('"') && inputStr.endsWith('"')) {
           // Quoted string - use as-is after removing quotes
@@ -87,10 +91,10 @@ export class ReActParser {
     // Convert action input to appropriate format
     let input: string | Record<string, unknown>;
 
-    if (typeof parsed.actionInput === 'string') {
+    if (typeof parsed.actionInput === "string") {
       // String input - could be a query or JSON string
       input = parsed.actionInput;
-    } else if (parsed.actionInput && typeof parsed.actionInput === 'object') {
+    } else if (parsed.actionInput && typeof parsed.actionInput === "object") {
       // Already an object
       input = parsed.actionInput;
     } else {
@@ -110,7 +114,7 @@ export class ReActParser {
    */
   private normalizeToolName(toolName: string): string {
     return toolName
-      .replace(/[*_`]/g, '') // Remove markdown formatting
+      .replace(/[*_`]/g, "") // Remove markdown formatting
       .trim()
       .toLowerCase();
   }
@@ -120,11 +124,11 @@ export class ReActParser {
    */
   hasReActPattern(content: string): boolean {
     return (
-      content.includes('**Thought:**') ||
-      content.includes('**Action:**') ||
+      content.includes("**Thought:**") ||
+      content.includes("**Action:**") ||
       // Also check for variations
-      content.includes('Thought:') ||
-      content.includes('Action:')
+      content.includes("Thought:") ||
+      content.includes("Action:")
     );
   }
 
@@ -138,7 +142,9 @@ export class ReActParser {
     const thoughtMarkers = content.split(/(?=\*\*Thought:\*\*)/i);
 
     for (const section of thoughtMarkers) {
-      if (!section.trim()) continue;
+      if (!section.trim()) {
+        continue;
+      }
 
       const parsed = this.parse(section);
       if (parsed.thought || parsed.hasToolCall) {

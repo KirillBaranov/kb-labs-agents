@@ -1,2 +1,2 @@
 // CLI barrel
-export * from './commands';
+export * from "./commands";

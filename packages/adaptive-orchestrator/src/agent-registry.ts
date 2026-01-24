@@ -5,10 +5,10 @@
  * Used by AdaptiveOrchestrator to select agent agents for subtasks.
  */
 
-import { readFile, readdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import { load as loadYaml } from 'js-yaml';
-import type { AgentOrchestratorMetadata, AgentInfo } from '@kb-labs/agent-contracts';
+import { readFile, readdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { load as loadYaml } from "js-yaml";
+import type { AgentInfo } from "@kb-labs/agent-contracts";
 
 /**
  * Registry for discovering and managing agents available to orchestrator
@@ -17,7 +17,7 @@ export class OrchestratorAgentRegistry {
   private agents: Map<string, AgentInfo> = new Map();
   private agentsDir: string;
 
-  constructor(cwd: string, agentsDir: string = '.kb/agents') {
+  constructor(cwd: string, agentsDir: string = ".kb/agents") {
     // Convert to absolute path based on provided cwd
     this.agentsDir = resolve(cwd, agentsDir);
   }
@@ -35,13 +35,15 @@ export class OrchestratorAgentRegistry {
       const dirs = await readdir(this.agentsDir, { withFileTypes: true });
 
       for (const dir of dirs) {
-        if (!dir.isDirectory()) continue;
+        if (!dir.isDirectory()) {
+          continue;
+        }
 
         const agentId = dir.name;
-        const configPath = join(this.agentsDir, agentId, 'agent.yml');
+        const configPath = join(this.agentsDir, agentId, "agent.yml");
 
         try {
-          const content = await readFile(configPath, 'utf-8');
+          const content = await readFile(configPath, "utf-8");
           const config = loadYaml(content) as any;
 
           // Skip agents without metadata (not orchestrator-aware)
@@ -53,7 +55,7 @@ export class OrchestratorAgentRegistry {
           const agentInfo: AgentInfo = {
             id: config.id || agentId,
             name: config.name || agentId,
-            description: config.description || '',
+            description: config.description || "",
             metadata: {
               description: config.metadata.description,
               tags: config.metadata.tags || [],
@@ -61,18 +63,18 @@ export class OrchestratorAgentRegistry {
               keywords: config.metadata.keywords || [],
               capabilities: config.metadata.capabilities || [],
             },
-            tier: config.llm?.tier || 'medium',
+            tier: config.llm?.tier || "medium",
             path: join(this.agentsDir, agentId),
             configPath,
           };
 
           this.agents.set(agentInfo.id, agentInfo);
-        } catch (error) {
+        } catch {
           // Skip invalid agents (missing file, parse error, etc.)
           console.warn(`Failed to load agent: ${agentId}`, error);
         }
       }
-    } catch (error) {
+    } catch {
       // .kb/agents directory doesn't exist or isn't readable
       console.warn(`Failed to load agents from ${this.agentsDir}`, error);
     }
@@ -120,7 +122,7 @@ export class OrchestratorAgentRegistry {
         ...(agent.metadata.tags || []),
         ...(agent.metadata.examples || []),
       ]
-        .join(' ')
+        .join(" ")
         .toLowerCase();
 
       return searchText.includes(lowerQuery);
@@ -137,7 +139,7 @@ export class OrchestratorAgentRegistry {
     const agents = this.getAll();
 
     if (agents.length === 0) {
-      return 'No agent agents available. Use generic LLM for all subtasks.';
+      return "No agent agents available. Use generic LLM for all subtasks.";
     }
 
     return agents
@@ -148,7 +150,7 @@ export class OrchestratorAgentRegistry {
         ];
 
         if (agent.metadata.tags && agent.metadata.tags.length > 0) {
-          parts.push(`- Tags: ${agent.metadata.tags.join(', ')}`);
+          parts.push(`- Tags: ${agent.metadata.tags.join(", ")}`);
         }
 
         if (agent.metadata.examples && agent.metadata.examples.length > 0) {
@@ -158,9 +160,9 @@ export class OrchestratorAgentRegistry {
           });
         }
 
-        return parts.join('\n');
+        return parts.join("\n");
       })
-      .join('\n\n---\n\n');
+      .join("\n\n---\n\n");
   }
 
   /**

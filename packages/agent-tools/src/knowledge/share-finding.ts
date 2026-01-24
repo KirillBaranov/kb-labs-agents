@@ -3,12 +3,17 @@
  * Tool for sharing discoveries between agents.
  */
 
-import type { LLMTool } from '@kb-labs/core-platform';
+import type { LLMTool } from "@kb-labs/core-platform";
 
 /**
  * Finding category.
  */
-export type FindingCategory = 'bug' | 'optimization' | 'requirement' | 'constraint' | 'insight';
+export type FindingCategory =
+  | "bug"
+  | "optimization"
+  | "requirement"
+  | "constraint"
+  | "insight";
 
 /**
  * Shared finding.
@@ -40,7 +45,7 @@ export interface SharedFinding {
  */
 export function createShareFindingTool(): LLMTool {
   return {
-    name: 'share_finding',
+    name: "share_finding",
     description: `Share an important discovery or finding with the team.
 
 **Use this tool when an agent discovers:**
@@ -63,49 +68,57 @@ export function createShareFindingTool(): LLMTool {
 - Prevents wasted effort on outdated assumptions`,
 
     inputSchema: {
-      type: 'object',
-      required: ['subtaskId', 'agentId', 'category', 'description', 'impact', 'affectedSubtasks', 'recommendedActions'],
+      type: "object",
+      required: [
+        "subtaskId",
+        "agentId",
+        "category",
+        "description",
+        "impact",
+        "affectedSubtasks",
+        "recommendedActions",
+      ],
       properties: {
         subtaskId: {
-          type: 'string',
-          description: 'ID of subtask where finding was discovered',
-          pattern: '^subtask-\\d+$',
+          type: "string",
+          description: "ID of subtask where finding was discovered",
+          pattern: "^subtask-\\d+$",
         },
         agentId: {
-          type: 'string',
-          description: 'Agent who made this discovery',
+          type: "string",
+          description: "Agent who made this discovery",
         },
         category: {
-          type: 'string',
-          description: 'Category of finding',
-          enum: ['bug', 'optimization', 'requirement', 'constraint', 'insight'],
+          type: "string",
+          description: "Category of finding",
+          enum: ["bug", "optimization", "requirement", "constraint", "insight"],
         },
         description: {
-          type: 'string',
-          description: 'Clear description of what was discovered',
+          type: "string",
+          description: "Clear description of what was discovered",
           minLength: 20,
           maxLength: 500,
         },
         impact: {
-          type: 'string',
-          description: 'How this finding affects the plan or execution',
+          type: "string",
+          description: "How this finding affects the plan or execution",
           minLength: 20,
           maxLength: 300,
         },
         affectedSubtasks: {
-          type: 'array',
-          description: 'IDs of subtasks that might be affected by this finding',
+          type: "array",
+          description: "IDs of subtasks that might be affected by this finding",
           items: {
-            type: 'string',
-            pattern: '^subtask-\\d+$',
+            type: "string",
+            pattern: "^subtask-\\d+$",
           },
         },
         recommendedActions: {
-          type: 'array',
-          description: 'Recommended actions based on this finding',
+          type: "array",
+          description: "Recommended actions based on this finding",
           minItems: 1,
           items: {
-            type: 'string',
+            type: "string",
             minLength: 10,
             maxLength: 200,
           },

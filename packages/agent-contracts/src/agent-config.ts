@@ -10,13 +10,13 @@
  * Based on kb.agent/1 but extends it for V2 orchestration.
  */
 
-import type { ToolStrategyConfig } from './tool-strategy.js';
-import type { LLMTier } from './outcome.js';
+import type { ToolStrategyConfig } from "./tool-strategy.js";
+import type { LLMTier } from "./outcome.js";
 
 /**
  * Agent configuration schema version
  */
-export type AgentSchema = 'kb.agent/1';
+export type AgentSchema = "kb.agent/1";
 
 /**
  * LLM configuration for the agent
@@ -137,15 +137,15 @@ export interface AgentOutputSchema {
  * Agent capabilities (for orchestrator)
  */
 export type AgentCapability =
-  | 'code-search'
-  | 'code-reading'
-  | 'code-writing'
-  | 'code-editing'
-  | 'architecture-analysis'
-  | 'dependency-analysis'
-  | 'command-execution'
-  | 'testing'
-  | 'documentation';
+  | "code-search"
+  | "code-reading"
+  | "code-writing"
+  | "code-editing"
+  | "architecture-analysis"
+  | "dependency-analysis"
+  | "command-execution"
+  | "testing"
+  | "documentation";
 
 /**
  * Complete agent configuration (stored in agent.yml)

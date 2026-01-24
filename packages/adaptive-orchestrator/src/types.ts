@@ -3,7 +3,7 @@
  * Type definitions for adaptive orchestration.
  */
 
-import type { LLMTier } from '@kb-labs/sdk';
+import type { LLMTier } from "@kb-labs/sdk";
 
 /**
  * Subtask definition from planning phase.
@@ -40,7 +40,7 @@ export interface SubtaskResult {
   /** Subtask ID */
   id: number;
   /** Execution status */
-  status: 'success' | 'failed';
+  status: "success" | "failed";
   /** Tier used for execution */
   tier: LLMTier;
   /** Agent used (if any) */
@@ -60,7 +60,7 @@ export interface SubtaskResult {
  */
 export interface OrchestratorResult {
   /** Overall status */
-  status: 'success' | 'failed';
+  status: "success" | "failed";
   /** Final synthesized result */
   result: string;
   /** Cost breakdown */
@@ -84,7 +84,7 @@ export interface OrchestratorConfig {
   trackCost?: boolean;
   /** Model pricing (tokens per dollar) */
   pricing?: {
-    small: number;   // e.g., 1000000 for $1/1M tokens
+    small: number; // e.g., 1000000 for $1/1M tokens
     medium: number;
     large: number;
   };

@@ -9,18 +9,17 @@
  * Part of the anti-hallucination verification system (ADR-0002).
  */
 
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import type {
-  AgentOutput,
-  ToolTrace,
-  Claim,
-} from '@kb-labs/agent-contracts';
+import type { PluginContextV3 } from "@kb-labs/sdk";
+import type { AgentOutput, ToolTrace, Claim } from "@kb-labs/agent-contracts";
 import {
   validateAgentOutput,
   type AgentOutputValidationResult,
-} from './agent-output-schema.js';
-import { BuiltInToolVerifier, type ClaimVerificationResult } from './built-in-verifier.js';
-import { VerificationMetrics } from './verification-metrics.js';
+} from "./agent-output-schema.js";
+import {
+  BuiltInToolVerifier,
+  type ClaimVerificationResult,
+} from "./built-in-verifier.js";
+import { VerificationMetrics } from "./verification-metrics.js";
 
 /**
  * Verification result
@@ -89,14 +88,14 @@ export class TaskVerifier {
     trace?: ToolTrace,
     basePath: string = process.cwd(),
     agentId?: string,
-    subtaskId?: string
+    subtaskId?: string,
   ): Promise<VerificationResult> {
     const errors: string[] = [];
 
     // ========================================
     // Level 1: Structure Validation (Zod)
     // ========================================
-    this.ctx.platform.logger.debug('Starting Level 1 validation (structure)', {
+    this.ctx.platform.logger.debug("Starting Level 1 validation (structure)", {
       hasTrace: !!trace,
     });
 
@@ -105,7 +104,7 @@ export class TaskVerifier {
     const level1Duration = Date.now() - level1Start;
 
     if (!structureValidation.valid) {
-      this.ctx.platform.logger.warn('Level 1 validation failed', {
+      this.ctx.platform.logger.warn("Level 1 validation failed", {
         errors: structureValidation.errors,
       });
 
@@ -115,11 +114,13 @@ export class TaskVerifier {
           agentId,
           subtaskId,
           level: 1,
-          status: 'failed',
+          status: "failed",
           errorCategory: VerificationMetrics.categorizeError(
-            structureValidation.errors?.map(e => e.message) || []
+            structureValidation.errors?.map((e) => e.message) || [],
           ),
-          errorDetails: structureValidation.errors?.map(e => `${e.path}: ${e.message}`).join('; '),
+          errorDetails: structureValidation.errors
+            ?.map((e) => `${e.path}: ${e.message}`)
+            .join("; "),
           durationMs: level1Duration,
           timestamp: Date.now(),
         });
@@ -130,8 +131,10 @@ export class TaskVerifier {
         level: 1,
         structureValidation,
         errors: [
-          'Level 1 (structure) validation failed',
-          ...(structureValidation.errors?.map(e => `${e.path}: ${e.message}`) || []),
+          "Level 1 (structure) validation failed",
+          ...(structureValidation.errors?.map(
+            (e) => `${e.path}: ${e.message}`,
+          ) || []),
         ],
       };
     }
@@ -142,13 +145,13 @@ export class TaskVerifier {
         agentId,
         subtaskId,
         level: 1,
-        status: 'passed',
+        status: "passed",
         durationMs: level1Duration,
         timestamp: Date.now(),
       });
     }
 
-    this.ctx.platform.logger.debug('Level 1 validation passed');
+    this.ctx.platform.logger.debug("Level 1 validation passed");
 
     const validatedOutput = structureValidation.output!;
 
@@ -159,26 +162,31 @@ export class TaskVerifier {
     // For now, we skip this level if trace is not provided
     // In production, this would validate plugin outputs against their schemas
     if (trace) {
-      this.ctx.platform.logger.debug('Starting Level 2 validation (plugin schemas)', {
-        invocations: trace.invocations.length,
-      });
+      this.ctx.platform.logger.debug(
+        "Starting Level 2 validation (plugin schemas)",
+        {
+          invocations: trace.invocations.length,
+        },
+      );
 
       // TODO: Implement plugin output validation using ZodSchemaValidator
       // For now, we assume plugin outputs are valid (opt-in validation)
-      this.ctx.platform.logger.debug('Level 2 validation skipped (not implemented yet)');
+      this.ctx.platform.logger.debug(
+        "Level 2 validation skipped (not implemented yet)",
+      );
     }
 
     // ========================================
     // Level 3: Filesystem State Validation
     // ========================================
-    this.ctx.platform.logger.debug('Starting Level 3 validation (filesystem)', {
+    this.ctx.platform.logger.debug("Starting Level 3 validation (filesystem)", {
       hasClaims: !!validatedOutput.claims,
       claimsCount: validatedOutput.claims?.length || 0,
     });
 
     if (!validatedOutput.claims || validatedOutput.claims.length === 0) {
       // No claims to verify - valid by default
-      this.ctx.platform.logger.debug('No claims to verify, Level 3 skipped');
+      this.ctx.platform.logger.debug("No claims to verify, Level 3 skipped");
 
       return {
         valid: true,
@@ -191,17 +199,17 @@ export class TaskVerifier {
     const level3Start = Date.now();
     const claimResults = await this.builtInVerifier.verifyClaims(
       validatedOutput.claims,
-      basePath
+      basePath,
     );
     const level3Duration = Date.now() - level3Start;
 
-    const failedClaims = claimResults.filter(r => !r.valid);
+    const failedClaims = claimResults.filter((r) => !r.valid);
 
     if (failedClaims.length > 0) {
-      this.ctx.platform.logger.warn('Level 3 validation failed', {
+      this.ctx.platform.logger.warn("Level 3 validation failed", {
         total: claimResults.length,
         failed: failedClaims.length,
-        failures: failedClaims.map(f => ({
+        failures: failedClaims.map((f) => ({
           kind: f.claim.kind,
           reason: f.reason,
         })),
@@ -213,11 +221,13 @@ export class TaskVerifier {
           agentId,
           subtaskId,
           level: 3,
-          status: 'failed',
+          status: "failed",
           errorCategory: VerificationMetrics.categorizeError(
-            failedClaims.map(f => f.reason || 'unknown')
+            failedClaims.map((f) => f.reason || "unknown"),
           ),
-          errorDetails: failedClaims.map(f => `${f.claim.kind}: ${f.reason}`).join('; '),
+          errorDetails: failedClaims
+            .map((f) => `${f.claim.kind}: ${f.reason}`)
+            .join("; "),
           durationMs: level3Duration,
           timestamp: Date.now(),
         });
@@ -233,8 +243,8 @@ export class TaskVerifier {
           failedClaims,
         },
         errors: [
-          'Level 3 (filesystem) validation failed',
-          ...failedClaims.map(f => `${f.claim.kind}: ${f.reason}`),
+          "Level 3 (filesystem) validation failed",
+          ...failedClaims.map((f) => `${f.claim.kind}: ${f.reason}`),
         ],
       };
     }
@@ -245,13 +255,13 @@ export class TaskVerifier {
         agentId,
         subtaskId,
         level: 3,
-        status: 'passed',
+        status: "passed",
         durationMs: level3Duration,
         timestamp: Date.now(),
       });
     }
 
-    this.ctx.platform.logger.debug('Level 3 validation passed', {
+    this.ctx.platform.logger.debug("Level 3 validation passed", {
       verifiedClaims: claimResults.length,
     });
 
@@ -281,7 +291,7 @@ export class TaskVerifier {
    */
   async verifyClaims(
     claims: Claim[],
-    basePath: string = process.cwd()
+    basePath: string = process.cwd(),
   ): Promise<ClaimVerificationResult[]> {
     return this.builtInVerifier.verifyClaims(claims, basePath);
   }

@@ -9,9 +9,14 @@
  * This achieves ~90% accuracy at ~40% of the cost of always using LLM.
  */
 
-import type { ILLM, LLMTier, ClassifyInput, ClassificationResult, ITaskClassifier } from './types.js';
-import { HeuristicComplexityClassifier } from './heuristic-classifier.js';
-import { LLMComplexityClassifier } from './llm-classifier.js';
+import type {
+  ILLM,
+  ClassifyInput,
+  ClassificationResult,
+  ITaskClassifier,
+} from "./types.js";
+import { HeuristicComplexityClassifier } from "./heuristic-classifier.js";
+import { LLMComplexityClassifier } from "./llm-classifier.js";
 
 /**
  * Hybrid complexity classifier.
@@ -60,7 +65,7 @@ export class HybridComplexityClassifier implements ITaskClassifier {
     const heuristicResult = await this.heuristic.classify(input);
 
     // 2. If high confidence, return immediately
-    if (heuristicResult.confidence === 'high') {
+    if (heuristicResult.confidence === "high") {
       return heuristicResult;
     }
 

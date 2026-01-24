@@ -4,11 +4,14 @@
  * Discovers and manages agents from .kb/agents/ directory
  */
 
-import { findRepoRoot, type PluginContextV3 } from '@kb-labs/sdk';
-import type { AgentMetadata, AgentConfigV1 } from '@kb-labs/agent-contracts';
-import { parseAgentConfig, validateAgentConfig } from '@kb-labs/agent-contracts';
-import { parse as parseYAML } from 'yaml';
-import { join } from 'path';
+import { findRepoRoot, type PluginContextV3 } from "@kb-labs/sdk";
+import type { AgentMetadata, AgentConfigV1 } from "@kb-labs/agent-contracts";
+import {
+  parseAgentConfig,
+  validateAgentConfig,
+} from "@kb-labs/agent-contracts";
+import { parse as parseYAML } from "yaml";
+import { join } from "path";
 
 /**
  * Agent Registry
@@ -25,8 +28,8 @@ export class AgentRegistry {
   constructor(private ctx: PluginContextV3) {
     // Lazy initialization - find repo root async
     this.repoRootPromise = findRepoRoot(ctx.cwd);
-    this.agentsDirPromise = this.repoRootPromise.then(root =>
-      join(root, '.kb', 'agents')
+    this.agentsDirPromise = this.repoRootPromise.then((root) =>
+      join(root, ".kb", "agents"),
     );
   }
 
@@ -45,13 +48,13 @@ export class AgentRegistry {
     const agentsDir = await this.getSpecialistsDir();
 
     try {
-      await fs.mkdir(agentsDir, { recursive: true});
-      this.ctx.platform.logger.info('Initialized .kb/agents/ directory', {
+      await fs.mkdir(agentsDir, { recursive: true });
+      this.ctx.platform.logger.info("Initialized .kb/agents/ directory", {
         path: agentsDir,
       });
     } catch (error) {
       throw new Error(
-        `Failed to initialize .kb/agents/: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to initialize .kb/agents/: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -94,7 +97,7 @@ export class AgentRegistry {
       const metadata: AgentMetadata[] = [];
       for (const agentId of agentIds) {
         const agentPath = join(agentsDir, agentId);
-        const configPath = join(agentPath, 'agent.yml');
+        const configPath = join(agentPath, "agent.yml");
 
         // Check if agent.yml exists
         const configExists = await this.fileExists(configPath);
@@ -102,20 +105,20 @@ export class AgentRegistry {
           metadata.push({
             id: agentId,
             name: agentId,
-            description: '',
+            description: "",
             capabilities: [],
-            tier: 'small',
+            tier: "small",
             path: agentPath,
             configPath,
             valid: false,
-            error: 'agent.yml not found',
+            error: "agent.yml not found",
           });
           continue;
         }
 
         // Try to parse config
         try {
-          const configContent = await fs.readFile(configPath, 'utf-8');
+          const configContent = await fs.readFile(configPath, "utf-8");
           const configData = parseYAML(configContent);
           const validation = validateAgentConfig(configData);
 
@@ -123,8 +126,8 @@ export class AgentRegistry {
           console.log(`   Success: ${validation.success}`);
           if (!validation.success && validation.error) {
             console.log(`   Errors:`);
-            validation.error.errors.forEach(err => {
-              console.log(`     - ${err.path.join('.')}: ${err.message}`);
+            validation.error.errors.forEach((err) => {
+              console.log(`     - ${err.path.join(".")}: ${err.message}`);
             });
           }
 
@@ -144,27 +147,30 @@ export class AgentRegistry {
             const errorMessages: string[] = [];
             if (validation.error) {
               for (const err of validation.error.errors) {
-                const path = err.path.join('.');
+                const path = err.path.join(".");
                 const message = err.message;
                 errorMessages.push(`  • ${path}: ${message}`);
               }
             }
             const formattedError =
               errorMessages.length > 0
-                ? `Validation errors:\n${errorMessages.join('\n')}`
-                : 'Invalid config';
+                ? `Validation errors:\n${errorMessages.join("\n")}`
+                : "Invalid config";
 
-            this.ctx.platform.logger.warn(`Agent config validation failed: ${agentId}`, {
-              errors: errorMessages,
-              configPath,
-            });
+            this.ctx.platform.logger.warn(
+              `Agent config validation failed: ${agentId}`,
+              {
+                errors: errorMessages,
+                configPath,
+              },
+            );
 
             metadata.push({
               id: agentId,
               name: agentId,
-              description: '',
+              description: "",
               capabilities: [],
-              tier: 'small',
+              tier: "small",
               path: agentPath,
               configPath,
               valid: false,
@@ -175,9 +181,9 @@ export class AgentRegistry {
           metadata.push({
             id: agentId,
             name: agentId,
-            description: '',
+            description: "",
             capabilities: [],
-            tier: 'small',
+            tier: "small",
             path: agentPath,
             configPath,
             valid: false,
@@ -189,7 +195,7 @@ export class AgentRegistry {
       return metadata;
     } catch (error) {
       throw new Error(
-        `Failed to discover agents: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to discover agents: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -205,7 +211,7 @@ export class AgentRegistry {
     const fs = this.ctx.runtime.fs;
     const agentsDir = await this.getSpecialistsDir();
     const agentPath = join(agentsDir, agentId);
-    const configPath = join(agentPath, 'agent.yml');
+    const configPath = join(agentPath, "agent.yml");
 
     // Check if agent directory exists
     const dirExists = await this.directoryExists(agentPath);
@@ -220,21 +226,24 @@ export class AgentRegistry {
     }
 
     // Load and parse config
-    const configContent = await fs.readFile(configPath, 'utf-8');
+    const configContent = await fs.readFile(configPath, "utf-8");
     const configData = parseYAML(configContent);
     const config = parseAgentConfig(configData);
 
     // Load context files if specified
     if (config.context?.static?.contextFile) {
-      const contextFilePath = join(agentPath, config.context.static.contextFile);
+      const contextFilePath = join(
+        agentPath,
+        config.context.static.contextFile,
+      );
       const contextExists = await this.fileExists(contextFilePath);
       if (contextExists) {
-        const contextContent = await fs.readFile(contextFilePath, 'utf-8');
+        const contextContent = await fs.readFile(contextFilePath, "utf-8");
         // Inject context content into config
         config.context.static.system =
-          (config.context.static.system || '') + '\n\n' + contextContent;
+          (config.context.static.system || "") + "\n\n" + contextContent;
       } else {
-        this.ctx.platform.logger.warn('Context file not found', {
+        this.ctx.platform.logger.warn("Context file not found", {
           agentId,
           contextFile: config.context.static.contextFile,
         });
@@ -249,7 +258,7 @@ export class AgentRegistry {
    */
   async list(): Promise<AgentMetadata[]> {
     const all = await this.discover();
-    return all.filter(s => s.valid);
+    return all.filter((s) => s.valid);
   }
 
   /**
@@ -257,7 +266,7 @@ export class AgentRegistry {
    */
   async get(agentId: string): Promise<AgentMetadata | null> {
     const all = await this.discover();
-    return all.find(s => s.id === agentId) || null;
+    return all.find((s) => s.id === agentId) || null;
   }
 
   // Helper methods

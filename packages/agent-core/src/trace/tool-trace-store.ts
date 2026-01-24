@@ -5,8 +5,8 @@
  * Provides CRUD operations for ToolTrace records.
  */
 
-import { randomUUID } from 'node:crypto';
-import type { ToolTrace, ToolInvocation } from '@kb-labs/agent-contracts';
+import { randomUUID } from "node:crypto";
+import type { ToolTrace, ToolInvocation } from "@kb-labs/agent-contracts";
 
 /**
  * ToolTraceStore interface
@@ -105,8 +105,10 @@ export class InMemoryToolTraceStore implements IToolTraceStore {
 
   async load(traceRef: string): Promise<ToolTrace> {
     // Parse traceRef format: "trace:<traceId>"
-    if (!traceRef.startsWith('trace:')) {
-      throw new Error(`Invalid trace reference format: ${traceRef} (expected "trace:<traceId>")`);
+    if (!traceRef.startsWith("trace:")) {
+      throw new Error(
+        `Invalid trace reference format: ${traceRef} (expected "trace:<traceId>")`,
+      );
     }
 
     const traceId = traceRef.substring(6); // Remove "trace:" prefix
@@ -130,8 +132,10 @@ export class InMemoryToolTraceStore implements IToolTraceStore {
 
   async delete(traceRef: string): Promise<void> {
     // Parse traceRef format: "trace:<traceId>"
-    if (!traceRef.startsWith('trace:')) {
-      throw new Error(`Invalid trace reference format: ${traceRef} (expected "trace:<traceId>")`);
+    if (!traceRef.startsWith("trace:")) {
+      throw new Error(
+        `Invalid trace reference format: ${traceRef} (expected "trace:<traceId>")`,
+      );
     }
 
     const traceId = traceRef.substring(6); // Remove "trace:" prefix

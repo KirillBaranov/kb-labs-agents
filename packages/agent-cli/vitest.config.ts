@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import baseConfig from '@kb-labs/devkit/vitest/node.js';
+import baseConfig from '@kb-labs/devkit/vitest/node';
 
 const sharedDir = new URL('./src/shared/', import.meta.url).pathname;
 const domainDir = new URL('./src/domain/', import.meta.url).pathname;

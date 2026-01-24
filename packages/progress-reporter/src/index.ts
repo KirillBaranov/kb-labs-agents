@@ -34,7 +34,7 @@
  * ```
  */
 
-export { ProgressReporter } from './reporter.js';
+export { ProgressReporter } from "./reporter.js";
 
 export type {
   ProgressEvent,
@@ -46,4 +46,4 @@ export type {
   SubtaskEvent,
   TierEscalatedEvent,
   TaskCompletedEvent,
-} from './types.js';
+} from "./types.js";

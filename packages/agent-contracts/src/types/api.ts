@@ -1,4 +1,4 @@
-export type SchemaFormat = 'zod' | 'json-schema' | 'openapi';
+export type SchemaFormat = "zod" | "json-schema" | "openapi";
 
 export interface SchemaReference {
   /**
@@ -31,4 +31,3 @@ export interface RestApiContract {
 export interface ApiContract {
   rest?: RestApiContract;
 }
-

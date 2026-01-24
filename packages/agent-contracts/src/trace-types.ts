@@ -12,7 +12,7 @@
  */
 export interface EvidenceRef {
   /** Evidence type */
-  kind: 'file' | 'http' | 'receipt' | 'log' | 'hash';
+  kind: "file" | "http" | "receipt" | "log" | "hash";
 
   /** Reference to evidence (file path, URL, ID) */
   ref: string;
@@ -51,7 +51,7 @@ export interface ToolInvocation {
    * - execution: Normal tool call by agent
    * - verification: Probe/check by verifier (prevents recursion)
    */
-  purpose: 'execution' | 'verification';
+  purpose: "execution" | "verification";
 
   /**
    * Execution status
@@ -61,7 +61,7 @@ export interface ToolInvocation {
    * - timeout: Tool execution timed out
    * - error: Unexpected error during execution
    */
-  status: 'success' | 'failed' | 'timeout' | 'error';
+  status: "success" | "failed" | "timeout" | "error";
 
   /** Evidence references for verification */
   evidenceRefs: EvidenceRef[];
@@ -178,7 +178,7 @@ export type Claim =
  * Claim: File was written
  */
 export interface FileWriteClaim {
-  kind: 'file-write';
+  kind: "file-write";
   filePath: string;
   contentHash: string; // SHA-256 of file content
 }
@@ -189,7 +189,7 @@ export interface FileWriteClaim {
  * Uses anchors instead of line numbers for stability
  */
 export interface FileEditClaim {
-  kind: 'file-edit';
+  kind: "file-edit";
   filePath: string;
 
   /**
@@ -225,7 +225,7 @@ export interface FileEditClaim {
  * Claim: File was deleted
  */
 export interface FileDeleteClaim {
-  kind: 'file-delete';
+  kind: "file-delete";
   filePath: string;
 }
 
@@ -233,7 +233,7 @@ export interface FileDeleteClaim {
  * Claim: Shell command was executed
  */
 export interface CommandExecutedClaim {
-  kind: 'command-executed';
+  kind: "command-executed";
   command: string;
   exitCode: number;
 }
@@ -242,7 +242,7 @@ export interface CommandExecutedClaim {
  * Claim: Code was inserted at specific location
  */
 export interface CodeInsertedClaim {
-  kind: 'code-inserted';
+  kind: "code-inserted";
   filePath: string;
   anchor: {
     beforeSnippet: string;
@@ -259,7 +259,7 @@ export interface CodeInsertedClaim {
  */
 export interface CompactArtifact {
   /** Artifact type */
-  kind: 'code-snippet' | 'summary' | 'data';
+  kind: "code-snippet" | "summary" | "data";
 
   /** Human-readable label */
   label: string;

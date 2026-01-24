@@ -20,7 +20,7 @@
 export interface AgentFinding {
   // What was found
   category: string; // e.g., "type-error", "exception-pattern", "security-risk", "n+1-query"
-  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  severity: "critical" | "high" | "medium" | "low" | "info";
   title: string; // Short summary (max 100 chars)
   description: string; // Detailed explanation
 
@@ -41,9 +41,9 @@ export interface AgentFinding {
   // What to do about it
   actionable: boolean; // Can orchestrator act on this?
   suggestedAction?: {
-    type: 'fix' | 'investigate' | 'optimize' | 'document' | 'monitor' | 'alert';
+    type: "fix" | "investigate" | "optimize" | "document" | "monitor" | "alert";
     description: string;
-    estimatedEffort?: 'trivial' | 'small' | 'medium' | 'large';
+    estimatedEffort?: "trivial" | "small" | "medium" | "large";
     targetSpecialist?: string; // Which agent should handle this
   };
 }
@@ -76,7 +76,7 @@ export interface SubTask {
   agentId: string; // Which agent should handle this
   dependencies?: string[]; // IDs of subtasks that must complete first
   priority?: number; // Higher = more important (1-10)
-  estimatedComplexity?: 'low' | 'medium' | 'high'; // Complexity estimate
+  estimatedComplexity?: "low" | "medium" | "high"; // Complexity estimate
 }
 
 /**
