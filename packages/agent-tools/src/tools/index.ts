@@ -14,7 +14,14 @@ import {
 } from './filesystem.js';
 
 // Search tools
-import { createGlobSearchTool, createGrepSearchTool } from './search.js';
+import {
+  createGlobSearchTool,
+  createGrepSearchTool,
+  createListFilesTool,
+  createFindDefinitionTool,
+  createProjectStructureTool,
+  createCodeStatsTool,
+} from './search.js';
 
 // Shell tool
 import { createShellExecTool } from './shell.js';
@@ -55,8 +62,12 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   registry.register(createFsListTool(context));
 
   // Register search tools
+  registry.register(createListFilesTool(context)); // List first - most reliable for discovery
   registry.register(createGlobSearchTool(context));
   registry.register(createGrepSearchTool(context));
+  registry.register(createFindDefinitionTool(context));
+  registry.register(createProjectStructureTool(context));
+  registry.register(createCodeStatsTool(context));
 
   // Register shell tool
   registry.register(createShellExecTool(context));
@@ -89,8 +100,12 @@ export {
   createFsReadTool,
   createFsEditTool,
   createFsListTool,
+  createListFilesTool,
   createGlobSearchTool,
   createGrepSearchTool,
+  createFindDefinitionTool,
+  createProjectStructureTool,
+  createCodeStatsTool,
   createShellExecTool,
   // Shared memory
   createMemoryGetTool,
