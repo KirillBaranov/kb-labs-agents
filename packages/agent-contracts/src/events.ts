@@ -33,6 +33,9 @@ export type AgentEventType =
   // Memory
   | 'memory:read'
   | 'memory:write'
+  // Verification (Anti-Hallucination)
+  | 'verification:start'
+  | 'verification:complete'
   // Progress
   | 'progress:update'
   | 'status:change';
@@ -303,8 +306,14 @@ export interface OrchestratorAnswerEvent extends AgentEventBase {
   data: {
     /** The synthesized answer/response for the user */
     answer: string;
-    /** Confidence level (0-1) if available */
+    /** Confidence level (0-1) from verification */
     confidence?: number;
+    /** Completeness level (0-1) from verification */
+    completeness?: number;
+    /** Gaps in the answer (from verification) */
+    gaps?: string[];
+    /** Unverified mentions (potential hallucinations) */
+    unverifiedMentions?: string[];
     /** Sources used to generate the answer */
     sources?: string[];
   };
@@ -361,6 +370,49 @@ export interface MemoryWriteEvent extends AgentEventBase {
 }
 
 /**
+ * Verification events (Anti-Hallucination)
+ */
+export interface VerificationStartEvent extends AgentEventBase {
+  type: 'verification:start';
+  data: {
+    /** What is being verified */
+    target: 'subtask' | 'synthesis';
+    /** Subtask ID (if verifying subtask) */
+    subtaskId?: string;
+    /** Executor tier */
+    executorTier: 'small' | 'medium' | 'large';
+    /** Verifier tier (one level above executor) */
+    verifierTier: 'small' | 'medium' | 'large';
+  };
+}
+
+export interface VerificationCompleteEvent extends AgentEventBase {
+  type: 'verification:complete';
+  data: {
+    /** What was verified */
+    target: 'subtask' | 'synthesis';
+    /** Subtask ID (if verifying subtask) */
+    subtaskId?: string;
+    /** Overall confidence (0-1) */
+    confidence: number;
+    /** Completeness (0-1) */
+    completeness: number;
+    /** Verified mentions */
+    verifiedMentions: string[];
+    /** Unverified mentions (potential hallucinations) */
+    unverifiedMentions: string[];
+    /** Gaps in the answer */
+    gaps: string[];
+    /** Verification warnings */
+    warnings: string[];
+    /** Duration in milliseconds */
+    durationMs: number;
+    /** Action taken based on verification */
+    action?: 'accepted' | 'retry' | 'reformulate' | 'follow_up';
+  };
+}
+
+/**
  * Progress events
  */
 export interface ProgressUpdateEvent extends AgentEventBase {
@@ -402,6 +454,8 @@ export type AgentEvent =
   | SubtaskEndEvent
   | MemoryReadEvent
   | MemoryWriteEvent
+  | VerificationStartEvent
+  | VerificationCompleteEvent
   | ProgressUpdateEvent
   | StatusChangeEvent;
 

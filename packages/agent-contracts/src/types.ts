@@ -147,6 +147,15 @@ export interface TaskResult {
   plan?: TaskPlan;
   /** Plan ID (if executing from plan) */
   planId?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Verification (Anti-Hallucination)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Verification result from cross-tier verifier */
+  verification?: import('./verification.js').VerificationResult;
+  /** Quality metrics from verification */
+  qualityMetrics?: import('./verification.js').QualityMetrics;
 }
 
 /**
@@ -420,6 +429,8 @@ export interface OrchestratorConfig {
   memory?: AgentMemory;
   /** Event callback for streaming orchestrator events to UI (optional) */
   onEvent?: import('./events.js').AgentEventCallback;
+  /** Enable cross-tier verification of agent responses (default: true) */
+  enableVerification?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -574,6 +585,52 @@ export interface AgentMemory {
    * @param maxTokens - Maximum tokens for context
    */
   getStructuredContext?(maxTokens?: number): Promise<string>;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Last Answer Memory (never summarized - always available in full)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Save the orchestrator's last answer (NEVER summarized)
+   * This is stored separately and always returned in full for follow-up questions.
+   *
+   * @param answer - The full answer text
+   * @param task - The original task/question
+   * @param metadata - Optional metadata (confidence, completeness, sources)
+   */
+  saveLastAnswer?(
+    answer: string,
+    task: string,
+    metadata?: {
+      confidence?: number;
+      completeness?: number;
+      sources?: string[];
+      filesCreated?: string[];
+      filesModified?: string[];
+    }
+  ): Promise<void>;
+
+  /**
+   * Get the last orchestrator answer (full, unsummarized)
+   * Returns null if no previous answer exists.
+   */
+  getLastAnswer?(): Promise<{
+    answer: string;
+    task: string;
+    timestamp: string;
+    metadata?: {
+      confidence?: number;
+      completeness?: number;
+      sources?: string[];
+      filesCreated?: string[];
+      filesModified?: string[];
+    };
+  } | null>;
+
+  /**
+   * Clear the last answer (e.g., when starting a completely new topic)
+   */
+  clearLastAnswer?(): Promise<void>;
 }
 
 /**
