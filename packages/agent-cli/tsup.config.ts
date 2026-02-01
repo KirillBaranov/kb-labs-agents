@@ -6,23 +6,14 @@ export default defineConfig({
   tsconfig: "tsconfig.build.json", // Use build-specific tsconfig without paths
   entry: [
     'src/index.ts',
-    'src/manifest.v2.ts',
-    'src/manifest.v3.ts',         // V3 manifest
+    'src/manifest.ts',
     // 'src/lifecycle/setup.ts', // TODO: Lifecycle SDK not available yet
-    'src/cli/commands/init.ts',   // Agent commands
-    'src/cli/commands/list.ts',
-    'src/cli/commands/run.ts',
-    'src/cli/commands/agent-run.ts', // Agent orchestrator command
-    'src/cli/commands/inspect.ts', // Agent inspect command
-    'src/cli/commands/hello.ts',  // V3 hello command
-    'src/cli/commands/test-loader.ts',
-    'src/cli/commands/hello-v3.ts',
-    'src/rest/handlers/hello-handler.ts',
-    'src/rest/schemas/hello-schema.ts',
-    // 'src/rest/run-agent.ts',      // REST API handlers (disabled - needs AgentOutcome update)
-    // 'src/rest/list-agents.ts',
-    'src/studio/widgets/hello-widget.tsx',
-    // 'src/jobs/hello.ts' // TODO: Jobs not supported in V3 SDK yet
+    'src/cli/commands/**/*.ts',   // Auto-include all CLI commands
+    'src/rest/handlers/**/*.ts',  // Auto-include all REST handlers
+    'src/rest/schemas/**/*.ts',   // Auto-include all REST schemas
+    'src/ws/**/*.ts',             // Auto-include all WebSocket handlers
+    'src/studio/widgets/**/*.tsx', // Auto-include all Studio widgets
+    // 'src/jobs/**/*.ts' // TODO: Jobs not supported in V3 SDK yet
   ],
   external: [
     '@kb-labs/plugin-manifest',
