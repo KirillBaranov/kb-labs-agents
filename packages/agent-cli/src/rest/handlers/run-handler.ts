@@ -5,7 +5,7 @@
  */
 
 import { defineHandler, useAnalytics, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
-import { OrchestratorAgent, SessionManager } from '@kb-labs/agent-core';
+import { OrchestratorAgent, SessionManager, FileMemory } from '@kb-labs/agent-core';
 import { createToolRegistry } from '@kb-labs/agent-tools';
 import type { RunRequest, RunResponse } from '@kb-labs/agent-contracts';
 import {
@@ -69,8 +69,16 @@ export default defineHandler({
       verbose: body.verbose,
     });
 
-    // Create orchestrator with event broadcasting and session persistence
+    // Create memory system for context persistence
     const finalSessionId = sessionId; // Capture for closure
+    const memory = new FileMemory({
+      workingDir,
+      sessionId: finalSessionId,
+      maxShortTermMemories: 50,
+      maxContextTokens: 8000,
+    });
+
+    // Create orchestrator with event broadcasting and session persistence
     const orchestrator = new OrchestratorAgent(
       {
         sessionId: finalSessionId,
@@ -79,6 +87,7 @@ export default defineHandler({
         temperature: 0.1, // Low temperature for deterministic execution
         verbose: body.verbose ?? false,
         tier: body.tier ?? 'medium',
+        memory, // Enable memory for context persistence and last answer tracking
         onEvent: (event) => {
           // Broadcast to all WebSocket listeners (assigns seq)
           const seqEvent = RunManager.broadcast(runId, event);
