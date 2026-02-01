@@ -131,23 +131,20 @@ export class OrchestratorAgent {
 
     if (availableDirs.length === 0) return null;
 
-    // Tool definition for scope selection
+    // Tool definition for scope selection (LLMTool format)
     const scopeTool = {
-      type: 'function' as const,
-      function: {
-        name: 'select_scope',
-        description: 'Select the specific subdirectory/repository that this task is about, or indicate no specific scope',
-        parameters: {
-          type: 'object',
-          properties: {
-            scope: {
-              type: 'string',
-              enum: [...availableDirs, 'none'],
-              description: 'The directory name if task is about a specific one, or "none" if task is general',
-            },
+      name: 'select_scope',
+      description: 'Select the specific subdirectory/repository that this task is about, or indicate no specific scope',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: {
+            type: 'string',
+            enum: [...availableDirs, 'none'],
+            description: 'The directory name if task is about a specific one, or "none" if task is general',
           },
-          required: ['scope'],
         },
+        required: ['scope'],
       },
     };
 
@@ -171,8 +168,7 @@ Call select_scope with your choice.`;
     try {
       const response = await llm.chatWithTools(
         [{ role: 'user', content: prompt }],
-        [scopeTool],
-        { temperature: 0 }
+        { tools: [scopeTool], temperature: 0 }
       );
 
       const toolCall = response.toolCalls?.[0];
@@ -467,6 +463,14 @@ Respond ONLY with valid JSON:
 
     // Step 3: Apply result processors
     const finalResult = await this.applyResultProcessors(result);
+
+    // Save answer to memory (never summarized - always available in full for follow-up questions)
+    if (finalResult.success && finalResult.summary) {
+      await this.saveAnswerToMemory(task, finalResult.summary, {
+        filesCreated: finalResult.filesCreated,
+        filesModified: finalResult.filesModified,
+      });
+    }
 
     // Emit orchestrator:end event with final summary and startedAt for correlation
     this.emit({
@@ -862,29 +866,31 @@ Classify this task as "simple", "research", or "complex":
 
 **Classification Criteria:**
 
-SIMPLE tasks (single action, immediate answer):
+SIMPLE tasks (one clear action):
+- Creating or editing ONE file: "Create X.ts", "Add function Y to file Z"
 - Direct lookup: "What is X?", "Where is file Y?"
-- Single file read/edit
-- Running one command
-- Basic factual questions with one source
+- Running ONE command
+- Basic factual questions
+- ANY task that involves a SINGLE file operation
 
-RESEARCH tasks (information gathering + synthesis):
-- Questions requiring multiple sources: "Explain the architecture", "How does X work?"
-- Comparisons: "Compare A vs B", "What are the differences?"
-- Analysis: "Analyze the codebase", "Review the implementation"
-- Understanding patterns across files
-- Any question where answer needs to be synthesized from multiple findings
+RESEARCH tasks (gathering + synthesizing information):
+- Questions requiring MULTIPLE sources: "Explain the architecture", "How does X work?"
+- Comparisons: "Compare A vs B"
+- Analysis across multiple files
+- Questions where answer needs synthesis from many findings
+- Understanding patterns across the codebase
 
-COMPLEX tasks (multi-step actions that change things):
-- Implementing features across multiple files
-- Refactoring with tests
-- Multi-phase workflows: analyze → implement → test
-- Building and deploying
-- Tasks that CREATE or MODIFY files/code
+COMPLEX tasks (ONLY when multiple coordinated steps required):
+- Implementing features that span 3+ files
+- Refactoring that requires coordinated changes
+- Multi-phase workflows: analyze → implement → test → verify
+- Tasks explicitly mentioning "refactor", "migrate", "upgrade across"
 
-**Key distinction:**
-- RESEARCH = gathering info + synthesizing answer (read-only)
-- COMPLEX = executing actions that change the system (read-write)
+**CRITICAL: Prefer SIMPLE over COMPLEX!**
+- If a task can be done in ONE file → SIMPLE
+- "Create X" with just ONE file → SIMPLE (not COMPLEX!)
+- Only use COMPLEX when task EXPLICITLY requires multiple coordinated steps
+- When in doubt → SIMPLE
 
 Respond ONLY with valid JSON:
 {
@@ -1083,24 +1089,132 @@ ${researchContext}
     try {
       const response = await llm.complete(synthesisPrompt, { temperature: 0.3 });
       const answer = response.content || 'Unable to synthesize answer';
+      const synthesisTokens = (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0);
 
-      // Emit orchestrator:answer event with the synthesized response
+      // Step 4: Verify synthesis (if verification enabled)
+      let verificationResult: import('@kb-labs/agent-contracts').VerificationResult | undefined;
+      let finalAnswer = answer;
+      let totalIterations = researchPlan.subtasks.length + 1;
+      let totalTokens = synthesisTokens;
+
+      if (this.config.enableVerification !== false) {
+        this.log(`\n🔍 Verifying synthesized answer...\n`);
+        verificationResult = await this.verifySynthesis(task, finalAnswer, researchContext);
+
+        // Step 5: React to verification results
+        if (verificationResult) {
+          const { DEFAULT_VERIFICATION_THRESHOLDS } = await import('@kb-labs/agent-contracts');
+          const thresholds = DEFAULT_VERIFICATION_THRESHOLDS;
+          const maxVerificationRetries = 2;
+          let verificationAttempt = 0;
+
+          // Loop until quality is acceptable or max retries reached
+          while (verificationAttempt < maxVerificationRetries) {
+            const needsImprovement =
+              verificationResult.confidence < thresholds.minConfidence ||
+              verificationResult.completeness < thresholds.minCompleteness ||
+              verificationResult.unverifiedMentions.length > thresholds.maxUnverifiedMentions;
+
+            if (!needsImprovement) {
+              this.log(`\n✅ Answer quality acceptable (confidence: ${(verificationResult.confidence * 100).toFixed(0)}%, completeness: ${(verificationResult.completeness * 100).toFixed(0)}%)\n`);
+              break;
+            }
+
+            verificationAttempt++;
+            this.log(`\n🔄 Answer quality insufficient, attempting improvement (attempt ${verificationAttempt}/${maxVerificationRetries})...\n`);
+
+            // Determine improvement strategy
+            const hasGaps = verificationResult.gaps.length > 0;
+            const hasHallucinations = verificationResult.unverifiedMentions.length > thresholds.maxUnverifiedMentions;
+            const lowConfidence = verificationResult.confidence < thresholds.minConfidence;
+
+            let improvementContext = '';
+
+            // Strategy 1: Fill gaps with follow-up research
+            if (hasGaps && verificationResult.gaps.length <= 3) {
+              this.log(`📋 Filling ${verificationResult.gaps.length} gap(s) with additional research...\n`);
+
+              const gapResults: string[] = [];
+              for (const gap of verificationResult.gaps) {
+                // eslint-disable-next-line no-await-in-loop -- Sequential gap filling required
+                const gapResearch = await this.executeGapResearch(gap, researchContext);
+                if (gapResearch) {
+                  gapResults.push(`Gap "${gap}": ${gapResearch}`);
+                  totalIterations++;
+                }
+              }
+
+              if (gapResults.length > 0) {
+                improvementContext += `\n\n## Additional Research (Gap Filling)\n${gapResults.join('\n\n')}`;
+              }
+            }
+
+            // Strategy 2: Create guidance to avoid hallucinations
+            if (hasHallucinations) {
+              this.log(`⚠️ Guidance: avoid ${verificationResult.unverifiedMentions.length} unverified claims\n`);
+              improvementContext += `\n\n## IMPORTANT: Avoid Unverified Claims\nThe following claims could NOT be verified and should NOT be repeated:\n${verificationResult.unverifiedMentions.map(m => `- ${m}`).join('\n')}\n\nOnly include information that is directly supported by the research context.`;
+            }
+
+            // Strategy 3: Add confidence guidance for low confidence
+            if (lowConfidence) {
+              improvementContext += `\n\n## Quality Guidance\nPrevious answer had low confidence (${(verificationResult.confidence * 100).toFixed(0)}%). Please:\n- Only state facts directly found in the research\n- Use hedging language for uncertain information\n- Clearly indicate what information is missing`;
+            }
+
+            // Re-synthesize with improved context
+            const improvedPrompt = `${synthesisPrompt}\n\n---\n\n## Previous Verification Feedback\n\nThe previous answer had issues:\n- Confidence: ${(verificationResult.confidence * 100).toFixed(0)}%\n- Completeness: ${(verificationResult.completeness * 100).toFixed(0)}%\n- Gaps: ${verificationResult.gaps.join(', ') || 'none'}\n- Unverified claims: ${verificationResult.unverifiedMentions.join(', ') || 'none'}\n${improvementContext}\n\nPlease provide an improved answer that addresses these issues.`;
+
+            // eslint-disable-next-line no-await-in-loop -- Sequential improvement required
+            const improvedResponse = await llm.complete(improvedPrompt, { temperature: 0.2 });
+            finalAnswer = improvedResponse.content || finalAnswer;
+            totalTokens += (improvedResponse.usage?.promptTokens || 0) + (improvedResponse.usage?.completionTokens || 0);
+            totalIterations++;
+
+            // Re-verify improved answer
+            this.log(`\n🔍 Re-verifying improved answer...\n`);
+            // eslint-disable-next-line no-await-in-loop -- Sequential verification required
+            const newVerification = await this.verifySynthesis(task, finalAnswer, researchContext + improvementContext);
+            if (newVerification) {
+              verificationResult = newVerification;
+            }
+          }
+
+          if (verificationAttempt >= maxVerificationRetries) {
+            this.log(`\n⚠️ Max verification retries reached. Returning best available answer.\n`);
+          }
+        }
+      }
+
+      // Emit orchestrator:answer event with the synthesized response and verification metrics
       this.emit({
         type: 'orchestrator:answer',
         timestamp: new Date().toISOString(),
         data: {
-          answer,
+          answer: finalAnswer,
+          confidence: verificationResult?.confidence,
+          completeness: verificationResult?.completeness,
+          gaps: verificationResult?.gaps,
+          unverifiedMentions: verificationResult?.unverifiedMentions,
         },
       });
 
+      // Note: saveAnswerToMemory is called in execute() after all result processors
+      // This ensures the final answer is saved consistently for all task types
+
       return {
         success: true,
-        summary: answer,
+        summary: finalAnswer,
         filesCreated: [],
         filesModified: [],
         filesRead: [],
-        iterations: researchPlan.subtasks.length + 1, // +1 for synthesis
-        tokensUsed: (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0),
+        iterations: totalIterations,
+        tokensUsed: totalTokens,
+        verification: verificationResult,
+        qualityMetrics: verificationResult ? {
+          confidence: verificationResult.confidence,
+          completeness: verificationResult.completeness,
+          gaps: verificationResult.gaps,
+          reasoning: verificationResult.reasoning,
+        } : undefined,
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1337,11 +1451,171 @@ ${researchContext}
   }
 
   /**
+   * Verify synthesized answer using cross-tier verification
+   *
+   * Uses a larger model tier to verify the synthesis generated by smaller models.
+   * Returns verification result with confidence, completeness, and potential hallucinations.
+   */
+  private async verifySynthesis(
+    task: string,
+    answer: string,
+    researchContext: string
+  ): Promise<import('@kb-labs/agent-contracts').VerificationResult | undefined> {
+    try {
+      const { requestVerification, toVerificationResult } = await import('./verification/index.js');
+
+      const startTime = Date.now();
+
+      // Emit verification:start event
+      if (this.config.onEvent) {
+        this.config.onEvent({
+          type: 'verification:start' as const,
+          timestamp: new Date().toISOString(),
+          agentId: this.agentId,
+          data: {
+            target: 'synthesis' as const,
+            executorTier: 'medium' as const,
+            verifierTier: 'large' as const,
+          },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+      }
+
+      // Request verification from larger model
+      const verificationOutput = await requestVerification({
+        task,
+        answer,
+        toolResultsSummary: researchContext,
+        executorTier: 'medium', // Synthesis uses medium tier
+      });
+
+      // Convert to VerificationResult
+      const result = toVerificationResult(verificationOutput);
+
+      const durationMs = Date.now() - startTime;
+
+      // Emit verification:complete event
+      if (this.config.onEvent) {
+        this.config.onEvent({
+          type: 'verification:complete' as const,
+          timestamp: new Date().toISOString(),
+          agentId: this.agentId,
+          data: {
+            target: 'synthesis' as const,
+            confidence: result.confidence,
+            completeness: result.completeness,
+            verifiedMentions: result.verifiedMentions,
+            unverifiedMentions: result.unverifiedMentions,
+            gaps: result.gaps,
+            warnings: result.warnings.map((w: { message: string }) => w.message),
+            durationMs,
+          },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+      }
+
+      this.log(`\n✅ Verification complete:`);
+      this.log(`   Confidence: ${(result.confidence * 100).toFixed(0)}%`);
+      this.log(`   Completeness: ${(result.completeness * 100).toFixed(0)}%`);
+      if (result.unverifiedMentions.length > 0) {
+        this.log(`   ⚠️ Unverified mentions: ${result.unverifiedMentions.join(', ')}`);
+      }
+      if (result.gaps.length > 0) {
+        this.log(`   📋 Gaps: ${result.gaps.join(', ')}`);
+      }
+      this.log('');
+
+      return result;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log(`\n⚠️ Verification failed: ${errorMsg}\n`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Execute targeted research to fill a specific gap
+   *
+   * Creates a mini-research task focused on finding information for one gap.
+   * Returns the research findings as a string, or null if research failed.
+   */
+  private async executeGapResearch(gap: string, existingContext: string): Promise<string | null> {
+    try {
+      const llm = useLLM();
+      if (!llm) {
+        this.log(`   ❌ Gap research failed: LLM not available`);
+        return null;
+      }
+
+      // Create a focused research prompt
+      const gapPrompt = `You are filling a specific information gap.
+
+**Gap to fill:** ${gap}
+
+**Existing research context (for reference):**
+${existingContext.slice(0, 2000)}...
+
+**Instructions:**
+1. Use the available tools to find specific information about: ${gap}
+2. Focus ONLY on this specific gap - don't repeat existing research
+3. Be concise - return only the relevant findings
+4. If you cannot find the information, say so clearly
+
+What specific information can you find about: ${gap}`;
+
+      // Use a simple completion to get gap-filling research
+      // In a full implementation, this would use tool calling
+      const response = await llm.complete(gapPrompt, { temperature: 0.1 });
+
+      if (response.content && response.content.length > 50) {
+        this.log(`   ✅ Found information for gap: ${gap.slice(0, 50)}...`);
+        return response.content;
+      }
+
+      this.log(`   ⚠️ Could not find information for gap: ${gap.slice(0, 50)}...`);
+      return null;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log(`   ❌ Gap research failed: ${errorMsg}`);
+      return null;
+    }
+  }
+
+  /**
    * Log helper
    */
   private log(message: string): void {
     if (this.config.verbose) {
       console.log(message);
+    }
+  }
+
+  /**
+   * Save orchestrator answer to memory (never summarized)
+   *
+   * This ensures the full answer is always available for follow-up questions.
+   * The answer is stored separately from regular memories and never compressed.
+   */
+  private async saveAnswerToMemory(
+    task: string,
+    answer: string,
+    metadata?: {
+      confidence?: number;
+      completeness?: number;
+      filesCreated?: string[];
+      filesModified?: string[];
+    }
+  ): Promise<void> {
+    // Check if memory supports saveLastAnswer
+    const memory = this.config.memory;
+    if (memory && typeof (memory as any).saveLastAnswer === 'function') {
+      try {
+        await (memory as any).saveLastAnswer(answer, task, metadata);
+        this.log(`📝 Answer saved to memory (${answer.length} chars)`);
+      } catch (error) {
+        // Don't fail the task if memory save fails
+        this.log(`⚠️ Failed to save answer to memory: ${error}`);
+      }
     }
   }
 }

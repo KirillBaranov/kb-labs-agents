@@ -447,16 +447,18 @@ Keep the summary under 500 words.`;
    *
    * Priority order:
    * 1. User corrections (session) - highest priority
-   * 2. Constraints (shared) - project rules
-   * 3. Preferences (shared) - user preferences
-   * 4. Blockers (session) - current blockers
-   * 5. Recent activity (session) - recent observations/findings
+   * 2. Last answer (session) - FULL previous answer, never summarized
+   * 3. Constraints (shared) - project rules
+   * 4. Preferences (shared) - user preferences
+   * 5. Blockers (session) - current blockers
+   * 6. Recent activity (session) - recent observations/findings
    */
   async getStructuredContext(maxTokens?: number): Promise<string> {
     // Session memory
     const corrections = await this.getUserCorrections();
     const blockers = await this.getBlockers();
     const recent = await this.getRecent(20);
+    const lastAnswer = await this.getLastAnswer();
 
     // Shared memory (preferences, constraints)
     const sharedPreferences = await this.getSharedPreferences();
@@ -477,6 +479,34 @@ Keep the summary under 500 words.`;
         context += section;
         estimatedTokens += tokens;
       }
+    }
+
+    // Last answer - ALWAYS include in FULL (never summarized)
+    if (lastAnswer) {
+      const timeAgo = this.formatTimeAgo(lastAnswer.timestamp);
+      const metaInfo: string[] = [];
+      if (lastAnswer.metadata?.confidence) {
+        metaInfo.push(`confidence: ${(lastAnswer.metadata.confidence * 100).toFixed(0)}%`);
+      }
+      if (lastAnswer.metadata?.filesCreated?.length) {
+        metaInfo.push(`files created: ${lastAnswer.metadata.filesCreated.join(', ')}`);
+      }
+      if (lastAnswer.metadata?.filesModified?.length) {
+        metaInfo.push(`files modified: ${lastAnswer.metadata.filesModified.join(', ')}`);
+      }
+
+      const section = `# 📝 Previous Answer (${timeAgo})
+
+**Original question:** ${lastAnswer.task}
+${metaInfo.length > 0 ? `**Metadata:** ${metaInfo.join(' | ')}\n` : ''}
+**Full answer:**
+${lastAnswer.answer}
+
+`;
+      // Note: We always include the last answer even if it exceeds token limit
+      // because it's critical for follow-up questions
+      context += section;
+      estimatedTokens += this.estimateTokens(section);
     }
 
     // Constraints (shared - persistent)
@@ -538,6 +568,108 @@ Keep the summary under 500 words.`;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // Last Answer Memory (NEVER summarized - always full)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** In-memory cache of last answer for fast access */
+  private lastAnswerCache: {
+    answer: string;
+    task: string;
+    timestamp: string;
+    metadata?: {
+      confidence?: number;
+      completeness?: number;
+      sources?: string[];
+      filesCreated?: string[];
+      filesModified?: string[];
+    };
+  } | null = null;
+
+  /**
+   * Save the orchestrator's last answer (NEVER summarized)
+   * Stored separately in last-answer.json - always available in full
+   */
+  async saveLastAnswer(
+    answer: string,
+    task: string,
+    metadata?: {
+      confidence?: number;
+      completeness?: number;
+      sources?: string[];
+      filesCreated?: string[];
+      filesModified?: string[];
+    }
+  ): Promise<void> {
+    const lastAnswer = {
+      answer,
+      task,
+      timestamp: new Date().toISOString(),
+      metadata,
+    };
+
+    // Save to memory cache
+    this.lastAnswerCache = lastAnswer;
+
+    // Persist to dedicated file (NOT in regular memory files)
+    try {
+      const memoryDir = path.join(this.workingDir, '.kb', 'memory', this.sessionId);
+      await fs.mkdir(memoryDir, { recursive: true });
+
+      const filePath = path.join(memoryDir, 'last-answer.json');
+      await fs.writeFile(filePath, JSON.stringify(lastAnswer, null, 2), 'utf-8');
+    } catch (error) {
+      // Don't throw - allow agent to continue
+      console.error('[FileMemory] Failed to persist last answer:', error);
+    }
+  }
+
+  /**
+   * Get the last orchestrator answer (full, unsummarized)
+   */
+  async getLastAnswer(): Promise<{
+    answer: string;
+    task: string;
+    timestamp: string;
+    metadata?: {
+      confidence?: number;
+      completeness?: number;
+      sources?: string[];
+      filesCreated?: string[];
+      filesModified?: string[];
+    };
+  } | null> {
+    // Check memory cache first
+    if (this.lastAnswerCache) {
+      return this.lastAnswerCache;
+    }
+
+    // Load from file
+    try {
+      const filePath = path.join(this.workingDir, '.kb', 'memory', this.sessionId, 'last-answer.json');
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lastAnswer = JSON.parse(content);
+      this.lastAnswerCache = lastAnswer;
+      return lastAnswer;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Clear the last answer
+   */
+  async clearLastAnswer(): Promise<void> {
+    this.lastAnswerCache = null;
+
+    try {
+      const filePath = path.join(this.workingDir, '.kb', 'memory', this.sessionId, 'last-answer.json');
+      await fs.unlink(filePath);
+    } catch {
+      // File might not exist, that's OK
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // Private helpers
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -565,6 +697,25 @@ Keep the summary under 500 words.`;
   private estimateTokens(text: string): number {
     // Rough estimation: 1 token ≈ 4 characters
     return Math.ceil(text.length / 4);
+  }
+
+  /**
+   * Format timestamp as human-readable "time ago" string
+   */
+  private formatTimeAgo(timestamp: string): string {
+    const now = Date.now();
+    const then = new Date(timestamp).getTime();
+    const diffMs = now - then;
+
+    const seconds = Math.floor(diffMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (days > 0) return `${days} day${days > 1 ? 's' : ''} ago`;
+    if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+    return 'just now';
   }
 
   private async persistToFile(memory: MemoryEntry): Promise<void> {
