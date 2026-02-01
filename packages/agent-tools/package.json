@@ -18,11 +18,13 @@
     "type-check": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint . --fix",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@kb-labs/core-platform": "workspace:*"
+    "@kb-labs/agent-contracts": "workspace:*",
+    "@kb-labs/core-platform": "link:../../../kb-labs-core/packages/core-platform",
+    "glob": "^11.0.2"
   },
   "devDependencies": {
     "@types/node": "^24.3.3",
