@@ -1,8 +1,7 @@
 /**
- * Planning Module
- *
- * Task classification and execution planning
+ * Planning system exports
  */
 
-export * from "./task-classifier.js";
-export * from "./react-prompt-builder.js";
+export { SessionManager } from './session-manager.js';
+export { PlanGenerator } from './plan-generator.js';
+export { PlanExecutor } from './plan-executor.js';
