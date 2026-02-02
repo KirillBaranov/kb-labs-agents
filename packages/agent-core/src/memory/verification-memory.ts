@@ -5,7 +5,7 @@
  * Stores verified mentions as findings, unverified as blockers.
  */
 
-import type { VerificationResult, MemoryEntry } from '@kb-labs/agent-contracts';
+import type { VerificationResult } from '@kb-labs/agent-contracts';
 import type { FileMemory } from './file-memory.js';
 
 /**

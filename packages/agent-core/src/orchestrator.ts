@@ -115,7 +115,7 @@ export class OrchestratorAgent {
    */
   private async extractScope(task: string): Promise<string | null> {
     const llm = useLLM({ tier: 'small' });
-    if (!llm || !llm.chatWithTools) return null;
+    if (!llm || !llm.chatWithTools) {return null;}
 
     // List available directories
     const workingDir = this.config.workingDir;
@@ -129,7 +129,7 @@ export class OrchestratorAgent {
       return null;
     }
 
-    if (availableDirs.length === 0) return null;
+    if (availableDirs.length === 0) {return null;}
 
     // Tool definition for scope selection (LLMTool format)
     const scopeTool = {
@@ -1477,7 +1477,7 @@ ${researchContext}
             executorTier: 'medium' as const,
             verifierTier: 'large' as const,
           },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         } as any);
       }
 
@@ -1510,7 +1510,7 @@ ${researchContext}
             warnings: result.warnings.map((w: { message: string }) => w.message),
             durationMs,
           },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         } as any);
       }
 

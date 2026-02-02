@@ -15,7 +15,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
-import type { PersistentMemory, MemoryEntry, SessionEntry } from '@kb-labs/agent-contracts';
+import type { MemoryEntry, SessionEntry } from '@kb-labs/agent-contracts';
 
 /**
  * Shared memory structure (persistent)

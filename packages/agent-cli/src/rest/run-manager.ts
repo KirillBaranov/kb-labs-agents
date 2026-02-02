@@ -111,7 +111,7 @@ class RunManagerImpl {
    */
   async getState(runId: string): Promise<RunState | null> {
     const cache = useCache();
-    if (!cache) return null;
+    if (!cache) {return null;}
 
     return cache.get<RunState>(`${CACHE_PREFIX}${runId}`);
   }
@@ -135,7 +135,7 @@ class RunManagerImpl {
    */
   private async saveToCache(run: ActiveRun): Promise<void> {
     const cache = useCache();
-    if (!cache) return;
+    if (!cache) {return;}
 
     const state: RunState = {
       runId: run.runId,

@@ -6,7 +6,6 @@ import { promises as fs } from 'node:fs';
 import type {
   TaskPlan,
   Phase,
-  Step,
   SessionProgress,
   Tracer,
 } from '@kb-labs/agent-contracts';

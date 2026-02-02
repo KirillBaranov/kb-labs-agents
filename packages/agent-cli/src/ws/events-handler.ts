@@ -134,7 +134,7 @@ export default defineWebSocket<unknown, ClientMessage, ServerMessage>({
     async onMessage(ctx: PluginContextV3, message: ClientMessage, sender: TypedSender<ServerMessage>) {
       const runId = (ctx.hostContext as { params?: { runId?: string } }).params?.runId;
 
-      if (!runId) return;
+      if (!runId) {return;}
 
       ctx.platform.logger.info(`[events-ws] Received message type: ${message.type}`);
 

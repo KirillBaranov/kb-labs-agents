@@ -75,15 +75,15 @@ interface RenderState {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 1000) {return `${ms}ms`;}
+  if (ms < 60000) {return `${(ms / 1000).toFixed(1)}s`;}
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
 }
 
 function formatPath(path: string, maxLen = 40): string {
-  if (path.length <= maxLen) return path;
+  if (path.length <= maxLen) {return path;}
   const parts = path.split('/');
-  if (parts.length <= 2) return '...' + path.slice(-maxLen + 3);
+  if (parts.length <= 2) {return '...' + path.slice(-maxLen + 3);}
   return `.../${parts.slice(-2).join('/')}`;
 }
 

@@ -70,7 +70,7 @@ export class SessionManager {
   private generateSessionName(task: string): string {
     // Take first 50 chars, cut at word boundary
     const maxLen = 50;
-    if (task.length <= maxLen) return task;
+    if (task.length <= maxLen) {return task;}
     const cut = task.slice(0, maxLen);
     const lastSpace = cut.lastIndexOf(' ');
     return lastSpace > 20 ? cut.slice(0, lastSpace) + '...' : cut + '...';
@@ -124,7 +124,7 @@ export class SessionManager {
    */
   async getSessionInfo(sessionId: string): Promise<AgentSessionInfo | null> {
     const session = await this.loadSession(sessionId);
-    if (!session) return null;
+    if (!session) {return null;}
 
     const events = await this.getSessionEvents(sessionId);
     const runCount = events.filter((e) => e.type === 'agent:start').length;
@@ -176,8 +176,8 @@ export class SessionManager {
         const info = await this.getSessionInfo(sessionId);
         if (info) {
           // Apply filters
-          if (options?.agentId && info.agentId !== options.agentId) continue;
-          if (options?.status && info.status !== options.status) continue;
+          if (options?.agentId && info.agentId !== options.agentId) {continue;}
+          if (options?.status && info.status !== options.status) {continue;}
           sessions.push(info);
         }
       }

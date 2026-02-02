@@ -12,7 +12,6 @@ import type {
   Tracer,
   AgentMemory,
   AgentEvent,
-  AgentEventCallback,
 } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
 import {
@@ -278,7 +277,7 @@ export class Agent {
 
     const llm = useLLM({ tier });
     if (!llm || !llm.chatWithTools) {
-      return await this.createFailureResult('LLM or chatWithTools not available', 0);
+      return this.createFailureResult('LLM or chatWithTools not available', 0);
     }
 
     const tools = this.convertToolDefinitions();
@@ -374,12 +373,12 @@ export class Agent {
           },
         });
 
-        // eslint-disable-next-line no-await-in-loop -- Creating failure result in iteration loop: must await memory recording
-        return await this.createFailureResult(`Failed: ${errorMsg}`, iteration, errorMsg);
+         
+        return this.createFailureResult(`Failed: ${errorMsg}`, iteration, errorMsg);
       }
     }
 
-    return await this.createFailureResult(
+    return this.createFailureResult(
       `Max iterations (${this.config.maxIterations}) reached without completion`,
       this.config.maxIterations
     );
