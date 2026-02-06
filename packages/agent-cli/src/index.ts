@@ -1,5 +1,7 @@
-// Main barrel export for KB Labs Agents CLI
+/**
+ * @kb-labs/agent-cli
+ *
+ * CLI commands for KB Labs Agent System
+ */
 
-// Re-export CLI commands and utilities
-export * from "./cli/index.js";
-export * from "./utils/index.js";
+export { manifest } from './manifest.js';

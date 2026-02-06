@@ -1,13 +1,26 @@
-// Agent Core - Main exports
-export * from "./executor/index.js";
-export * from "./tools/index.js";
-export * from "./registry/index.js";
-export * from "./planning/index.js";
-export * from "./analytics/index.js";
-export * from "./trace/index.js";
-export * from "./verification/index.js";
+/**
+ * @kb-labs/agent-core
+ *
+ * Core agent implementation and orchestration
+ */
 
-// Output schema and tool building
-export * from "./schema-converter.js";
-export * from "./output-tool-builder.js";
-export * from "./validator.js";
+export { Agent } from './agent.js';
+export { OrchestratorAgent } from './orchestrator.js';
+
+// Tracer
+export * from './tracer/index.js';
+
+// Result processors
+export * from './processors/index.js';
+
+// Memory
+export * from './memory/index.js';
+
+// Planning
+export * from './planning/index.js';
+
+// Modes
+export * from './modes/index.js';
+
+// Events - event streaming for UI
+export * from './events/index.js';

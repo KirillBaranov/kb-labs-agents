@@ -27,29 +27,17 @@
       "@kb-labs/core-platform/*": [
         "../kb-labs-core/packages/core-platform/src/*"
       ],
-      "@kb-labs/iterative-orchestrator": [
-        "packages/iterative-orchestrator/src/index.ts"
-      ],
-      "@kb-labs/iterative-orchestrator/*": [
-        "packages/iterative-orchestrator/src/*"
-      ],
       "@kb-labs/plugin-runtime": [
         "../kb-labs-plugin/packages/plugin-runtime/src/index.ts"
       ],
       "@kb-labs/plugin-runtime/*": [
         "../kb-labs-plugin/packages/plugin-runtime/src/*"
       ],
-      "@kb-labs/progress-reporter": [
-        "packages/progress-reporter/src/index.ts"
+      "@kb-labs/sdk": [
+        "../kb-labs-sdk/packages/sdk/src/index.ts"
       ],
-      "@kb-labs/progress-reporter/*": [
-        "packages/progress-reporter/src/*"
-      ],
-      "@kb-labs/task-classifier": [
-        "packages/task-classifier/src/index.ts"
-      ],
-      "@kb-labs/task-classifier/*": [
-        "packages/task-classifier/src/*"
+      "@kb-labs/sdk/*": [
+        "../kb-labs-sdk/packages/sdk/src/*"
       ]
     }
   }

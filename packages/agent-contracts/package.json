@@ -3,21 +3,13 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "Type definitions and contracts for KB Labs Agents. Provides AgentConfig, ToolDefinition, and shared types.",
+  "description": "Type definitions and contracts for KB Labs Agents. IDs, Session, Specification, Gates, Multi-Agent types.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    },
-    "./contract": {
-      "import": "./dist/contract.js",
-      "types": "./dist/contract.d.ts"
-    },
-    "./schema": {
-      "import": "./dist/schema.js",
-      "types": "./dist/schema.d.ts"
     },
     "./dist/*": "./dist/*"
   },
@@ -35,7 +27,7 @@
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint . --fix",
     "type-check": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
   "dependencies": {
