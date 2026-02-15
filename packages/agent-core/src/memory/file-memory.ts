@@ -727,7 +727,7 @@ ${lastAnswer.answer}
       const filePath = path.join(memoryDir, fileName);
 
       await fs.writeFile(filePath, JSON.stringify(memory, null, 2), 'utf-8');
-    } catch (error) {
+    } catch {
       // Don't throw - allow agent to continue even if memory persistence fails
     }
   }
@@ -828,9 +828,10 @@ ${lastAnswer.answer}
       // Delete old directories (keep only maxSessionDirs newest)
       const dirsToDelete = dirsWithStats.slice(this.maxSessionDirs);
 
-      for (const dir of dirsToDelete) {
-        await fs.rm(dir.path, { recursive: true, force: true });
-      }
+      // Delete directories in parallel for better performance
+      await Promise.allSettled(
+        dirsToDelete.map((dir) => fs.rm(dir.path, { recursive: true, force: true }))
+      );
 
       if (dirsToDelete.length > 0) {
         console.log(

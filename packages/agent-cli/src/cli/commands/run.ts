@@ -7,13 +7,13 @@
 import { defineCommand, type PluginContextV3 } from '@kb-labs/sdk';
 import {
   OrchestratorAgent,
-  FileTracer,
+  IncrementalTraceWriter,
   TraceSaverProcessor,
   MetricsCollectorProcessor,
   FileMemory,
 } from '@kb-labs/agent-core';
 import { createToolRegistry } from '@kb-labs/agent-tools';
-import type { OrchestratorConfig, ModeConfig, AgentMode } from '@kb-labs/agent-contracts';
+import type { OrchestratorConfig, ModeConfig, AgentMode, AgentEvent } from '@kb-labs/agent-contracts';
 import { createEventRenderer, createMinimalRenderer, createDetailedRenderer } from '../ui/index.js';
 
 type RunInput = {
@@ -117,9 +117,9 @@ export default defineCommand({
           verbose: false, // Disable tool registry verbose - we have event renderer
         });
 
-        // Create tracer
+        // Create tracer (incremental NDJSON tracer)
         const taskId = `task-${Date.now()}`;
-        const tracer = new FileTracer(taskId, sessionId);
+        const tracer = new IncrementalTraceWriter(taskId);
 
         // Create memory system
         const memory = new FileMemory({
@@ -134,6 +134,14 @@ export default defineCommand({
           new TraceSaverProcessor(workingDir),
           new MetricsCollectorProcessor(),
         ];
+
+        // Create composite event callback that writes to tracer AND renders UI
+        const compositeEventCallback = (event: AgentEvent) => {
+          // Write to tracer
+          tracer.trace(event);
+          // Render UI
+          eventRenderer(event);
+        };
 
         // Create orchestrator config with event callback
         const config: OrchestratorConfig = {
@@ -150,7 +158,7 @@ export default defineCommand({
           resultProcessors,
           memory,
           mode: modeConfig,
-          onEvent: eventRenderer, // Event-driven UI rendering
+          onEvent: compositeEventCallback, // Composite: tracer + UI rendering
         };
 
         // Create and execute orchestrator

@@ -26,10 +26,15 @@ export type AgentEventType =
   | 'tool:error'
   // Orchestrator
   | 'orchestrator:start'
+  | 'orchestrator:plan'    // Execution plan with LLM-estimated iterations
   | 'orchestrator:answer'  // Synthesized answer for user
   | 'orchestrator:end'
   | 'subtask:start'
   | 'subtask:end'
+  // Synthesis (forced on last iteration)
+  | 'synthesis:forced'
+  | 'synthesis:start'
+  | 'synthesis:complete'
   // Memory
   | 'memory:read'
   | 'memory:write'
@@ -297,7 +302,28 @@ export interface OrchestratorStartEvent extends AgentEventBase {
   type: 'orchestrator:start';
   data: {
     task: string;
-    complexity: 'simple' | 'complex';
+    complexity: 'simple' | 'research' | 'complex';
+  };
+}
+
+export interface OrchestratorPlanEvent extends AgentEventBase {
+  type: 'orchestrator:plan';
+  data: {
+    /** Execution mode (single agent or multi-agent decomposition) */
+    executionMode?: string;
+    /** Task type from decomposition analysis */
+    taskType?: string;
+    /** Why this decomposition approach was chosen */
+    decompositionReason?: string;
+    /** LLM-estimated iterations needed for child agents (Phase 0) */
+    estimatedIterations?: number;
+    /** Number of subtasks (1 for single agent, N for decomposed) */
+    subtaskCount: number;
+    /** Subtask descriptions */
+    subtasks: Array<{
+      id: string;
+      description: string;
+    }>;
   };
 }
 
@@ -346,6 +372,37 @@ export interface SubtaskEndEvent extends AgentEventBase {
     subtaskId: string;
     success: boolean;
     summary?: string;
+  };
+}
+
+/**
+ * Synthesis events (forced answer synthesis on last iteration)
+ */
+export interface SynthesisForcedEvent extends AgentEventBase {
+  type: 'synthesis:forced';
+  data: {
+    iteration: number;
+    reason: string;
+    messagesCount: number;
+  };
+}
+
+export interface SynthesisStartEvent extends AgentEventBase {
+  type: 'synthesis:start';
+  data: {
+    iteration: number;
+    promptLength: number;
+  };
+}
+
+export interface SynthesisCompleteEvent extends AgentEventBase {
+  type: 'synthesis:complete';
+  data: {
+    iteration: number;
+    contentLength: number;
+    hasContent: boolean;
+    tokensUsed: number;
+    previewFirst200: string;
   };
 }
 
@@ -448,10 +505,14 @@ export type AgentEvent =
   | ToolEndEvent
   | ToolErrorEvent
   | OrchestratorStartEvent
+  | OrchestratorPlanEvent
   | OrchestratorAnswerEvent
   | OrchestratorEndEvent
   | SubtaskStartEvent
   | SubtaskEndEvent
+  | SynthesisForcedEvent
+  | SynthesisStartEvent
+  | SynthesisCompleteEvent
   | MemoryReadEvent
   | MemoryWriteEvent
   | VerificationStartEvent

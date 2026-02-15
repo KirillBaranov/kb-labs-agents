@@ -171,16 +171,26 @@ export class SessionManager {
       const entries = await fs.readdir(sessionsRoot, { withFileTypes: true });
       const sessionDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
 
-      let sessions: AgentSessionInfo[] = [];
-      for (const sessionId of sessionDirs) {
-        const info = await this.getSessionInfo(sessionId);
-        if (info) {
+      // Load session info in parallel for better performance
+      const sessionInfos = await Promise.all(
+        sessionDirs.map((sessionId) => this.getSessionInfo(sessionId))
+      );
+
+      // Filter out null results and apply user filters
+      let sessions: AgentSessionInfo[] = sessionInfos
+        .filter((info): info is AgentSessionInfo => {
+          if (!info) {
+            return false;
+          }
           // Apply filters
-          if (options?.agentId && info.agentId !== options.agentId) {continue;}
-          if (options?.status && info.status !== options.status) {continue;}
-          sessions.push(info);
-        }
-      }
+          if (options?.agentId && info.agentId !== options.agentId) {
+            return false;
+          }
+          if (options?.status && info.status !== options.status) {
+            return false;
+          }
+          return true;
+        });
 
       // Sort by last activity (newest first)
       sessions.sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));

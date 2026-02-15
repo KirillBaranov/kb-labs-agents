@@ -127,7 +127,7 @@ export function createEventRenderer(options: {
   };
 
   return (event: AgentEvent) => {
-    const prefix = indent(state.indentLevel);
+    const _prefix = indent(state.indentLevel);
 
     switch (event.type) {
       // ═══════════════════════════════════════════════════════════════════
@@ -162,13 +162,14 @@ export function createEventRenderer(options: {
         console.log(renderBoxLine(statusLine + duration, color.accent));
 
         // Show final result/answer from orchestrator
-        if (event.data.summary) {
+        const summary = (event.data as any).summary;
+        if (summary) {
           console.log(color.accent(box.vertical));
           console.log(renderBoxLine(color.bold('📋 Final Answer:'), color.accent));
 
           // Word-wrap and display the summary
           const maxChars = showLLMContent ? 2000 : 1000;
-          const summaryText = event.data.summary.slice(0, maxChars);
+          const summaryText = summary.slice(0, maxChars);
           const summaryLines = summaryText.split('\n').slice(0, 30);
 
           for (const line of summaryLines) {
@@ -192,7 +193,7 @@ export function createEventRenderer(options: {
             }
           }
 
-          if (event.data.summary.length > maxChars) {
+          if (summary.length > maxChars) {
             console.log(renderBoxLine(color.dim('   ... (truncated)'), color.accent));
           }
         }
