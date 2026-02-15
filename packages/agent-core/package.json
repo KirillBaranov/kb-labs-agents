@@ -38,6 +38,7 @@
   },
   "devDependencies": {
     "@kb-labs/devkit": "link:../../../kb-labs-devkit",
+    "@kb-labs/shared-testing": "link:../../../kb-labs-shared/packages/shared-testing",
     "@types/node": "^24.3.3",
     "eslint": "^9",
     "rimraf": "^6.0.1",

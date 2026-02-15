@@ -49,6 +49,9 @@ import {
 // Interaction tools
 import { createAskUserTool } from './interaction.js';
 
+// Orchestration tools
+import { createAskOrchestratorTool, createReportToOrchestratorTool, createReflectOnProgressTool } from './orchestration.js';
+
 /**
  * Create and register all tools
  */
@@ -91,6 +94,11 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   // Register interaction tools
   registry.register(createAskUserTool(context));
 
+  // Register orchestration tools
+  registry.register(createAskOrchestratorTool(context));
+  registry.register(createReportToOrchestratorTool(context));
+  registry.register(createReflectOnProgressTool(context));
+
   return registry;
 }
 
@@ -121,4 +129,7 @@ export {
   createTodoUpdateTool,
   createTodoGetTool,
   createAskUserTool,
+  createAskOrchestratorTool,
+  createReportToOrchestratorTool,
+  createReflectOnProgressTool,
 };

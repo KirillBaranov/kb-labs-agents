@@ -12,3 +12,10 @@ export * from './schemas.js';
 export * from './routes.js';
 export * from './analytics.js';
 export * from './verification.js';
+
+// ═══════════════════════════════════════════════════════════════════════
+// Incremental Tracing (NEW)
+// ═══════════════════════════════════════════════════════════════════════
+
+export type * from './detailed-trace-types.js';
+export type * from './trace-command-response.js';

@@ -111,10 +111,79 @@ export const manifest = {
         flags: defineCommandFlags(runFlags),
 
         examples: [
-          'kb agent:run --task="Create analytics system"',
-          'kb agent:run --mode=plan --task="Add auth" --complexity=complex',
-          'kb agent:run --mode=edit --task="Fix bug" --files src/auth.ts',
-          'kb agent:run --mode=debug --task="Why crash?" --trace .kb/traces/trace-123.json',
+          'kb agent run --task="Create analytics system"',
+          'kb agent run --mode=plan --task="Add auth" --complexity=complex',
+          'kb agent run --mode=edit --task="Fix bug" --files src/auth.ts',
+          'kb agent run --mode=debug --task="Why crash?" --trace .kb/traces/trace-123.json',
+        ],
+      },
+      // Trace debugging commands (AI-friendly)
+      {
+        id: 'agent:trace:stats',
+        group: 'agent',
+        describe: 'Show trace statistics with cost and performance metrics',
+        longDescription:
+          'Analyze trace file to show comprehensive statistics: ' +
+          'iterations, LLM calls, token usage, tool usage, timing, and cost. ' +
+          'Supports --json flag for AI agent consumption.',
+
+        handler: './cli/commands/trace-stats.js#default',
+        handlerPath: './cli/commands/trace-stats.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace stats --task-id=task-2026-01-29',
+          'kb agent trace stats --task-id=task-123 --json',
+        ],
+      },
+      {
+        id: 'agent:trace:filter',
+        group: 'agent',
+        describe: 'Filter trace events by type for debugging',
+        longDescription:
+          'Filter trace events by type (llm:call, tool:execution, error:captured, etc.). ' +
+          'Use this to debug specific aspects of agent execution. ' +
+          'Supports --json flag for programmatic access.',
+
+        handler: './cli/commands/trace-filter.js#default',
+        handlerPath: './cli/commands/trace-filter.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          type: { type: 'string', description: 'Event type to filter (llm:call, tool:execution, etc.)' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace filter --task-id=task-123 --type=llm:call',
+          'kb agent trace filter --task-id=task-123 --type=error:captured --json',
+        ],
+      },
+      {
+        id: 'agent:trace:iteration',
+        group: 'agent',
+        describe: 'View all events for a specific iteration',
+        longDescription:
+          'Show all trace events for a specific iteration number. ' +
+          'Useful for debugging what happened in a particular loop iteration. ' +
+          'Includes summary statistics and event timeline.',
+
+        handler: './cli/commands/trace-iteration.js#default',
+        handlerPath: './cli/commands/trace-iteration.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          iteration: { type: 'number', description: 'Iteration number (1-based)' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace iteration --task-id=task-123 --iteration=3',
+          'kb agent trace iteration --task-id=task-123 --iteration=5 --json',
         ],
       },
     ],

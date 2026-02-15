@@ -5,6 +5,9 @@
  * Streams AgentEvents in real-time to connected clients
  */
 
+/* eslint-disable @typescript-eslint/consistent-type-imports */
+// Using import() in type signatures to avoid circular dependencies
+
 import {
   defineWebSocket,
   useAnalytics,

@@ -50,9 +50,6 @@ importers:
       '@kb-labs/agent-core':
         specifier: workspace:*
         version: link:../agent-core
-      '@kb-labs/agent-simple':
-        specifier: workspace:*
-        version: link:../agent-simple
       '@kb-labs/agent-tools':
         specifier: workspace:*
         version: link:../agent-tools
@@ -131,6 +128,9 @@ importers:
       '@kb-labs/devkit':
         specifier: link:../../../kb-labs-devkit
         version: link:../../../kb-labs-devkit
+      '@kb-labs/shared-testing':
+        specifier: link:../../../kb-labs-shared/packages/shared-testing
+        version: link:../../../kb-labs-shared/packages/shared-testing
       '@types/node':
         specifier: ^24.3.3
         version: 24.10.4
@@ -150,30 +150,30 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.10.4)
 
-  packages/agent-simple:
+  packages/agent-task-runner:
     dependencies:
+      '@kb-labs/agent-contracts':
+        specifier: workspace:*
+        version: link:../agent-contracts
+      '@kb-labs/agent-core':
+        specifier: workspace:*
+        version: link:../agent-core
+      '@kb-labs/agent-tools':
+        specifier: workspace:*
+        version: link:../agent-tools
       '@kb-labs/sdk':
         specifier: link:../../../kb-labs-sdk/packages/sdk
         version: link:../../../kb-labs-sdk/packages/sdk
     devDependencies:
-      '@kb-labs/devkit':
-        specifier: link:../../../kb-labs-devkit
-        version: link:../../../kb-labs-devkit
-      '@types/node':
-        specifier: ^24.3.3
-        version: 24.10.4
       rimraf:
         specifier: ^6.0.1
         version: 6.0.1
       tsup:
-        specifier: ^8.5.0
+        specifier: ^8.0.0
         version: 8.5.0(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.2)
       typescript:
-        specifier: ^5.6.3
+        specifier: ^5.7.2
         version: 5.9.3
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/node@24.10.4)
 
   packages/agent-tools:
     dependencies:

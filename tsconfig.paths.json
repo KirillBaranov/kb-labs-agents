@@ -38,6 +38,12 @@
       ],
       "@kb-labs/sdk/*": [
         "../kb-labs-sdk/packages/sdk/src/*"
+      ],
+      "@kb-labs/shared-testing": [
+        "../kb-labs-shared/packages/shared-testing/src/index.ts"
+      ],
+      "@kb-labs/shared-testing/*": [
+        "../kb-labs-shared/packages/shared-testing/src/*"
       ]
     }
   }
