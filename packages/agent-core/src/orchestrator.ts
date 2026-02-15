@@ -2,6 +2,9 @@
  * Orchestrator agent for task classification and parallel execution
  */
 
+/* eslint-disable sonarjs/no-duplicate-string */
+// "LLM not available" used in multiple contexts (error/reason/summary) for semantic clarity
+
 import type {
   TaskResult,
   TaskComplexity,
@@ -10,10 +13,15 @@ import type {
   AgentConfig,
   OrchestratorConfig,
   AgentEvent,
+  DecompositionDecision,
+  ExecutionMode,
+  // PlanUpdate imported but only used in private method signature
+  // eslint-disable-next-line unused-imports/no-unused-imports
+  PlanUpdate,
 } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
 import { Agent } from './agent.js';
-import { useLLM } from '@kb-labs/sdk';
+import { useLLM, type LLMMessage, type LLMTool } from '@kb-labs/sdk';
 import { SessionManager } from './planning/session-manager.js';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -68,6 +76,19 @@ export class OrchestratorAgent {
 
   /** Extracted scope path for child agents (relative to workingDir) */
   private taskScope: string | null = null;
+
+  /** Current task complexity (set during classification) */
+  private currentComplexity: TaskComplexity | undefined;
+
+  /** Original user task (preserved for child agents) */
+  private originalTask: string = '';
+
+  /** Extracted global context from original task (for child agents) */
+  private globalContext: {
+    targetDirectory?: string;
+    constraints: string[];
+    requirements: string[];
+  } = { constraints: [], requirements: [] };
 
   constructor(config: OrchestratorConfig, toolRegistry: ToolRegistry) {
     this.config = config;
@@ -371,6 +392,31 @@ Respond ONLY with valid JSON:
     this.startTime = Date.now();
     this.startTimestamp = new Date().toISOString();
 
+    // Preserve original task for child agents
+    this.originalTask = task;
+
+    // Extract global context ONCE at orchestrator level using LLM
+    // This includes: target directory, constraints, requirements
+    this.globalContext = await this.extractGlobalContext(task);
+
+    // Save original task + extracted context to shared memory
+    // Child agents will receive this structured context
+    if (this.config.memory) {
+      await this.config.memory.add({
+        content: task,
+        type: 'task',
+        metadata: {
+          sessionId: this.config.sessionId,
+          source: 'user',
+          importance: 1.0, // High importance - original user intent
+          tags: ['original-task', 'user-intent', 'orchestrator-context'],
+          isOriginalUserTask: true, // Flag to identify this as the root task
+          // Structured context extracted by orchestrator
+          globalContext: this.globalContext,
+        },
+      });
+    }
+
     this.log(`\n${'='.repeat(70)}`);
     this.log(`🎭 ORCHESTRATOR - Task Analysis`);
     this.log(`${'='.repeat(70)}\n`);
@@ -384,16 +430,6 @@ Respond ONLY with valid JSON:
     if (this.taskScope) {
       this.log(`🎯 Task scope: ${this.taskScope} (child agents will work in this directory)`);
     }
-
-    // Emit orchestrator:start event (complexity will be refined after classification)
-    this.emit({
-      type: 'orchestrator:start',
-      timestamp: this.startTimestamp,
-      data: {
-        task,
-        complexity: 'simple', // Will be refined after classification
-      },
-    });
 
     if (isPlanMode) {
       this.log(`\n📝 PLAN MODE - Generating execution plan only\n`);
@@ -423,8 +459,21 @@ Respond ONLY with valid JSON:
       return metaResult;
     }
 
-    // Step 1: Classify task complexity
+    // Step 1: Classify task complexity FIRST
     const classification = await this.classifyTask(task);
+
+    // Store complexity for child agent config
+    this.currentComplexity = classification.complexity;
+
+    // Emit orchestrator:start event with actual complexity
+    this.emit({
+      type: 'orchestrator:start',
+      timestamp: this.startTimestamp,
+      data: {
+        task,
+        complexity: classification.complexity,
+      },
+    });
 
     this.log(`\n📊 Classification: ${classification.complexity.toUpperCase()}`);
     this.log(`   Reasoning: ${classification.reasoning}\n`);
@@ -455,6 +504,23 @@ Respond ONLY with valid JSON:
         this.log(`   ${i + 1}. ${subtask.description}`);
       });
       this.log('');
+
+      // Emit execution plan event for tracing
+      this.emit({
+        type: 'orchestrator:plan',
+        timestamp: new Date().toISOString(),
+        data: {
+          executionMode: plan.executionMode,
+          taskType: plan.taskType,
+          decompositionReason: plan.decompositionReason,
+          estimatedIterations: plan.estimatedIterations,
+          subtaskCount: plan.subtasks.length,
+          subtasks: plan.subtasks.map(st => ({
+            id: st.id,
+            description: st.description,
+          })),
+        },
+      } as AgentEvent);
 
       result = await this.executeComplex(plan);
       subtaskCount = plan.subtasks.length;
@@ -674,8 +740,13 @@ Respond ONLY with valid JSON:
       this.logSubtaskHeader(subtask);
       subtask.status = 'in_progress';
 
+      // Phase 2, Step 2.4: Pass accumulated context to subtask
+      const accumulatedContext = contextParts.length > 0
+        ? `**Previous findings:**\n${contextParts.join('\n\n')}\n\n---\n\n`
+        : '';
+
       // eslint-disable-next-line no-await-in-loop -- Sequential research required
-      const shouldContinue = await this.executeSubtask(subtask, aggregator);
+      const shouldContinue = await this.executeSubtask(subtask, aggregator, accumulatedContext, plan);
 
       // Collect context from subtask result
       if (subtask.result && subtask.result.success) {
@@ -685,12 +756,92 @@ Respond ONLY with valid JSON:
       if (!shouldContinue) {
         break;
       }
+
+      // Phase 2, Step 2.3: Early Stopping - Check if we have enough confidence
+      // Sequential decision required - each research iteration depends on previous results
+      // eslint-disable-next-line no-await-in-loop
+      const earlyStopDecision = await this.shouldStopResearchEarly(contextParts, plan.originalTask);
+      if (earlyStopDecision.shouldStop) {
+        this.log(`\n🎯 Early stopping: ${earlyStopDecision.reason}\n`);
+        break;
+      }
     }
 
     const researchContext = contextParts.join('\n\n');
     this.log(`\n✅ Research phase complete. Collected ${contextParts.length} research results.\n`);
 
     return researchContext;
+  }
+
+  /**
+   * Phase 2, Step 2.3: Determine if research can stop early
+   *
+   * Checks if current research findings are sufficient to answer the question.
+   * Uses small model (fast, cheap) to assess confidence.
+   *
+   * Returns:
+   * - shouldStop: true if confidence ≥ 0.8 (good enough to answer)
+   * - reason: explanation of decision
+   */
+  private async shouldStopResearchEarly(
+    contextParts: string[],
+    originalTask: string
+  ): Promise<{ shouldStop: boolean; reason: string }> {
+    // Need at least 2 research results to consider stopping
+    if (contextParts.length < 2) {
+      return { shouldStop: false, reason: 'Need at least 2 research results' };
+    }
+
+    const llm = useLLM({ tier: 'small' });
+    if (!llm) {
+      return { shouldStop: false, reason: 'LLM not available' };
+    }
+
+    const currentFindings = contextParts.join('\n\n');
+
+    const prompt = `You are evaluating if research findings are sufficient to answer a question.
+
+**Question:** ${originalTask}
+
+**Research Findings So Far:**
+${currentFindings}
+
+Based on these findings, can you confidently answer the question?
+
+Assess confidence level:
+- 0.0-0.5: Insufficient, need more research
+- 0.6-0.7: Partial answer possible, but more research would help
+- 0.8-1.0: Confident answer possible, stop research
+
+Respond ONLY with valid JSON:
+{
+  "confidence": 0.0-1.0,
+  "canAnswer": true/false,
+  "reasoning": "1-2 sentence explanation"
+}`;
+
+    try {
+      const response = await llm.complete(prompt, { temperature: 0 });
+      const content = response.content || '';
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]!);
+        const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
+        const shouldStop = confidence >= 0.8 && parsed.canAnswer === true;
+
+        return {
+          shouldStop,
+          reason: shouldStop
+            ? `High confidence (${(confidence * 100).toFixed(0)}%) - sufficient to answer`
+            : `Confidence ${(confidence * 100).toFixed(0)}% - continuing research`,
+        };
+      }
+    } catch (error) {
+      this.log(`⚠️  Early stop check error: ${error}`);
+    }
+
+    return { shouldStop: false, reason: 'Early stop check failed, continuing research' };
   }
 
   /**
@@ -821,7 +972,7 @@ Provide a brief, natural summary of what was discussed. Be specific about topics
         iterations: 1,
         tokensUsed: (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0),
       };
-    } catch (error) {
+    } catch {
       // Fallback: return raw history
       const answer = `Вот история нашей беседы:\n\n${conversationHistory}`;
 
@@ -858,44 +1009,40 @@ Provide a brief, natural summary of what was discussed. Be specific about topics
       };
     }
 
-    const prompt = `You are a task complexity classifier for an agent system.
+    const prompt = `Classify this task into one category: simple, research, or complex.
 
-Classify this task as "simple", "research", or "complex":
+**Task to classify:** "${task}"
 
-**Task:** ${task}
+**Answer these questions in order:**
 
-**Classification Criteria:**
+Q1: Does the task contain words like "how", "explain", "architecture", "system", or ask about a "workflow"?
+- If YES → This is a RESEARCH task (requires understanding multiple components)
+- If NO → continue to Q2
 
-SIMPLE tasks (one clear action):
-- Creating or editing ONE file: "Create X.ts", "Add function Y to file Z"
-- Direct lookup: "What is X?", "Where is file Y?"
-- Running ONE command
-- Basic factual questions
-- ANY task that involves a SINGLE file operation
+Q2: Does the task ask about ONE specific thing (e.g., "What is X?", "Where is Y defined?")?
+- If YES → This is SIMPLE
+- If NO → This is RESEARCH
 
-RESEARCH tasks (gathering + synthesizing information):
-- Questions requiring MULTIPLE sources: "Explain the architecture", "How does X work?"
-- Comparisons: "Compare A vs B"
-- Analysis across multiple files
-- Questions where answer needs synthesis from many findings
-- Understanding patterns across the codebase
+Q3: Does the task list 4+ distinct phases (e.g., "Do A, then B, then C, then D")?
+- If YES → This is COMPLEX
+- If NO → Use result from Q1/Q2
 
-COMPLEX tasks (ONLY when multiple coordinated steps required):
-- Implementing features that span 3+ files
-- Refactoring that requires coordinated changes
-- Multi-phase workflows: analyze → implement → test → verify
-- Tasks explicitly mentioning "refactor", "migrate", "upgrade across"
+**CRITICAL EXAMPLES TO FOLLOW:**
+✅ "Explain how the plugin system works" → Q1: YES (contains "explain", "system") → RESEARCH
+✅ "How does authentication work?" → Q1: YES (contains "how") → RESEARCH
+✅ "What is the VectorStore interface?" → Q1: NO, Q2: YES (asks about ONE thing) → SIMPLE
+✅ "Where is loop detection implemented?" → Q1: NO, Q2: YES → SIMPLE
 
-**CRITICAL: Prefer SIMPLE over COMPLEX!**
-- If a task can be done in ONE file → SIMPLE
-- "Create X" with just ONE file → SIMPLE (not COMPLEX!)
-- Only use COMPLEX when task EXPLICITLY requires multiple coordinated steps
-- When in doubt → SIMPLE
+**YOUR TASK:**
+"${task}"
 
-Respond ONLY with valid JSON:
+Answer Q1 first. If Q1 = YES, stop and return RESEARCH.
+If Q1 = NO, answer Q2.
+
+Respond ONLY with JSON:
 {
   "complexity": "simple" | "research" | "complex",
-  "reasoning": "1-2 sentence explanation"
+  "reasoning": "Q1: [YES/NO] because... Q2: [YES/NO] because..."
 }`;
 
     try {
@@ -904,6 +1051,7 @@ Respond ONLY with valid JSON:
       });
 
       const content = response.content || '';
+
       const jsonMatch = content.match(/\{[\s\S]*\}/);
 
       if (jsonMatch) {
@@ -928,11 +1076,78 @@ Respond ONLY with valid JSON:
 
   /**
    * Create execution plan for complex task
+   * Phase 0: Uses smart decomposition decision to determine if task should be decomposed
    */
   private async createExecutionPlan(
     task: string,
     reasoning: string
   ): Promise<ExecutionPlan> {
+    // Phase 0: Analyze if decomposition is beneficial
+    const decision = await this.analyzeDecompositionDecision(task);
+
+    // If single agent is better → return single-subtask plan
+    if (!decision.shouldDecompose) {
+      this.log(`📊 Using single agent (no decomposition)`);
+      this.log(`   Task type: ${decision.taskType}`);
+      this.log(`   Reason: ${decision.reason}`);
+      if (decision.estimatedIterations) {
+        this.log(`   Estimated iterations: ${decision.estimatedIterations}`);
+      }
+
+      return {
+        originalTask: task,
+        subtasks: [
+          {
+            id: 'subtask-1',
+            description: task,
+            status: 'pending',
+          },
+        ],
+        createdAt: new Date().toISOString(),
+        executionMode: 'single-agent',
+        decompositionReason: decision.reason,
+        taskType: decision.taskType,
+        estimatedIterations: decision.estimatedIterations,
+      };
+    }
+
+    // Phase 0: If decompose → use LLM-provided subtasks (2-4 tasks)
+    this.log(`📊 Decomposing task (${decision.taskType})`);
+    this.log(`   Reason: ${decision.reason}`);
+    this.log(`   Subtasks: ${decision.subtasks?.length || 0}`);
+    if (decision.estimatedIterations) {
+      this.log(`   Estimated iterations: ${decision.estimatedIterations}`);
+    }
+
+    if (decision.subtasks && decision.subtasks.length > 0) {
+      const subtasks: Subtask[] = decision.subtasks.map((st, index) => ({
+        id: `subtask-${index + 1}`,
+        description: st.description,
+        status: 'pending' as const,
+      }));
+
+      // Determine execution mode based on task type
+      let executionMode: ExecutionMode;
+      if (decision.taskType === 'research' || decision.taskType === 'implementation-cross-domain') {
+        executionMode = 'parallel'; // Can run in parallel
+      } else {
+        executionMode = 'sequential'; // Sequential dependencies
+      }
+
+      return {
+        originalTask: task,
+        subtasks,
+        createdAt: new Date().toISOString(),
+        executionMode,
+        decompositionReason: decision.reason,
+        taskType: decision.taskType,
+        estimatedIterations: decision.estimatedIterations,
+      };
+    }
+
+    // Fallback (shouldn't happen if LLM worked correctly): use original LLM-based planning
+    this.log('⚠️  Decomposition decision had no subtasks - falling back to original planning logic');
+
     const llm = useLLM({ tier: this.config.planningTier || 'large' });
 
     const prompt = `You are a task planning agent. Break down this complex task into sequential subtasks.
@@ -945,6 +1160,8 @@ Create a step-by-step execution plan. Each subtask should be:
 - Specific and actionable
 - Executable independently
 - Ordered sequentially (dependencies first)
+
+IMPORTANT: Prefer 2-4 subtasks, avoid 10+ micro-tasks (overhead dominates).
 
 Respond ONLY with valid JSON:
 {
@@ -981,13 +1198,15 @@ Respond ONLY with valid JSON:
           originalTask: task,
           subtasks,
           createdAt: new Date().toISOString(),
+          executionMode: 'sequential',
+          decompositionReason: reasoning,
         };
       }
     } catch (error) {
       this.log(`⚠️  Planning error: ${error}, creating fallback plan`);
     }
 
-    // Fallback: single subtask with original task
+    // Final fallback: single subtask with original task
     return {
       originalTask: task,
       subtasks: [
@@ -998,18 +1217,64 @@ Respond ONLY with valid JSON:
         },
       ],
       createdAt: new Date().toISOString(),
+      executionMode: 'single-agent',
+      decompositionReason: 'Planning failed - using single agent',
     };
   }
 
   /**
    * Execute simple task with single agent
+   *
+   * Phase 2, Step 2.2: Quick Lookup Path
+   * Try answering with max 3 iterations first.
+   * If inconclusive, escalate to RESEARCH.
    */
   private async executeSimple(task: string): Promise<TaskResult> {
-    // Use createAgentConfig to ensure tracer and memory are passed
-    const agentConfig = this.createAgentConfig();
+    // Quick lookup attempt: max 5 iterations, medium tier
+    this.log(`   🔍 Quick lookup (max 5 iterations)...`);
 
-    const agent = new Agent(agentConfig, this.toolRegistry);
-    return agent.execute(task);
+    const QUICK_LOOKUP_MAX_ITERATIONS = 5;
+
+    const quickConfig = this.createAgentConfig();
+    quickConfig.maxIterations = QUICK_LOOKUP_MAX_ITERATIONS;
+
+    const quickAgent = new Agent(quickConfig, this.toolRegistry);
+    const quickResult = await quickAgent.execute(task);
+
+    // Check if answer is conclusive
+    const isConclusive = this.isAnswerConclusive(quickResult, QUICK_LOOKUP_MAX_ITERATIONS);
+
+    if (isConclusive) {
+      this.log(`   ✅ Quick lookup succeeded (${quickResult.iterations} iterations)\n`);
+      return quickResult;
+    }
+
+    // Not conclusive → escalate to RESEARCH
+    this.log(`   ⚠️  Quick lookup inconclusive → escalating to RESEARCH\n`);
+    return this.executeResearch(task);
+  }
+
+  /**
+   * Check if agent result is conclusive
+   *
+   * Heuristics:
+   * - Did agent stop naturally (not hit maxIterations)?
+   * - Does summary contain substantive content (>100 chars)?
+   * - Success = true
+   */
+  private isAnswerConclusive(result: TaskResult, maxIterations: number): boolean {
+    // If agent hit maxIterations, likely inconclusive
+    if (result.iterations >= maxIterations) {
+      return false;
+    }
+
+    // If summary is too short, likely no answer
+    if (!result.summary || result.summary.length < 100) {
+      return false;
+    }
+
+    // Success flag indicates agent completed confidently
+    return result.success;
   }
 
   /**
@@ -1092,6 +1357,7 @@ ${researchContext}
       const synthesisTokens = (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0);
 
       // Step 4: Verify synthesis (if verification enabled)
+      // eslint-disable-next-line @typescript-eslint/consistent-type-imports
       let verificationResult: import('@kb-labs/agent-contracts').VerificationResult | undefined;
       let finalAnswer = answer;
       let totalIterations = researchPlan.subtasks.length + 1;
@@ -1238,6 +1504,10 @@ ${researchContext}
     const aggregator = this.createResultAggregator();
     const totalSubtasks = plan.subtasks.length;
 
+    // Phase 3: Track consecutive failures for plan observation
+    let consecutiveFailures = 0;
+    const completedSubtasks: Subtask[] = [];
+
     for (let index = 0; index < plan.subtasks.length; index++) {
       const subtask = plan.subtasks[index]!;
       this.logSubtaskHeader(subtask);
@@ -1258,7 +1528,7 @@ ${researchContext}
       });
 
       // eslint-disable-next-line no-await-in-loop -- Sequential subtask execution required: orchestrator must execute subtasks in order
-      const shouldContinue = await this.executeSubtask(subtask, aggregator);
+      const shouldContinue = await this.executeSubtask(subtask, aggregator, '', plan);
 
       // Emit subtask:end event with startedAt for correlation
       this.emit({
@@ -1272,12 +1542,114 @@ ${researchContext}
         },
       } as AgentEvent);
 
+      // Phase 3: Track failures and observe progress
+      if (subtask.result?.success) {
+        consecutiveFailures = 0; // Reset on success
+        completedSubtasks.push(subtask);
+      } else {
+        consecutiveFailures++;
+        // eslint-disable-next-line no-await-in-loop -- Sequential observation required
+        await this.observeAgentProgress(plan, completedSubtasks, subtask, consecutiveFailures);
+      }
+
       if (!shouldContinue) {
         break;
+      }
+
+      // Phase 2, Step 2.5: Adaptive Plan - Re-evaluate remaining subtasks
+      const remainingSubtasks = plan.subtasks.slice(index + 1);
+      if (remainingSubtasks.length > 0) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential evaluation required
+        const planAdjustment = await this.shouldAdjustPlan(plan, aggregator.results, remainingSubtasks);
+
+        if (planAdjustment.shouldSkip) {
+          this.log(`\n🔄 Plan adjustment: ${planAdjustment.reason}\n`);
+
+          // Mark remaining subtasks as skipped
+          for (const remaining of remainingSubtasks) {
+            remaining.status = 'skipped';
+          }
+
+          break;
+        }
       }
     }
 
     return this.buildFinalResult(plan, aggregator);
+  }
+
+  /**
+   * Phase 2, Step 2.5: Adaptive Plan Adjustment
+   *
+   * After each subtask, check if remaining subtasks are still needed.
+   * Uses small model (fast, cheap) to assess if plan should be adjusted.
+   *
+   * Returns:
+   * - shouldSkip: true if remaining subtasks can be skipped
+   * - reason: explanation of decision
+   */
+  private async shouldAdjustPlan(
+    plan: ExecutionPlan,
+    completedResults: TaskResult[],
+    remainingSubtasks: Subtask[]
+  ): Promise<{ shouldSkip: boolean; reason: string }> {
+    const llm = useLLM({ tier: 'small' });
+    if (!llm) {
+      return { shouldSkip: false, reason: 'LLM not available' };
+    }
+
+    const completedSummary = completedResults
+      .map((r, i) => `${i + 1}. ${r.summary}`)
+      .join('\n');
+
+    const remainingDescriptions = remainingSubtasks
+      .map((s, i) => `${i + 1}. ${s.description}`)
+      .join('\n');
+
+    const prompt = `You are evaluating if a task execution plan needs adjustment.
+
+**Original Task:** ${plan.originalTask}
+
+**Completed Subtasks:**
+${completedSummary}
+
+**Remaining Subtasks:**
+${remainingDescriptions}
+
+Based on what's been completed, are the remaining subtasks still necessary?
+
+Consider:
+- Did completed subtasks already achieve the original goal?
+- Have requirements changed based on what was discovered?
+- Would remaining subtasks duplicate work already done?
+
+Respond ONLY with valid JSON:
+{
+  "remainingNeeded": true/false,
+  "reasoning": "1-2 sentence explanation"
+}`;
+
+    try {
+      const response = await llm.complete(prompt, { temperature: 0 });
+      const content = response.content || '';
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]!);
+        const shouldSkip = parsed.remainingNeeded === false;
+
+        return {
+          shouldSkip,
+          reason: shouldSkip
+            ? `Skipping ${remainingSubtasks.length} remaining subtasks - ${parsed.reasoning}`
+            : `Continuing with remaining subtasks - ${parsed.reasoning}`,
+        };
+      }
+    } catch (error) {
+      this.log(`⚠️  Plan adjustment check error: ${error}`);
+    }
+
+    return { shouldSkip: false, reason: 'Plan adjustment check failed, continuing' };
   }
 
   /**
@@ -1315,13 +1687,20 @@ ${researchContext}
    */
   private async executeSubtask(
     subtask: Subtask,
-    aggregator: ReturnType<typeof this.createResultAggregator>
+    aggregator: ReturnType<typeof this.createResultAggregator>,
+    accumulatedContext = '',
+    plan?: ExecutionPlan
   ): Promise<boolean> {
-    const agentConfig = this.createAgentConfig();
+    const agentConfig = this.createAgentConfig(plan);
     const agent = new Agent(agentConfig, this.toolRegistry);
 
     try {
-      const result = await agent.execute(subtask.description);
+      // Phase 2, Step 2.4: Prepend accumulated context to subtask description
+      const taskWithContext = accumulatedContext
+        ? `${accumulatedContext}${subtask.description}`
+        : subtask.description;
+
+      const result = await agent.execute(taskWithContext);
 
       subtask.status = result.success ? 'completed' : 'failed';
       subtask.result = result;
@@ -1345,11 +1724,12 @@ ${researchContext}
   /**
    * Create agent configuration
    *
-   * Note: Child agents use 'small' tier by default for efficiency.
+   * Note: Child agents use 'medium' tier for quality reasoning (Phase 1).
+   * Medium model is better at deciding "when to stop" and interpreting results.
    * Orchestrator uses 'large' tier for planning/classification.
    * Child agents can escalate if enableEscalation is true.
    */
-  private createAgentConfig(): AgentConfig {
+  private createAgentConfig(plan?: ExecutionPlan): AgentConfig {
     // Apply scope if extracted (narrows child agent's working directory)
     let workingDir = this.config.workingDir;
     if (this.taskScope) {
@@ -1361,15 +1741,33 @@ ${researchContext}
       }
     }
 
+    // Adaptive max iterations based on LLM estimation (Phase 0)
+    // If LLM estimated iterations, use that (can be 80-100 for large microservices)
+    // Otherwise fall back to static limits (8 for normal, 12 for research)
+    let childMaxIterations: number;
+    if (plan?.estimatedIterations) {
+      // Use LLM estimate directly (already accounts for task complexity)
+      childMaxIterations = plan.estimatedIterations;
+      this.log(`🔢 Using LLM-estimated max iterations: ${childMaxIterations}`);
+    } else {
+      // Fallback to static limits
+      const defaultChildLimit = 8;
+      const researchChildLimit = 12;
+      childMaxIterations = Math.min(
+        this.config.maxIterations,
+        this.currentComplexity === 'research' ? researchChildLimit : defaultChildLimit
+      );
+    }
+
     return {
       workingDir,
-      maxIterations: this.config.maxIterations,
+      maxIterations: childMaxIterations,
       temperature: this.config.temperature,
       verbose: this.config.verbose,
       sessionId: this.config.sessionId,
-      // Child agents use 'small' tier for efficiency
-      // They can escalate to higher tiers if enableEscalation is true
-      tier: this.config.childAgentTier || 'small',
+      // Child agents use 'medium' tier for quality reasoning (Phase 1, Step 1.1)
+      // Medium model has better reasoning about stopping conditions
+      tier: this.config.childAgentTier || 'medium',
       enableEscalation: this.config.enableEscalation,
       // DON'T pass mode to child agents - they should always execute in standard mode
       tracer: this.config.tracer, // Pass tracer to child agents
@@ -1377,6 +1775,8 @@ ${researchContext}
       onEvent: this.config.onEvent, // Pass event callback to child agents
       // Hierarchical event correlation: child agents know their parent
       parentAgentId: this.agentId,
+      // Phase 1: Agent → Orchestrator communication callback
+      onAskOrchestrator: this.handleAgentQuestion.bind(this),
     };
   }
 
@@ -1409,6 +1809,220 @@ ${researchContext}
 
     this.log(`\n⚠️  Continuing despite failure...\n`);
     return true;
+  }
+
+  /**
+   * Phase 1: Handle agent question (ask_orchestrator callback)
+   *
+   * When child agent calls ask_orchestrator, this method analyzes the question
+   * in context of the current execution plan and provides guidance.
+   *
+   * Uses LLM to analyze:
+   * - Why is the agent stuck?
+   * - What has it tried?
+   * - Is the current subtask even achievable?
+   * - Should we skip this subtask?
+   * - What hint would help?
+   */
+  private async handleAgentQuestion(request: {
+    question: string;
+    reason: 'stuck' | 'uncertain' | 'blocker' | 'clarification';
+    context?: Record<string, unknown>;
+    iteration: number;
+    subtask?: string;
+  }): Promise<{
+    answer: string;
+    action?: 'continue' | 'skip' | 'retry_with_hint';
+    hint?: string;
+  }> {
+    this.log(`\n📣 Agent asks orchestrator (${request.reason}): ${request.question}`);
+
+    const llm = useLLM({ tier: 'large' }); // Use large tier for quality guidance
+    if (!llm) {
+      // Fallback: no LLM available
+      return {
+        answer: 'Continue with your current approach. The orchestrator cannot provide guidance at this time.',
+        action: 'continue',
+      };
+    }
+
+    // Build context for LLM
+    const contextInfo = request.context
+      ? `\n\nAgent context:\n${JSON.stringify(request.context, null, 2)}`
+      : '';
+
+    const prompt = `You are an orchestrator helping a stuck child agent.
+
+**Original task:** ${this.originalTask}
+
+**Current subtask:** ${request.subtask || 'Unknown'}
+
+**Agent's question:** ${request.question}
+
+**Reason:** ${request.reason}
+- stuck: Agent is repeating same tools in a loop
+- uncertain: Agent is unclear about the approach
+- blocker: Agent encountered a blocker (missing file, error, etc.)
+- clarification: Agent needs more info about the task
+${contextInfo}
+
+**Your role:**
+1. Analyze why the agent is stuck
+2. Provide helpful guidance or hint
+3. Decide if the subtask should be skipped (if unachievable)
+
+**Possible actions:**
+- continue: Agent should keep trying with your hint
+- skip: This subtask is blocked/impossible, move to next
+- retry_with_hint: Try again from scratch with new approach
+
+Respond ONLY with valid JSON:
+{
+  "answer": "Your guidance for the agent (2-3 sentences)",
+  "action": "continue | skip | retry_with_hint",
+  "hint": "Optional specific hint (e.g., 'Check packages/ subdirectory')"
+}`;
+
+    try {
+      const response = await llm.complete(prompt, { temperature: 0.1 });
+      const content = response.content || '';
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]!);
+        const result = {
+          answer: parsed.answer || 'Continue with your current approach.',
+          action: (parsed.action as 'continue' | 'skip' | 'retry_with_hint' | undefined) || 'continue',
+          hint: parsed.hint,
+        };
+
+        this.log(`📊 Orchestrator decision: ${result.action}`);
+        this.log(`   Answer: ${result.answer}`);
+        if (result.hint) {
+          this.log(`   Hint: ${result.hint}`);
+        }
+
+        return result;
+      }
+    } catch (error) {
+      this.log(`⚠️  Orchestrator guidance error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // Fallback
+    return {
+      answer: 'Continue with your current approach. Try exploring related files or directories.',
+      action: 'continue',
+    };
+  }
+
+  /**
+   * Phase 3: Observe agent progress and decide if plan needs updating
+   */
+  private async observeAgentProgress(
+    plan: ExecutionPlan,
+    completedSubtasks: Subtask[],
+    currentSubtask: Subtask,
+    failureCount: number
+  ): Promise<void> {
+    // Don't update plan if no callback registered
+    if (!this.config.onPlanUpdated) {
+      return;
+    }
+
+    // Don't update plan if single-agent mode (no decomposition)
+    if (plan.executionMode === 'single-agent') {
+      return;
+    }
+
+    // Pattern 1: Multiple failures in a row → consider reordering or skipping
+    if (failureCount >= 2) {
+      this.log(`\n📊 Orchestrator observation: ${failureCount} failures detected`);
+
+      const llm = useLLM({ tier: 'large' });
+      if (!llm) {
+        return; // Can't analyze without LLM
+      }
+
+      const prompt = `You are an orchestrator observing a multi-agent execution plan.
+
+**Original task:** ${plan.originalTask}
+
+**Completed subtasks (${completedSubtasks.length}):**
+${completedSubtasks.map((st) => `- [${st.status}] ${st.description}`).join('\n')}
+
+**Current subtask (FAILING):**
+- ${currentSubtask.description}
+- Status: ${currentSubtask.status}
+- Failure count: ${failureCount}
+
+**Remaining subtasks (${plan.subtasks.length - completedSubtasks.length - 1}):**
+${plan.subtasks
+  .filter((st) => st.status === 'pending')
+  .map((st) => `- ${st.description}`)
+  .join('\n')}
+
+**Question:** Should we modify the execution plan?
+
+**Options:**
+1. skip - Current subtask is blocked, skip it and continue
+2. reorder - Move current subtask to end (maybe dependencies missing)
+3. continue - Keep trying (might succeed next time)
+
+Respond ONLY with valid JSON:
+{
+  "action": "skip | reorder | continue",
+  "reason": "Brief explanation (1 sentence)"
+}`;
+
+      try {
+        const response = await llm.complete(prompt, { temperature: 0.1 });
+        const content = response.content || '';
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]!);
+          const action = parsed.action as 'skip' | 'reorder' | 'continue';
+          const reason = parsed.reason || 'No reason provided';
+
+          if (action === 'skip') {
+            this.log(`📊 Plan update: Skipping subtask "${currentSubtask.id}"`);
+            this.log(`   Reason: ${reason}`);
+
+            // Emit plan update event
+            await this.config.onPlanUpdated({
+              action: 'remove',
+              reason,
+              subtaskId: currentSubtask.id,
+              timestamp: new Date().toISOString(),
+            });
+          } else if (action === 'reorder') {
+            this.log(`📊 Plan update: Moving subtask "${currentSubtask.id}" to end`);
+            this.log(`   Reason: ${reason}`);
+
+            // Calculate new order: current subtask moved to end
+            const newOrder = [
+              ...plan.subtasks.filter((st) => st.id !== currentSubtask.id).map((st) => st.id),
+              currentSubtask.id,
+            ];
+
+            // Emit plan update event
+            await this.config.onPlanUpdated({
+              action: 'reorder',
+              reason,
+              newOrder,
+              timestamp: new Date().toISOString(),
+            });
+          } else {
+            this.log(`📊 Plan update: Continue with current plan`);
+            this.log(`   Reason: ${reason}`);
+          }
+        }
+      } catch (error) {
+        this.log(
+          `⚠️  Plan observation error: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
   }
 
   /**
@@ -1451,6 +2065,287 @@ ${researchContext}
   }
 
   /**
+   * Extract global context from original user task using LLM tool calling
+   * Orchestrator does this ONCE at startup, then passes structured context to all agents
+   *
+   * Uses LLM native tool calling to extract:
+   * - Target directory where files should be created
+   * - Constraints (NEVER, MUST NOT, DO NOT, etc.)
+   * - Requirements from the task
+   */
+  private async extractGlobalContext(task: string): Promise<{
+    targetDirectory?: string;
+    constraints: string[];
+    requirements: string[];
+  }> {
+    // Use 'small' tier for fast, cost-effective context extraction
+    const llm = useLLM({ tier: 'small' });
+    if (!llm || !llm.chatWithTools) {
+      // Fallback: return empty context if LLM not available
+      this.log('⚠️  LLM tool calling not available, skipping context extraction');
+      return { constraints: [], requirements: [] };
+    }
+
+    // Define tool for structured extraction
+    const extractionTool: LLMTool = {
+      name: 'extract_context',
+      description: 'Extract structured context from user task: target directory, constraints, and requirements',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          targetDirectory: {
+            type: 'string',
+            description:
+              'Directory where files should be created (e.g., "kb-labs-demo/"). Extract from phrases like "create in X/", "создать в X/". Include trailing slash. Omit if not mentioned.',
+          },
+          constraints: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Array of constraints/restrictions (NEVER, MUST NOT, DO NOT, НЕ НУЖНО, НЕЛЬЗЯ, etc.). Each item should be a complete sentence.',
+          },
+          requirements: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Array of functional requirements from numbered lists or bullet points. What needs to be done. Do NOT include constraints here.',
+          },
+        },
+        required: ['constraints', 'requirements'],
+      },
+    };
+
+    try {
+      const messages: LLMMessage[] = [
+        {
+          role: 'system',
+          content:
+            'You are a context extraction assistant. Analyze user tasks and extract structured information using the provided tool.',
+        },
+        {
+          role: 'user',
+          content: `Analyze this task and extract context:\n\n${task}`,
+        },
+      ];
+
+      const response = await llm.chatWithTools(messages, {
+        tools: [extractionTool],
+        temperature: 0.1, // Low temperature for consistent extraction
+        maxTokens: 500,
+      });
+
+      // Check if tool was called
+      if (response.toolCalls && response.toolCalls.length > 0) {
+        const toolCall = response.toolCalls[0];
+        if (toolCall) {
+          const extracted = toolCall.input as {
+            targetDirectory?: string | null;
+            constraints: string[];
+            requirements: string[];
+          };
+
+          return {
+            targetDirectory: extracted.targetDirectory || undefined,
+            constraints: extracted.constraints || [],
+            requirements: extracted.requirements || [],
+          };
+        }
+      }
+
+      this.log('⚠️  LLM did not call extraction tool');
+      return { constraints: [], requirements: [] };
+    } catch (error) {
+      this.log(`⚠️  Failed to extract global context: ${error instanceof Error ? error.message : String(error)}`);
+      // Fallback: return empty context
+      return { constraints: [], requirements: [] };
+    }
+  }
+
+  /**
+   * Phase 0: Smart Decomposition - Analyze task and decide if decomposition is beneficial
+   *
+   * Uses LLM to classify task type and determine optimal execution strategy:
+   * - research → decompose (parallel exploration)
+   * - implementation-single-domain → single agent (high coupling)
+   * - implementation-cross-domain → decompose by domain
+   * - simple → single agent (overhead dominates)
+   */
+  private async analyzeDecompositionDecision(task: string): Promise<DecompositionDecision> {
+    const llm = useLLM({ tier: 'large' }); // Use large tier for quality analysis
+    if (!llm || !llm.chatWithTools) {
+      // Fallback: default to single agent if LLM unavailable
+      this.log('⚠️  LLM tool calling not available, defaulting to single agent');
+      return {
+        taskType: 'simple',
+        shouldDecompose: false,
+        reason: 'LLM not available - defaulting to single agent execution',
+      };
+    }
+
+    // Define decomposition decision tool
+    const decompositionTool: LLMTool = {
+      name: 'decide_decomposition',
+      description: 'Analyze task and decide if decomposition into subtasks is beneficial',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          taskType: {
+            type: 'string',
+            enum: ['research', 'implementation-single-domain', 'implementation-cross-domain', 'simple'],
+            description: `Task type classification:
+- research: Investigation/exploration task (agents can explore different aspects in parallel)
+- implementation-single-domain: Implementation in single codebase/service/feature (e.g., "Build microservice", "Add feature X"). High coupling: DB schema → routes → tests → docs. One agent with full context >> multiple agents with fragmented handoffs. Prefer single agent.
+- implementation-cross-domain: Implementation across independent codebases/domains (e.g., "Add X to backend, frontend, and CLI"). Backend/frontend/CLI are separate monorepos - can parallelize.
+- simple: Trivial task < 10 min (overhead dominates, single agent)`,
+          },
+          shouldDecompose: {
+            type: 'boolean',
+            description: 'True if decomposition provides clear benefit, false if single agent is better',
+          },
+          reason: {
+            type: 'string',
+            description: 'Clear explanation of decision - why decompose or why not',
+          },
+          estimatedIterations: {
+            type: 'number',
+            description: 'Estimated LLM iterations needed (10-15 for simple research, 30-50 for medium implementation, 60-100 for large microservice, 100+ for huge projects)',
+          },
+          subtasks: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                description: { type: 'string', description: 'What this subtask does' },
+                domain: {
+                  type: 'string',
+                  description: 'Domain/area: backend, frontend, cli, db, docs, etc.',
+                },
+                estimatedMinutes: { type: 'number', description: 'Estimated time in minutes' },
+              },
+              required: ['description'],
+            },
+            description: 'If decomposing: 2-4 subtasks max (NOT 10+!). Only if shouldDecompose = true.',
+          },
+        },
+        required: ['taskType', 'shouldDecompose', 'reason'],
+      },
+    };
+
+    try {
+      const messages: LLMMessage[] = [
+        {
+          role: 'system',
+          content: `You are a task decomposition expert. Analyze if breaking this task into subtasks provides value.
+
+IMPORTANT PRINCIPLES:
+1. **Default: Single agent** - Only decompose if there's CLEAR benefit
+2. **Research tasks → Parallelize** - Multiple agents can explore independently (e.g., "Investigate X architecture")
+3. **Implementation (single domain) → Single agent** - High coupling, sequential steps (e.g., "Add endpoint /users", "Build microservice")
+4. **Implementation (cross-domain) → Parallelize by domain** - Backend/frontend/CLI are independent
+5. **Simple tasks → Single agent** - Overhead dominates (e.g., "Add field to schema")
+
+DECOMPOSITION OVERHEAD:
+- Each subtask adds ~7 seconds coordination overhead
+- Only worth it if parallelization saves > overhead
+- Prefer 2-4 subtasks, AVOID 10+ micro-tasks
+
+KEY INSIGHT: One agent with good memory > Multiple agents with fragmented context
+- Single agent builds mental model as it works (reads requirements → implements → tests)
+- Multiple agents lose context between handoffs (subtask 1 findings don't inform subtask 2 decisions)
+- Implementation tasks are inherently sequential: design → code → test → refine
+
+EXAMPLES:
+
+✅ DECOMPOSE (research):
+"Investigate Mind RAG architecture"
+→ taskType: research
+→ shouldDecompose: true
+→ estimatedIterations: 12
+→ subtasks: [mind-engine analysis, mind-orchestrator analysis, ADRs review]
+→ reason: Research task - agents can explore different packages in parallel
+
+❌ SINGLE AGENT (single-domain implementation):
+"Add REST endpoint GET /users/:id"
+→ taskType: implementation-single-domain
+→ shouldDecompose: false
+→ estimatedIterations: 20
+→ reason: Implementation in one domain (REST API). High coupling: route → handler → validation → tests. Single agent more efficient.
+
+❌ SINGLE AGENT (microservice/feature implementation):
+"Build URL shortener microservice with Express, SQLite, rate limiting, and tests"
+→ taskType: implementation-single-domain
+→ shouldDecompose: false
+→ estimatedIterations: 80
+→ reason: Single cohesive service in one codebase. Agent needs full context (DB schema informs routes, routes inform tests, etc.). Breaking into "read requirements", "implement", "write tests" loses context and creates handoff overhead. One agent with quality memory >> 3 agents with fragmented context.
+
+✅ DECOMPOSE (cross-domain implementation):
+"Add tenant isolation to workflow, REST API, and studio"
+→ taskType: implementation-cross-domain
+→ shouldDecompose: true
+→ estimatedIterations: 50
+→ subtasks: [workflow-runtime changes, REST API middleware, studio UI selector]
+→ reason: Cross-domain implementation - 3 independent monorepos, can parallelize
+
+❌ SINGLE AGENT (simple):
+"Add 'createdAt' field to WorkflowRun schema"
+→ taskType: simple
+→ shouldDecompose: false
+→ estimatedIterations: 8
+→ reason: Simple task (~5 min). Overhead would exceed task time.`,
+        },
+        {
+          role: 'user',
+          content: `Analyze this task and decide if decomposition is beneficial:\n\n${task}`,
+        },
+      ];
+
+      const response = await llm.chatWithTools(messages, {
+        tools: [decompositionTool],
+        temperature: 0.1, // Low temperature for consistent decisions
+        maxTokens: 800,
+      });
+
+      // Check if tool was called
+      if (response.toolCalls && response.toolCalls.length > 0) {
+        const toolCall = response.toolCalls[0];
+        if (toolCall) {
+          const decision = toolCall.input as DecompositionDecision;
+
+          // Validate decision
+          if (decision.shouldDecompose && (!decision.subtasks || decision.subtasks.length === 0)) {
+            this.log('⚠️  LLM said decompose but provided no subtasks - defaulting to single agent');
+            return {
+              taskType: decision.taskType,
+              shouldDecompose: false,
+              reason: 'LLM provided no subtasks - using single agent instead',
+            };
+          }
+
+          this.log(`📊 Decomposition decision: ${decision.taskType} → ${decision.shouldDecompose ? 'DECOMPOSE' : 'SINGLE AGENT'}`);
+          this.log(`   Reason: ${decision.reason}`);
+
+          return decision;
+        }
+      }
+
+      this.log('⚠️  LLM did not call decomposition tool - defaulting to single agent');
+      return {
+        taskType: 'simple',
+        shouldDecompose: false,
+        reason: 'LLM did not return decomposition decision - using single agent',
+      };
+    } catch (error) {
+      this.log(`⚠️  Decomposition analysis failed: ${error instanceof Error ? error.message : String(error)}`);
+      // Fallback: single agent
+      return {
+        taskType: 'simple',
+        shouldDecompose: false,
+        reason: `Analysis failed - defaulting to single agent: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /**
    * Verify synthesized answer using cross-tier verification
    *
    * Uses a larger model tier to verify the synthesis generated by smaller models.
@@ -1460,6 +2355,7 @@ ${researchContext}
     task: string,
     answer: string,
     researchContext: string
+    // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   ): Promise<import('@kb-labs/agent-contracts').VerificationResult | undefined> {
     try {
       const { requestVerification, toVerificationResult } = await import('./verification/index.js');

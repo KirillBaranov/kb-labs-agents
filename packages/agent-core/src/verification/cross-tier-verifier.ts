@@ -196,7 +196,7 @@ export function toVerificationResult(output: VerificationOutput): VerificationRe
       code = 'UNVERIFIED_FILE';
     } else if (mention.startsWith('@') || mention.includes('-')) {
       code = 'UNVERIFIED_PACKAGE';
-    } else if (mention[0] === mention[0].toUpperCase()) {
+    } else if (mention[0] && mention[0] === mention[0].toUpperCase()) {
       code = 'UNVERIFIED_CLASS';
     } else {
       code = 'UNVERIFIED_FUNCTION';
