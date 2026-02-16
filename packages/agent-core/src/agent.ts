@@ -83,6 +83,7 @@ export class Agent {
   private filesCreated: Set<string> = new Set();
   private filesModified: Set<string> = new Set();
   private filesRead: Set<string> = new Set();
+  private filesReadHash: Map<string, string> = new Map(); // path → content hash (for edit protection)
   private trace: TraceEntry[] = [];
   private totalTokens = 0;
   private tracer?: Tracer;
@@ -149,6 +150,15 @@ export class Agent {
 
     // Generate unique ID for this agent instance
     this.agentId = config.agentId || generateAgentId();
+
+    // Use shared file tracking from tool context if available (for edit protection)
+    const context = toolRegistry.getContext();
+    if (context.filesRead) {
+      this.filesRead = context.filesRead;
+    }
+    if (context.filesReadHash) {
+      this.filesReadHash = context.filesReadHash;
+    }
 
     // Initialize context optimization (Phase 4)
     this.contextFilter = new ContextFilter({
@@ -1014,6 +1024,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
     this.filesCreated.clear();
     this.filesModified.clear();
     this.filesRead.clear();
+    this.filesReadHash.clear();
     this.trace = [];
     this.totalTokens = 0;
     this.toolResultCache.clear(); // Clear cache on new execution (Phase 1, Step 1.4)
@@ -1295,6 +1306,18 @@ Your answer should be detailed, specific, and reference actual files and code yo
         },
       } as AgentEvent);
 
+      // Emit status change for tool execution
+      this.emit({
+        type: EVENT_TYPE_STATUS_CHANGE,
+        timestamp: new Date().toISOString(),
+        sessionId: this.config.sessionId,
+        data: {
+          status: 'executing',
+          message: `Executing ${toolCall.name}...`,
+          toolName: toolCall.name,
+        },
+      });
+
       try {
         // Phase 4: Handle context_retrieve tool (special case - not in registry)
         let result: ToolResult;
@@ -1326,7 +1349,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
 
         const toolDurationMs = Date.now() - toolStartTime;
 
-        this.trackFileOperation(toolCall.name, input);
+        this.trackFileOperation(toolCall.name, input, result);
         this.logToolResult(result);
         this.recordToolTrace(toolCall, result, iteration, toolDurationMs);
 
@@ -1832,7 +1855,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
   /**
    * Track file operations
    */
-  private trackFileOperation(toolName: string, input: Record<string, unknown>): void {
+  private trackFileOperation(toolName: string, input: Record<string, unknown>, result?: { metadata?: Record<string, unknown> }): void {
     const filePath = input.path as string | undefined;
 
     if (!filePath) {
@@ -1843,11 +1866,15 @@ Your answer should be detailed, specific, and reference actual files and code yo
       if (!this.filesModified.has(filePath)) {
         this.filesCreated.add(filePath);
       }
-    } else if (toolName === 'fs_edit') {
+    } else if (toolName === 'fs_patch' || toolName === 'fs_edit') {
       this.filesModified.add(filePath);
       this.filesCreated.delete(filePath);
     } else if (toolName === 'fs_read') {
       this.filesRead.add(filePath);
+      // Save content hash for edit protection
+      if (result?.metadata?.contentHash) {
+        this.filesReadHash.set(filePath, result.metadata.contentHash as string);
+      }
     }
   }
 

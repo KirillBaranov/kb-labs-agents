@@ -110,11 +110,17 @@ export default defineCommand({
       }
 
       try {
+        // Create shared file tracking (for edit protection)
+        const filesRead = new Set<string>();
+        const filesReadHash = new Map<string, string>();
+
         // Create tool registry
         const toolRegistry = createToolRegistry({
           workingDir,
           sessionId,
           verbose: false, // Disable tool registry verbose - we have event renderer
+          filesRead,
+          filesReadHash,
         });
 
         // Create tracer (incremental NDJSON tracer)

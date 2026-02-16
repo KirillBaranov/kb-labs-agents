@@ -62,9 +62,8 @@ export class ContextFilter {
       });
     }
 
-    // Get last N iterations (sliding window)
-    const windowStart = Math.max(0, this.fullHistory.length - this.config.slidingWindowSize);
-    const recentHistory = this.fullHistory.slice(windowStart);
+    // Get last N iterations (sliding window) with pair-aware boundary
+    const recentHistory = this.getRecentHistoryWithPairBoundary(this.config.slidingWindowSize);
 
     // Truncate large outputs
     const truncatedHistory = recentHistory.map((msg) => this.truncateMessage(msg));
@@ -72,6 +71,70 @@ export class ContextFilter {
     context.push(...truncatedHistory);
 
     return context;
+  }
+
+  /**
+   * Get recent history respecting message pair boundaries
+   * Ensures tool result messages are never orphaned from their assistant message
+   *
+   * This is critical for ALL LLM providers (OpenAI, Anthropic, etc.) because
+   * the API requires that tool messages must follow an assistant message with tool_calls.
+   */
+  private getRecentHistoryWithPairBoundary(windowSize: number): Message[] {
+    if (this.fullHistory.length === 0) {
+      return [];
+    }
+
+    // Calculate initial window start
+    let windowStart = Math.max(0, this.fullHistory.length - windowSize);
+
+    // Walk backward from windowStart to find a safe boundary
+    // A safe boundary is where we're NOT cutting between assistant+tool pairs
+    while (windowStart > 0) {
+      const prevMsg = this.fullHistory[windowStart - 1];
+      const currentMsg = this.fullHistory[windowStart];
+
+      // Check if we're cutting between assistant (with tool_calls) and tool result
+      const isPrevAssistantWithToolCalls =
+        prevMsg?.role === 'assistant' &&
+        prevMsg.toolCalls &&
+        prevMsg.toolCalls.length > 0;
+
+      const isCurrentToolResult = currentMsg?.role === 'tool';
+
+      // If cutting between assistant+tool pair, move window start back
+      if (isPrevAssistantWithToolCalls && isCurrentToolResult) {
+        windowStart--;
+        continue;
+      }
+
+      // Also check if we're in the middle of a tool result sequence
+      // (multiple tool results for one assistant message)
+      if (isCurrentToolResult) {
+        // Walk back to find the assistant message
+        let checkIdx = windowStart - 1;
+        while (checkIdx >= 0) {
+          const checkMsg = this.fullHistory[checkIdx];
+
+          if (checkMsg.role === 'assistant' && checkMsg.toolCalls && checkMsg.toolCalls.length > 0) {
+            // Found the assistant message - include it
+            windowStart = checkIdx;
+            break;
+          } else if (checkMsg.role === 'tool') {
+            // Keep walking back through tool results
+            checkIdx--;
+          } else {
+            // Hit a non-tool message before finding assistant - safe boundary
+            break;
+          }
+        }
+      }
+
+      // Found a safe boundary
+      break;
+    }
+
+    return this.fullHistory.slice(windowStart);
   }
 
   /**

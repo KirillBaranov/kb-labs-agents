@@ -459,6 +459,16 @@ Respond ONLY with valid JSON:
       return metaResult;
     }
 
+    // Emit status: analyzing task
+    this.emit({
+      type: 'status:change',
+      timestamp: new Date().toISOString(),
+      data: {
+        status: 'analyzing',
+        message: 'Analyzing task complexity...',
+      },
+    });
+
     // Step 1: Classify task complexity FIRST
     const classification = await this.classifyTask(task);
 
@@ -486,17 +496,47 @@ Respond ONLY with valid JSON:
     if (classification.complexity === 'simple') {
       // Execute directly with single agent
       this.log(`\n🚀 Executing as SIMPLE task (single agent)\n`);
+
+      this.emit({
+        type: 'status:change',
+        timestamp: new Date().toISOString(),
+        data: {
+          status: 'executing',
+          message: 'Executing task with single agent...',
+        },
+      });
+
       result = await this.executeSimple(task);
       completedCount = result.success ? 1 : 0;
     } else if (classification.complexity === 'research') {
       // Research: gather info with child agents, synthesize with orchestrator
       this.log(`\n🔬 Executing as RESEARCH task (gather → synthesize)\n`);
+
+      this.emit({
+        type: 'status:change',
+        timestamp: new Date().toISOString(),
+        data: {
+          status: 'researching',
+          message: 'Gathering information...',
+        },
+      });
+
       result = await this.executeResearch(task);
       subtaskCount = result.iterations;
       completedCount = result.success ? result.iterations : 0;
     } else {
       // Complex: create execution plan and run with child agents
       this.log(`\n⚙️ Executing as COMPLEX task (multi-step)\n`);
+
+      this.emit({
+        type: 'status:change',
+        timestamp: new Date().toISOString(),
+        data: {
+          status: 'planning',
+          message: 'Creating execution plan...',
+        },
+      });
+
       const plan = await this.createExecutionPlan(task, classification.reasoning);
 
       this.log(`\n🎯 Execution Plan (${plan.subtasks.length} subtasks):`);
@@ -522,12 +562,30 @@ Respond ONLY with valid JSON:
         },
       } as AgentEvent);
 
+      this.emit({
+        type: 'status:change',
+        timestamp: new Date().toISOString(),
+        data: {
+          status: 'executing',
+          message: `Executing ${plan.subtasks.length} subtasks...`,
+        },
+      });
+
       result = await this.executeComplex(plan);
       subtaskCount = plan.subtasks.length;
       completedCount = plan.subtasks.filter(st => st.status === 'completed').length;
     }
 
     // Step 3: Apply result processors
+    this.emit({
+      type: 'status:change',
+      timestamp: new Date().toISOString(),
+      data: {
+        status: 'finalizing',
+        message: 'Processing results...',
+      },
+    });
+
     const finalResult = await this.applyResultProcessors(result);
 
     // Save answer to memory (never summarized - always available in full for follow-up questions)
@@ -1440,12 +1498,29 @@ ${researchContext}
             // eslint-disable-next-line no-await-in-loop -- Sequential verification required
             const newVerification = await this.verifySynthesis(task, finalAnswer, researchContext + improvementContext);
             if (newVerification) {
+              // Check if quality actually improved
+              const confidenceImproved = newVerification.confidence > verificationResult.confidence;
+              const completenessImproved = newVerification.completeness > verificationResult.completeness;
+
+              if (!confidenceImproved && !completenessImproved && verificationAttempt > 0) {
+                this.log(`\n⚠️ No quality improvement detected. Stopping retries.\n`);
+                verificationResult = newVerification;
+                break; // Exit loop early
+              }
+
               verificationResult = newVerification;
             }
           }
 
           if (verificationAttempt >= maxVerificationRetries) {
             this.log(`\n⚠️ Max verification retries reached. Returning best available answer.\n`);
+
+            // If quality is still too low, add disclaimer to answer
+            if (verificationResult.confidence < 0.5 || verificationResult.completeness < 0.5) {
+              const disclaimer = `\n\n---\n\n**Note:** This answer has low confidence (${(verificationResult.confidence * 100).toFixed(0)}%) and may be incomplete (${(verificationResult.completeness * 100).toFixed(0)}% complete).`;
+              const gaps = verificationResult.gaps.length > 0 ? `\n\nGaps identified:\n${verificationResult.gaps.map(g => `- ${g}`).join('\n')}` : '';
+              finalAnswer = finalAnswer + disclaimer + gaps;
+            }
           }
         }
       }

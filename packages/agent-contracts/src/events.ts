@@ -484,8 +484,9 @@ export interface ProgressUpdateEvent extends AgentEventBase {
 export interface StatusChangeEvent extends AgentEventBase {
   type: 'status:change';
   data: {
-    status: 'idle' | 'thinking' | 'executing' | 'waiting' | 'done' | 'error';
+    status: 'idle' | 'thinking' | 'executing' | 'waiting' | 'done' | 'error' | 'analyzing' | 'planning' | 'researching' | 'finalizing';
     message?: string;
+    toolName?: string; // For 'executing' status with specific tool
   };
 }
 
