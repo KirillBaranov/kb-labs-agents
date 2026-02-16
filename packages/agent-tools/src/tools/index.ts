@@ -9,7 +9,7 @@ import { ToolRegistry } from '../registry.js';
 import {
   createFsWriteTool,
   createFsReadTool,
-  createFsEditTool,
+  createFsPatchTool,
   createFsListTool,
 } from './filesystem.js';
 
@@ -61,7 +61,7 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   // Register filesystem tools
   registry.register(createFsWriteTool(context));
   registry.register(createFsReadTool(context));
-  registry.register(createFsEditTool(context));
+  registry.register(createFsPatchTool(context));
   registry.register(createFsListTool(context));
 
   // Register search tools
@@ -106,7 +106,7 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
 export {
   createFsWriteTool,
   createFsReadTool,
-  createFsEditTool,
+  createFsPatchTool,
   createFsListTool,
   createListFilesTool,
   createGlobSearchTool,

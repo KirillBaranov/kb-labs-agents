@@ -24,4 +24,8 @@ export interface ToolContext {
   workingDir: string;
   sessionId?: string;
   verbose?: boolean;
+  /** Files that were read in this session (for edit protection) */
+  filesRead?: Set<string>;
+  /** File content hashes from when files were read (for change detection) */
+  filesReadHash?: Map<string, string>;
 }
