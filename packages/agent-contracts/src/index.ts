@@ -19,3 +19,10 @@ export * from './verification.js';
 
 export type * from './detailed-trace-types.js';
 export type * from './trace-command-response.js';
+
+// ═══════════════════════════════════════════════════════════════════════
+// Configuration (File History)
+// ═══════════════════════════════════════════════════════════════════════
+
+export type * from './config-types.js';
+export { DEFAULT_FILE_HISTORY_CONFIG } from './config-types.js';
