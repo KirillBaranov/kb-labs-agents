@@ -186,6 +186,84 @@ export const manifest = {
           'kb agent trace iteration --task-id=task-123 --iteration=5 --json',
         ],
       },
+      // File change history commands
+      {
+        id: 'agent:history',
+        group: 'agent',
+        describe: 'Show file change history for agent sessions',
+        longDescription:
+          'View file changes made by agents during execution. ' +
+          'Filter by session, file, or agent. Shows timestamps, operations, and change metadata.',
+
+        handler: './cli/commands/history.js#default',
+        handlerPath: './cli/commands/history.js',
+
+        flags: defineCommandFlags({
+          sessionId: { type: 'string', description: 'Session ID to filter by' },
+          file: { type: 'string', description: 'File path to filter by' },
+          agentId: { type: 'string', description: 'Agent ID to filter by' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent history',
+          'kb agent history --session-id=session-123',
+          'kb agent history --file=src/index.ts',
+          'kb agent history --agent-id=agent-abc --json',
+        ],
+      },
+      {
+        id: 'agent:diff',
+        group: 'agent',
+        describe: 'Show diff for specific file change',
+        longDescription:
+          'Display line-by-line diff for a specific file change. ' +
+          'Shows additions, deletions, and modifications with context.',
+
+        handler: './cli/commands/diff.js#default',
+        handlerPath: './cli/commands/diff.js',
+
+        flags: defineCommandFlags({
+          changeId: { type: 'string', description: 'Change ID to show diff for' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent diff --change-id=change-abc123',
+          'kb agent diff --change-id=change-abc123 --json',
+        ],
+      },
+      {
+        id: 'agent:rollback',
+        group: 'agent',
+        describe: 'Rollback file changes made by agents',
+        longDescription:
+          'Rollback file changes made by agents. ' +
+          'Supports rollback by change ID, file path, agent ID, session, or timestamp. ' +
+          'Use --dry-run to preview changes before applying.',
+
+        handler: './cli/commands/rollback.js#default',
+        handlerPath: './cli/commands/rollback.js',
+
+        flags: defineCommandFlags({
+          changeId: { type: 'string', description: 'Change ID to rollback' },
+          file: { type: 'string', description: 'File path to rollback all changes for' },
+          agentId: { type: 'string', description: 'Agent ID to rollback all changes by' },
+          sessionId: { type: 'string', description: 'Session ID to rollback all changes in' },
+          after: { type: 'string', description: 'Rollback all changes after timestamp (ISO 8601)' },
+          force: { type: 'boolean', description: 'Force rollback even with conflicts', default: false },
+          dryRun: { type: 'boolean', description: 'Preview rollback without applying', default: false },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent rollback --change-id=change-abc123',
+          'kb agent rollback --file=src/index.ts --dry-run',
+          'kb agent rollback --agent-id=agent-abc',
+          'kb agent rollback --session-id=session-123',
+          'kb agent rollback --after="2026-02-16T10:00:00Z" --json',
+        ],
+      },
     ],
   },
 

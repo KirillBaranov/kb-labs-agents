@@ -14,7 +14,6 @@ import type {
   TraceCommandResponse,
   FilterResponse,
   TraceErrorCode,
-  TraceEventType,
 } from '@kb-labs/agent-contracts';
 import type { DetailedTraceEntry } from '@kb-labs/agent-contracts';
 
