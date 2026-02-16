@@ -24,3 +24,6 @@ export * from './modes/index.js';
 
 // Events - event streaming for UI
 export * from './events/index.js';
+
+// File history - change tracking and rollback
+export * from './history/index.js';
