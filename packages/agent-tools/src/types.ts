@@ -28,4 +28,8 @@ export interface ToolContext {
   filesRead?: Set<string>;
   /** File content hashes from when files were read (for change detection) */
   filesReadHash?: Map<string, string>;
+  /** File change tracker for history (optional - injected by Agent) */
+  fileChangeTracker?: any; // Import cycle - use any for now
+  /** Agent ID for attribution */
+  agentId?: string;
 }

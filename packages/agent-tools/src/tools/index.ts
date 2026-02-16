@@ -13,6 +13,9 @@ import {
   createFsListTool,
 } from './filesystem.js';
 
+// Mass replace tool
+import { createMassReplaceTool } from './mass-replace.js';
+
 // Search tools
 import {
   createGlobSearchTool,
@@ -63,6 +66,7 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   registry.register(createFsReadTool(context));
   registry.register(createFsPatchTool(context));
   registry.register(createFsListTool(context));
+  registry.register(createMassReplaceTool(context));
 
   // Register search tools
   registry.register(createListFilesTool(context)); // List first - most reliable for discovery
@@ -108,6 +112,7 @@ export {
   createFsReadTool,
   createFsPatchTool,
   createFsListTool,
+  createMassReplaceTool,
   createListFilesTool,
   createGlobSearchTool,
   createGrepSearchTool,
