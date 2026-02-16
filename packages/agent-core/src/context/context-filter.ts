@@ -115,6 +115,7 @@ export class ContextFilter {
         let checkIdx = windowStart - 1;
         while (checkIdx >= 0) {
           const checkMsg = this.fullHistory[checkIdx];
+          if (!checkMsg) {break;} // Safety check
 
           if (checkMsg.role === 'assistant' && checkMsg.toolCalls && checkMsg.toolCalls.length > 0) {
             // Found the assistant message - include it
@@ -142,13 +143,13 @@ export class ContextFilter {
    * Tier 1 optimization: Zero risk, pure efficiency
    */
   truncateMessage(msg: Message): Message {
-    if (msg.role !== 'tool') return msg;
+    if (msg.role !== 'tool') {return msg;}
 
     const content = msg.content || '';
     const maxLen = this.config.maxOutputLength;
 
     // Short output - return as-is
-    if (content.length <= maxLen) return msg;
+    if (content.length <= maxLen) {return msg;}
 
     // Long output - truncate with hint
     const truncated = content.slice(0, maxLen);
@@ -175,12 +176,12 @@ export class ContextFilter {
    * Tier 1 optimization: Cache identical calls
    */
   isDuplicateToolCall(toolName: string, args: Record<string, any>): boolean {
-    if (!this.config.enableDeduplication) return false;
+    if (!this.config.enableDeduplication) {return false;}
 
     const argsHash = this.hashArgs(args);
     const toolCache = this.dedupCache.get(toolName);
 
-    if (!toolCache) return false;
+    if (!toolCache) {return false;}
     return toolCache.has(argsHash);
   }
 
@@ -188,12 +189,12 @@ export class ContextFilter {
    * Get cached result for duplicate tool call
    */
   getDuplicateResult(toolName: string, args: Record<string, any>): { iteration: number; result: any } | null {
-    if (!this.config.enableDeduplication) return null;
+    if (!this.config.enableDeduplication) {return null;}
 
     const argsHash = this.hashArgs(args);
     const toolCache = this.dedupCache.get(toolName);
 
-    if (!toolCache) return null;
+    if (!toolCache) {return null;}
     return toolCache.get(argsHash) || null;
   }
 
@@ -201,7 +202,7 @@ export class ContextFilter {
    * Mark tool call as seen (cache result)
    */
   markToolCallSeen(toolName: string, args: Record<string, any>, iteration: number, result: any): void {
-    if (!this.config.enableDeduplication) return;
+    if (!this.config.enableDeduplication) {return;}
 
     const argsHash = this.hashArgs(args);
 
@@ -236,7 +237,7 @@ export class ContextFilter {
   async appendToHistory(messages: Message[]): Promise<void> {
     // Simple lock mechanism
     while (this.isAppending) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => { setTimeout(resolve, 10); });
     }
 
     this.isAppending = true;

@@ -16,6 +16,8 @@ import type {
 import type { ToolRegistry } from '@kb-labs/agent-tools';
 import {
   useLLM,
+  useLogger,
+  useAnalytics,
   type ILLM,
   type LLMMessage,
   type LLMTool,
@@ -61,6 +63,11 @@ import {
   formatContextRetrieveResult,
   type ContextRetrieveInput,
 } from './tools/context-retrieve.js';
+import { FileChangeTracker } from './history/file-change-tracker.js';
+import { SnapshotStorage } from './history/snapshot-storage.js';
+import { ConflictDetector } from './history/conflict-detector.js';
+import { ConflictResolver } from './history/conflict-resolver.js';
+import { DEFAULT_FILE_HISTORY_CONFIG } from '@kb-labs/agent-contracts';
 
 /**
  * Default instruction file names to scan (in order of priority)
@@ -142,6 +149,13 @@ export class Agent {
   private cachedSystemPrompt?: string;
   private cachedTaskMessage?: string;
 
+  /**
+   * File change tracking (Phase 1: File History)
+   */
+  private fileChangeTracker?: FileChangeTracker;
+  private conflictDetector?: ConflictDetector;
+  private conflictResolver?: ConflictResolver;
+
   constructor(config: AgentConfig, toolRegistry: ToolRegistry) {
     this.config = config;
     this.toolRegistry = toolRegistry;
@@ -158,6 +172,54 @@ export class Agent {
     }
     if (context.filesReadHash) {
       this.filesReadHash = context.filesReadHash;
+    }
+
+    // Initialize file change tracker (Phase 1: File History)
+    // Use sessionId from config for correlation, or generate if not provided
+    const sessionId = config.sessionId || `session-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const workingDir = context.workingDir;
+
+    try {
+      const logger = useLogger();
+      const analytics = useAnalytics();
+
+      const storage = new SnapshotStorage(workingDir);
+      this.fileChangeTracker = new FileChangeTracker(
+        sessionId,
+        this.agentId,
+        workingDir,
+        storage
+      );
+
+      // Track file history initialization (fire and forget)
+      analytics?.track('agent.file_history.initialized', {
+        sessionId,
+        agentId: this.agentId,
+      }).catch((err) => {
+        logger?.warn('[Agent] Failed to track analytics event:', err);
+      });
+
+      // Cleanup old sessions (async, non-blocking)
+      this.fileChangeTracker.cleanup().catch((error) => {
+        logger?.warn('[Agent] Failed to cleanup old sessions:', error);
+      });
+
+      // Initialize conflict detection and resolution (Phase 2.5)
+      this.conflictDetector = new ConflictDetector(this.fileChangeTracker);
+
+      // Get escalation policy from config or use default
+      const escalationPolicy = DEFAULT_FILE_HISTORY_CONFIG.conflictResolution.escalationPolicy;
+      this.conflictResolver = new ConflictResolver(escalationPolicy);
+
+      // Inject tracker into tool context for fs_write and fs_patch
+      // TypeScript doesn't see these new fields yet, so use type assertion
+      (context as any).fileChangeTracker = this.fileChangeTracker;
+      (context as any).agentId = this.agentId;
+    } catch (error) {
+      const logger = useLogger();
+      // Non-critical: if tracker initialization fails, agent still works
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger?.warn('[Agent] Failed to initialize FileChangeTracker:', { error: errorMessage });
     }
 
     // Initialize context optimization (Phase 4)
@@ -257,7 +319,7 @@ export class Agent {
       this.log(`\n🎯 Trying with tier: ${tier}`);
 
       try {
-        // eslint-disable-next-line no-await-in-loop -- Sequential tier escalation required: must try each tier in order and await result before trying next
+         
         const result = await this.executeWithTier(task, tier);
         if (result.success) {
           if (tier !== this.config.tier) {
@@ -547,7 +609,7 @@ For IMPLEMENTATION tasks:
           const reflectionTools = tools.filter(t => t.name === 'reflect_on_progress');
 
           // Phase 4: Use lean context for reflection too
-          // eslint-disable-next-line no-await-in-loop
+           
           const reflectionResponse = await this.callLLMWithTools(
             llm,
             messages,
@@ -566,7 +628,7 @@ For IMPLEMENTATION tasks:
 
           // If reflection includes tool call, execute it
           if (reflectionResponse.toolCalls && reflectionResponse.toolCalls.length > 0) {
-            // eslint-disable-next-line no-await-in-loop
+             
             const reflectionToolResults = await this.executeToolCalls(reflectionResponse.toolCalls, iteration);
 
             // Add tool results to messages
@@ -579,7 +641,7 @@ For IMPLEMENTATION tasks:
               if (metadata?.shouldAutoReport && metadata?.reflection) {
                 this.log(`\n🤔 Auto-reflection triggered early exit (confidence: ${metadata.reflection.confidence.toFixed(2)})\n`);
 
-                // eslint-disable-next-line no-await-in-loop
+                 
                 return await this.createSuccessResult({
                   success: true,
                   summary: metadata.reflection.findingsSummary,
@@ -590,7 +652,7 @@ For IMPLEMENTATION tasks:
         }
 
         // Phase 4: Use lean context optimization
-        // eslint-disable-next-line no-await-in-loop -- Agent iteration loop requires sequential LLM calls: each response depends on previous tool results
+         
         const response = await this.callLLMWithTools(
           llm,
           messages,
@@ -681,7 +743,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
             // Call LLM for synthesis (no tools needed)
             const synthesisStartTime = Date.now();
             // Sequential LLM call required - part of agent iteration loop
-            // eslint-disable-next-line no-await-in-loop
+             
             const synthesisResponse = await llm.chatWithTools(messages, {
               tools: [], // No tools needed for synthesis
               toolChoice: 'none', // Explicitly disable tool calling
@@ -738,7 +800,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
 
             // Return with synthesized answer
             // This await in return breaks the loop, not a sequential operation
-            // eslint-disable-next-line no-await-in-loop
+             
             return await this.createSuccessResult({
               success: true,
               summary: synthesizedAnswer,
@@ -758,16 +820,16 @@ Your answer should be detailed, specific, and reference actual files and code yo
             },
           } as AgentEvent);
 
-          // eslint-disable-next-line no-await-in-loop -- Final validation in iteration loop before returning result
+           
           const validation = await this.validateTaskCompletion(task, response.content);
-          // eslint-disable-next-line no-await-in-loop -- Creating success result in iteration loop: must await memory recording
+           
           return await this.createSuccessResult(validation, iteration);
         }
 
         // Execute tools and update messages
-        // eslint-disable-next-line no-await-in-loop -- Tool execution in iteration loop: must wait for all tools to complete before next iteration
+         
         const toolResults = await this.executeToolCalls(response.toolCalls, iteration);
-        // eslint-disable-next-line no-await-in-loop -- Sequential history updates required to maintain message order
+         
         await this.appendToolMessagesToHistory(messages, response, toolResults, iteration);
 
         // Phase 2: Update progress tracker after tool execution
@@ -797,7 +859,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
           const context = input?.context as Record<string, unknown> | undefined;
 
           // Call orchestrator callback
-          // eslint-disable-next-line no-await-in-loop
+           
           const orchestratorResponse = await this.config.onAskOrchestrator({
             question,
             reason,
@@ -815,7 +877,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
           // Handle orchestrator action
           if (orchestratorResponse.action === 'skip') {
             // Orchestrator says skip this subtask
-            // eslint-disable-next-line no-await-in-loop
+             
             return await this.createSuccessResult({
               success: true,
               summary: `Skipped on orchestrator's guidance: ${orchestratorResponse.answer}`,
@@ -849,7 +911,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
           } as AgentEvent);
 
           // Return early with synthesized answer
-          // eslint-disable-next-line no-await-in-loop
+           
           return await this.createSuccessResult({
             success: confidence >= 0.5,
             summary: answer,
@@ -872,7 +934,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
             this.log(`\n🤔 Manual reflection triggered auto-report (confidence: ${metadata.reflection.confidence.toFixed(2)})\n`);
 
             // Auto-trigger report_to_orchestrator
-            // eslint-disable-next-line no-await-in-loop
+             
             return await this.createSuccessResult({
               success: true,
               summary: metadata.reflection.findingsSummary,
@@ -889,7 +951,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
             ? `Using same tool (${this.progressTracker.lastToolCalls[0]}) repeatedly`
             : `No progress for ${this.progressTracker.iterationsSinceProgress} iterations`;
 
-          // eslint-disable-next-line no-await-in-loop
+           
           const orchestratorResponse = await this.config.onAskOrchestrator({
             question: `I appear to be stuck. ${stuckReason}. What should I do?`,
             reason: 'stuck',
@@ -914,7 +976,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
 
           // Handle orchestrator action
           if (orchestratorResponse.action === 'skip') {
-            // eslint-disable-next-line no-await-in-loop
+             
             return await this.createSuccessResult({
               success: true,
               summary: `Skipped on orchestrator's guidance (auto-stuck detection): ${orchestratorResponse.answer}`,
@@ -1322,7 +1384,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
         // Phase 4: Handle context_retrieve tool (special case - not in registry)
         let result: ToolResult;
         if (toolCall.name === 'context_retrieve') {
-          // eslint-disable-next-line no-await-in-loop
+           
           const retrieveResult = await executeContextRetrieve(
             input as ContextRetrieveInput,
             () => this.contextFilter.getHistorySnapshot()
@@ -1339,7 +1401,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
             },
           };
         } else {
-          // eslint-disable-next-line no-await-in-loop -- Sequential tool execution required: tools may have side effects and depend on order
+           
           result = await this.toolRegistry.execute(toolCall.name, input);
         }
 
@@ -1947,7 +2009,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
 
       for (const file of filesToCheck) {
         try {
-          // eslint-disable-next-line no-await-in-loop -- Reading files sequentially for validation context, small bounded loop (max 3 files)
+           
           const result = await this.toolRegistry.execute('fs_read', {
             path: file,
           });
@@ -2413,5 +2475,83 @@ Ask yourself: "What artifact did I create and how can I prove it works?"
     if (this.tracer) {
       this.tracer.trace(entry);
     }
+  }
+
+  /**
+   * Get file change history for this agent session
+   * Returns all file modifications tracked by FileChangeTracker
+   */
+  getFileHistory() {
+    return this.fileChangeTracker?.getHistory() || [];
+  }
+
+  /**
+   * Get list of files changed by this agent
+   */
+  getChangedFiles(): string[] {
+    return this.fileChangeTracker?.getChangedFiles() || [];
+  }
+
+  /**
+   * Get change history for specific file
+   */
+  getFileChangeHistory(filePath: string) {
+    return this.fileChangeTracker?.getFileHistory(filePath) || [];
+  }
+
+  /**
+   * Rollback latest change to a file
+   * @returns true if rolled back, false if file has no changes
+   */
+  async rollbackFile(filePath: string): Promise<boolean> {
+    if (!this.fileChangeTracker) {
+      throw new Error('FileChangeTracker not initialized');
+    }
+    return this.fileChangeTracker.rollbackFile(filePath);
+  }
+
+  /**
+   * Rollback all changes made by this agent
+   * Optionally skip files with conflicts
+   */
+  async rollbackAllChanges(options?: { skipConflicts?: boolean }) {
+    if (!this.fileChangeTracker) {
+      throw new Error('FileChangeTracker not initialized');
+    }
+    return this.fileChangeTracker.rollbackAgent(this.agentId, options);
+  }
+
+  /**
+   * Detect conflicts before a write operation
+   * Returns null if no conflict, or DetectedConflict with type and resolution confidence
+   */
+  async detectConflict(
+    filePath: string,
+    operation: 'write' | 'patch' | 'delete',
+    metadata?: {
+      startLine?: number;
+      endLine?: number;
+      content?: string;
+    }
+  ) {
+    if (!this.conflictDetector) {
+      return null; // Conflict detection not available
+    }
+    return this.conflictDetector.detectConflict(filePath, this.agentId, operation, metadata);
+  }
+
+  /**
+   * Resolve a detected conflict using adaptive escalation
+   * Returns ResolutionResult with success status, level used, and resolved content
+   */
+  async resolveConflict(
+    conflict: any, // DetectedConflict from conflict-detector
+    contentA: string,
+    contentB: string
+  ) {
+    if (!this.conflictResolver) {
+      throw new Error('ConflictResolver not initialized');
+    }
+    return this.conflictResolver.resolve(conflict, contentA, contentB);
   }
 }

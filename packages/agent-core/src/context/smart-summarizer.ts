@@ -102,7 +102,7 @@ export class SmartSummarizer {
    */
   private async processQueue(): Promise<void> {
     // Already processing
-    if (this.isProcessing) return;
+    if (this.isProcessing) {return;}
 
     this.isProcessing = true;
 
@@ -138,7 +138,7 @@ export class SmartSummarizer {
 
     // Build compressed context (just tool calls and results)
     const compressedContext = snapshot
-      .map((msg, idx) => {
+      .map((msg, _idx) => {
         if (msg.role === 'tool') {
           const toolName = (msg as any).name || 'unknown';
           const content = msg.content || '';
@@ -169,14 +169,10 @@ Provide concise summary (≤200 words):
 
 Format as bullet points.`;
 
-    const messages: LLMMessage[] = [
-      { role: 'user', content: prompt },
-    ];
-
     // Call LLM (use small tier for speed)
-    const response = await this.llm.chat(messages, {
+    const response = await this.llm.complete(prompt, {
       temperature: 0.1, // Deterministic
-      max_tokens: this.config.maxSummaryTokens,
+      maxTokens: this.config.maxSummaryTokens,
     });
 
     return response.content || '(No summary generated)';

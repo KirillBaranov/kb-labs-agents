@@ -38,10 +38,24 @@ const MAX_WRITE_SIZE = 1_000_000;
  */
 function validatePath(workingDir: string, filePath: string): { valid: boolean; resolved: string; error?: string } {
   // Normalize and resolve the path
-  const resolved = path.resolve(workingDir, filePath);
+  let resolved = path.resolve(workingDir, filePath);
 
-  // Check if resolved path is within working directory
-  if (!resolved.startsWith(workingDir)) {
+  // Resolve symlinks to prevent symlink-based bypasses
+  try {
+    if (fs.existsSync(resolved)) {
+      resolved = fs.realpathSync(resolved);
+    }
+  } catch (error) {
+    // If realpath fails, continue with resolved path (might be a non-existent file)
+  }
+
+  // Check if resolved path is within working directory using path.relative()
+  // This is more secure than startsWith() which can be bypassed with symlinks
+  const relative = path.relative(workingDir, resolved);
+
+  // Path traversal attempt if relative path starts with '..'
+  // Note: path.isAbsolute(relative) is always false since relative() returns a relative path
+  if (relative.startsWith('..')) {
     return {
       valid: false,
       resolved,
@@ -310,6 +324,21 @@ HOW TO FIX: Split the content into smaller files, or write in chunks.`,
       // Check if overwriting existing file
       const isOverwrite = fs.existsSync(fullPath);
 
+      // CAPTURE SNAPSHOT BEFORE WRITE
+      if (context.fileChangeTracker) {
+        const beforeContent = isOverwrite
+          ? fs.readFileSync(fullPath, 'utf-8')
+          : null;
+
+        await context.fileChangeTracker.captureChange(
+          filePath,
+          'write',
+          beforeContent,
+          content,
+          { isOverwrite }
+        );
+      }
+
       // Create parent directories if needed
       const dir = path.dirname(fullPath);
       if (!fs.existsSync(dir)) {
@@ -514,12 +543,29 @@ HOW TO FIX: Use endLine between ${startLine} and ${totalLines}.`,
 
       const patchedContent = [...beforeLines, ...newLines, ...afterLines].join('\n');
 
-      // Write updated content
-      fs.writeFileSync(fullPath, patchedContent, 'utf-8');
-
+      // Calculate line changes
       const removedCount = endLine - startLine + 1;
       const addedCount = newLines.length;
       const netChange = addedCount - removedCount;
+
+      // CAPTURE SNAPSHOT BEFORE PATCH
+      if (context.fileChangeTracker) {
+        await context.fileChangeTracker.captureChange(
+          filePath,
+          'patch',
+          currentContent,
+          patchedContent,
+          {
+            startLine,
+            endLine,
+            linesAdded: addedCount,
+            linesRemoved: removedCount,
+          }
+        );
+      }
+
+      // Write updated content
+      fs.writeFileSync(fullPath, patchedContent, 'utf-8');
 
       let action: string;
       if (addedCount === 0) {
