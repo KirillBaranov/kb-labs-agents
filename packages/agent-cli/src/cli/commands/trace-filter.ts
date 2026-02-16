@@ -18,7 +18,9 @@ import type {
 } from '@kb-labs/agent-contracts';
 import type { DetailedTraceEntry } from '@kb-labs/agent-contracts';
 
-const VALID_EVENT_TYPES: TraceEventType[] = [
+// Valid event types (includes both new colon-separated and legacy snake_case formats)
+const VALID_EVENT_TYPES: string[] = [
+  // New format (detailed trace)
   'iteration:detail',
   'llm:call',
   'tool:execution',
@@ -31,6 +33,14 @@ const VALID_EVENT_TYPES: TraceEventType[] = [
   'context:trim',
   'stopping:analysis',
   'llm:validation',
+  // Legacy format (simple trace)
+  'llm_call',
+  'llm_response',
+  'tool_call',
+  'tool_result',
+  'tool_cache_hit',
+  'task_start',
+  'task_end',
 ];
 
 type TraceFilterInput = {
@@ -72,7 +82,7 @@ export default defineCommand({
       return { exitCode: 1, response: err };
     }
 
-    if (!VALID_EVENT_TYPES.includes(eventType as TraceEventType)) {
+    if (!VALID_EVENT_TYPES.includes(eventType)) {
       const err = error(
         'INVALID_EVENT_TYPE',
         `Invalid event type: ${eventType}. Valid types: ${VALID_EVENT_TYPES.join(', ')}`

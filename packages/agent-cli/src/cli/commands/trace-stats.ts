@@ -138,27 +138,62 @@ export default defineCommand({
  * Calculate statistics from trace events
  */
 function calculateStats(events: DetailedTraceEntry[]): StatsResponse {
-  // Find iteration events
+  // Find iteration events (supports both new and legacy formats)
   const iterationEvents = events.filter((e) => e.type === 'iteration:detail');
-  const llmEvents = events.filter((e) => e.type === 'llm:call') as LLMCallEvent[];
-  const toolEvents = events.filter((e) => e.type === 'tool:execution') as ToolExecutionEvent[];
+
+  // Find LLM events (supports both 'llm:call' new format and 'llm_call' legacy format)
+  const llmEvents = events.filter((e) =>
+    e.type === 'llm:call' || (e as any).type === 'llm_call'
+  ) as LLMCallEvent[];
+
+  // Find tool events (supports both 'tool:execution' new format and 'tool_call' legacy format)
+  const toolEvents = events.filter((e) =>
+    e.type === 'tool:execution' || (e as any).type === 'tool_call'
+  ) as ToolExecutionEvent[];
+
   const errorEvents = events.filter((e) => e.type === 'error:captured');
 
-  // Calculate LLM stats
-  const inputTokens = llmEvents.reduce((sum, e) => sum + (e.response.usage.inputTokens || 0), 0);
-  const outputTokens = llmEvents.reduce((sum, e) => sum + (e.response.usage.outputTokens || 0), 0);
+  // Calculate LLM stats (handle both new and legacy data structures)
+  const inputTokens = llmEvents.reduce((sum, e) => {
+    // New format: e.response.usage.inputTokens
+    // Legacy format: e.data.tokensUsed (approximate, only has total)
+    const tokens = (e as any).response?.usage?.inputTokens || 0;
+    return sum + tokens;
+  }, 0);
 
-  // Calculate cost
-  const totalCost = llmEvents.reduce((sum, e) => sum + e.cost.totalCost, 0);
+  const outputTokens = llmEvents.reduce((sum, e) => {
+    // New format: e.response.usage.outputTokens
+    const tokens = (e as any).response?.usage?.outputTokens || 0;
+    return sum + tokens;
+  }, 0);
 
-  // Calculate tool stats
+  // Legacy fallback: if no input/output tokens, use total from legacy format
+  const legacyTotalTokens = llmEvents.reduce((sum, e) => {
+    const tokens = (e as any).data?.tokensUsed || 0;
+    return sum + tokens;
+  }, 0);
+
+  // Calculate cost (new format only, legacy doesn't have cost data)
+  const totalCost = llmEvents.reduce((sum, e) => {
+    const cost = (e as any).cost?.totalCost || 0;
+    return sum + cost;
+  }, 0);
+
+  // Calculate tool stats (handle both new and legacy formats)
   const toolCounts: Record<string, number> = {};
   let successfulTools = 0;
   let failedTools = 0;
 
   for (const tool of toolEvents) {
-    toolCounts[tool.tool.name] = (toolCounts[tool.tool.name] || 0) + 1;
-    if (tool.output.success) {
+    // New format: tool.tool.name
+    // Legacy format: tool.data.toolName or extract from data
+    const toolName = (tool as any).tool?.name || (tool as any).data?.toolName || 'unknown';
+    toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+
+    // New format: tool.output.success
+    // Legacy format: tool.data.success (or assume success if no error)
+    const success = (tool as any).output?.success ?? (tool as any).data?.success ?? true;
+    if (success) {
       successfulTools++;
     } else {
       failedTools++;
@@ -185,7 +220,8 @@ function calculateStats(events: DetailedTraceEntry[]): StatsResponse {
       calls: llmEvents.length,
       inputTokens,
       outputTokens,
-      totalTokens: inputTokens + outputTokens,
+      // Use explicit tokens if available, otherwise fall back to legacy total
+      totalTokens: (inputTokens + outputTokens) || legacyTotalTokens,
     },
 
     tools: {
