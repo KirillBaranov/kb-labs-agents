@@ -43,7 +43,7 @@ export async function storeVerificationInMemory(
 
   // Store verified mentions as findings
   for (const mention of verification.verifiedMentions) {
-    // eslint-disable-next-line no-await-in-loop -- Sequential memory storage required
+     
     await memory.addFinding(
       `${prefix}Verified: ${mention}`,
       verification.confidence,
@@ -53,7 +53,7 @@ export async function storeVerificationInMemory(
 
   // Store unverified mentions as blockers (potential hallucinations)
   for (const mention of verification.unverifiedMentions) {
-    // eslint-disable-next-line no-await-in-loop -- Sequential memory storage required
+     
     await memory.addBlocker(
       `${prefix}UNVERIFIED CLAIM${context}: ${mention} - DO NOT repeat this claim without verification`,
       subtaskId
@@ -62,7 +62,7 @@ export async function storeVerificationInMemory(
 
   // Store gaps as blockers
   for (const gap of verification.gaps) {
-    // eslint-disable-next-line no-await-in-loop -- Sequential memory storage required
+     
     await memory.addBlocker(
       `${prefix}MISSING INFO${context}: ${gap}`,
       subtaskId
@@ -72,7 +72,7 @@ export async function storeVerificationInMemory(
   // Store critical warnings as blockers
   for (const warning of verification.warnings) {
     if (warning.code === 'LOW_CONFIDENCE' || warning.code === 'CONTRADICTION') {
-      // eslint-disable-next-line no-await-in-loop -- Sequential memory storage required
+       
       await memory.addBlocker(
         `${prefix}WARNING: ${warning.message}`,
         subtaskId

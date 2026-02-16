@@ -153,9 +153,9 @@ export async function requestVerification(
           temperature: 0.1, // Low temperature for consistent verification
         },
       ),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Verification timeout after 60s')), 60000)
-      ),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Verification timeout after 60s')), 60000);
+      }),
     ]) as Awaited<ReturnType<typeof llm.chatWithTools>>;
 
     const toolCall = response.toolCalls?.[0];

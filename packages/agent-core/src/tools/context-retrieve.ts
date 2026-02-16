@@ -30,7 +30,7 @@ export interface ContextRetrieveResult {
  * Returns LLMTool format (KB Labs internal format, not OpenAI format)
  */
 export function createContextRetrieveTool(
-  getHistorySnapshot: () => ReadonlyArray<Readonly<LLMMessage>>
+  _getHistorySnapshot: () => ReadonlyArray<Readonly<LLMMessage>>
 ): LLMTool {
   return {
     name: 'context_retrieve',
@@ -108,7 +108,7 @@ export async function executeContextRetrieve(
   // Filter by tool_name
   if (input.tool_name) {
     filtered = filtered.filter((msg) => {
-      if (msg.role !== 'tool') return false;
+      if (msg.role !== 'tool') {return false;}
       const name = (msg as any).name;
       return name === input.tool_name;
     });
@@ -157,7 +157,7 @@ export function formatContextRetrieveResult(result: ContextRetrieveResult): stri
   ];
 
   for (let i = 0; i < result.messages.length; i++) {
-    const msg = result.messages[i];
+    const msg = result.messages[i]!; // Array access is safe within length bounds
     const iter = (msg as any).iteration || '?';
     const role = msg.role;
 

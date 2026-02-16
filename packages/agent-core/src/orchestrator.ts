@@ -803,7 +803,7 @@ Respond ONLY with valid JSON:
         ? `**Previous findings:**\n${contextParts.join('\n\n')}\n\n---\n\n`
         : '';
 
-      // eslint-disable-next-line no-await-in-loop -- Sequential research required
+       
       const shouldContinue = await this.executeSubtask(subtask, aggregator, accumulatedContext, plan);
 
       // Collect context from subtask result
@@ -817,7 +817,7 @@ Respond ONLY with valid JSON:
 
       // Phase 2, Step 2.3: Early Stopping - Check if we have enough confidence
       // Sequential decision required - each research iteration depends on previous results
-      // eslint-disable-next-line no-await-in-loop
+       
       const earlyStopDecision = await this.shouldStopResearchEarly(contextParts, plan.originalTask);
       if (earlyStopDecision.shouldStop) {
         this.log(`\n🎯 Early stopping: ${earlyStopDecision.reason}\n`);
@@ -1460,7 +1460,7 @@ ${researchContext}
 
               const gapResults: string[] = [];
               for (const gap of verificationResult.gaps) {
-                // eslint-disable-next-line no-await-in-loop -- Sequential gap filling required
+                 
                 const gapResearch = await this.executeGapResearch(gap, researchContext);
                 if (gapResearch) {
                   gapResults.push(`Gap "${gap}": ${gapResearch}`);
@@ -1487,7 +1487,7 @@ ${researchContext}
             // Re-synthesize with improved context
             const improvedPrompt = `${synthesisPrompt}\n\n---\n\n## Previous Verification Feedback\n\nThe previous answer had issues:\n- Confidence: ${(verificationResult.confidence * 100).toFixed(0)}%\n- Completeness: ${(verificationResult.completeness * 100).toFixed(0)}%\n- Gaps: ${verificationResult.gaps.join(', ') || 'none'}\n- Unverified claims: ${verificationResult.unverifiedMentions.join(', ') || 'none'}\n${improvementContext}\n\nPlease provide an improved answer that addresses these issues.`;
 
-            // eslint-disable-next-line no-await-in-loop -- Sequential improvement required
+             
             const improvedResponse = await llm.complete(improvedPrompt, { temperature: 0.2 });
             finalAnswer = improvedResponse.content || finalAnswer;
             totalTokens += (improvedResponse.usage?.promptTokens || 0) + (improvedResponse.usage?.completionTokens || 0);
@@ -1495,7 +1495,7 @@ ${researchContext}
 
             // Re-verify improved answer
             this.log(`\n🔍 Re-verifying improved answer...\n`);
-            // eslint-disable-next-line no-await-in-loop -- Sequential verification required
+             
             const newVerification = await this.verifySynthesis(task, finalAnswer, researchContext + improvementContext);
             if (newVerification) {
               // Check if quality actually improved
@@ -1602,7 +1602,7 @@ ${researchContext}
         },
       });
 
-      // eslint-disable-next-line no-await-in-loop -- Sequential subtask execution required: orchestrator must execute subtasks in order
+       
       const shouldContinue = await this.executeSubtask(subtask, aggregator, '', plan);
 
       // Emit subtask:end event with startedAt for correlation
@@ -1623,7 +1623,7 @@ ${researchContext}
         completedSubtasks.push(subtask);
       } else {
         consecutiveFailures++;
-        // eslint-disable-next-line no-await-in-loop -- Sequential observation required
+         
         await this.observeAgentProgress(plan, completedSubtasks, subtask, consecutiveFailures);
       }
 
@@ -1634,7 +1634,7 @@ ${researchContext}
       // Phase 2, Step 2.5: Adaptive Plan - Re-evaluate remaining subtasks
       const remainingSubtasks = plan.subtasks.slice(index + 1);
       if (remainingSubtasks.length > 0) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential evaluation required
+         
         const planAdjustment = await this.shouldAdjustPlan(plan, aggregator.results, remainingSubtasks);
 
         if (planAdjustment.shouldSkip) {
@@ -2132,7 +2132,7 @@ Respond ONLY with valid JSON:
     let processedResult = result;
 
     for (const processor of this.config.resultProcessors) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential result processing required: each processor may depend on previous
+       
       processedResult = await processor.process(processedResult);
     }
 

@@ -76,7 +76,7 @@ export class PlanExecutor {
           try {
             if (step.tool) {
               // Sequential tool execution required - plan steps must execute in order
-              // eslint-disable-next-line no-await-in-loop
+               
               const result = await toolExecutor(step.tool, step.args || {});
               step.result = result;
             }

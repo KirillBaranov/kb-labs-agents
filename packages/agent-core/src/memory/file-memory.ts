@@ -122,7 +122,7 @@ export class FileMemory implements AgentMemory {
     const memories: MemoryEntry[] = [];
     for (const id of memoryIds.slice(-limit)) {
       const key = this.getMemoryKey(id);
-      // eslint-disable-next-line no-await-in-loop -- Sequential cache retrieval: must load memories in order
+       
       const memory = await cache.get<MemoryEntry>(key);
       if (memory) {
         memories.push(memory);
@@ -257,7 +257,7 @@ Keep the summary under 500 words.`;
     if (cache) {
       for (const memory of toSummarize) {
         if (memory.id) {
-          // eslint-disable-next-line no-await-in-loop -- Sequential cache deletion required: must remove each memory in order
+           
           await cache.delete(this.getMemoryKey(memory.id));
         }
       }
@@ -755,7 +755,7 @@ ${lastAnswer.answer}
 
       const memories: MemoryEntry[] = [];
       for (const file of memoryFiles) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential file reads: must read each memory file in order
+         
         const content = await fs.readFile(path.join(memoryDir, file), 'utf-8');
         memories.push(JSON.parse(content));
       }
@@ -778,7 +778,7 @@ ${lastAnswer.answer}
 
       const summaries: MemorySummary[] = [];
       for (const file of summaryFiles) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential file reads: must read each summary file in order
+         
         const content = await fs.readFile(path.join(memoryDir, file), 'utf-8');
         summaries.push(JSON.parse(content));
       }
