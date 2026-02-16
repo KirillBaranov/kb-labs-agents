@@ -36,11 +36,11 @@ describe('Agent Context Optimization - Token Reduction', () => {
         return this.tools.get(name);
       },
       getDefinitions() {
-        return Array.from(this.tools.values()).map((t) => t.definition);
+        return Array.from(this.tools.values()).map((t: any) => t.definition);
       },
       async execute(name: string, input: Record<string, unknown>) {
         const tool = this.tools.get(name);
-        if (!tool) throw new Error(`Unknown tool: ${name}`);
+        if (!tool) {throw new Error(`Unknown tool: ${name}`);}
         return tool.executor(input);
       },
       getContext() {
@@ -74,12 +74,10 @@ describe('Agent Context Optimization - Token Reduction', () => {
     });
 
     const config: AgentConfig = {
-      name: 'test-agent',
-      version: '1.0.0',
+      workingDir: process.cwd(),
       maxIterations: 20,
-      systemPrompt: 'You are a test agent. Use mock_tool to perform actions.',
-      enableReflection: false,
-      enablePlanning: false,
+      temperature: 0.1,
+      verbose: false,
     };
 
     agent = new Agent(config, mockToolRegistry);

@@ -139,8 +139,8 @@ describe('ContextFilter', () => {
       expect(context.length).toBe(7);
       expect(context[0]).toEqual(systemMsg);
       expect(context[1]).toEqual(taskMsg);
-      expect(context[2].content).toBe('message 6');
-      expect(context[6].content).toBe('message 10');
+      expect(context[2]!.content).toBe('message 6');
+      expect(context[6]!.content).toBe('message 10');
     });
 
     it('should include summaries if provided', async () => {
@@ -155,9 +155,9 @@ describe('ContextFilter', () => {
       const context = filter.buildDefaultContext(systemMsg, taskMsg, 1, summaries);
 
       expect(context.length).toBe(4); // system + task + summary + msg1
-      expect(context[2].role).toBe('system');
-      expect(context[2].content).toContain('Summary 1-10');
-      expect(context[2].content).toContain('Summary 11-20');
+      expect(context[2]!.role).toBe('system');
+      expect(context[2]!.content).toContain('Summary 1-10');
+      expect(context[2]!.content).toContain('Summary 11-20');
     });
   });
 
@@ -179,7 +179,7 @@ describe('ContextFilter', () => {
       }).toThrow();
 
       // Original should be unchanged
-      expect(original[0].content).toBe('original');
+      expect(original[0]!.content).toBe('original');
     });
 
     it('should handle concurrent appends', async () => {
@@ -208,9 +208,9 @@ describe('ContextFilter', () => {
 
       const history = filter.getFullHistory();
       expect(history.length).toBe(3);
-      expect(history[0].content).toBe('msg1');
-      expect(history[1].content).toBe('resp1');
-      expect(history[2].content).toBe('tool1');
+      expect(history[0]!.content).toBe('msg1');
+      expect(history[1]!.content).toBe('resp1');
+      expect(history[2]!.content).toBe('tool1');
     });
   });
 
@@ -247,8 +247,8 @@ describe('ContextFilter', () => {
 
       // Should have: system + task + last 3 messages = 5 total
       expect(context.length).toBe(5);
-      expect(context[2].content).toBe('msg8');
-      expect(context[4].content).toBe('msg10');
+      expect(context[2]!.content).toBe('msg8');
+      expect(context[4]!.content).toBe('msg10');
     });
 
     it('should respect enableDeduplication flag', () => {

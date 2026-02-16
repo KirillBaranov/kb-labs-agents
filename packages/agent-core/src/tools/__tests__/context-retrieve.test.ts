@@ -68,7 +68,7 @@ describe('context_retrieve tool', () => {
 
       expect(result.success).toBe(true);
       expect(result.count).toBe(2); // user + tool from iteration 1
-      expect(result.messages[0].content).toContain('package.json');
+      expect(result.messages[0]!.content).toContain('package.json');
     });
 
     it('should return empty for non-existent iteration', async () => {
@@ -89,7 +89,7 @@ describe('context_retrieve tool', () => {
 
       expect(result.success).toBe(true);
       expect(result.count).toBe(1);
-      expect(result.messages[0].content).toContain('test-package');
+      expect(result.messages[0]!.content).toContain('test-package');
     });
 
     it('should return empty for non-existent tool_call_id', async () => {
@@ -110,7 +110,7 @@ describe('context_retrieve tool', () => {
 
       expect(result.success).toBe(true);
       expect(result.count).toBe(1);
-      expect(result.messages[0].content).toContain('test-package');
+      expect(result.messages[0]!.content).toContain('test-package');
     });
 
     it('should only return tool messages', async () => {
@@ -120,7 +120,7 @@ describe('context_retrieve tool', () => {
 
       expect(result.success).toBe(true);
       expect(result.count).toBe(1);
-      expect(result.messages[0].role).toBe('tool');
+      expect(result.messages[0]!.role).toBe('tool');
     });
   });
 
@@ -151,7 +151,7 @@ describe('context_retrieve tool', () => {
 
       expect(result.success).toBe(true);
       expect(result.count).toBe(1);
-      expect(result.messages[0].content).toContain('18/18 passing');
+      expect(result.messages[0]!.content).toContain('18/18 passing');
     });
   });
 
@@ -166,7 +166,7 @@ describe('context_retrieve tool', () => {
 
       expect(result.success).toBe(true);
       expect(result.count).toBe(1);
-      expect(result.messages[0].content).toContain('passing');
+      expect(result.messages[0]!.content).toContain('passing');
     });
 
     it('should combine topic and iteration filters', async () => {
@@ -202,8 +202,8 @@ describe('context_retrieve tool', () => {
       const result = await executeContextRetrieve(input, getSnapshot);
 
       expect(result.success).toBe(true);
-      expect(result.messages[0].metadata?.truncated).toBeUndefined();
-      expect(result.messages[0].metadata?.originalLength).toBeUndefined();
+      expect(result.messages[0]!.metadata?.truncated).toBeUndefined();
+      expect(result.messages[0]!.metadata?.originalLength).toBeUndefined();
     });
   });
 
