@@ -23,6 +23,8 @@ export type TraceEventType =
   | 'prompt:diff'
   | 'tool:filter'
   | 'context:trim'
+  | 'context:snapshot'
+  | 'context:diff'
   | 'stopping:analysis'
   | 'llm:validation';
 
@@ -139,6 +141,7 @@ export interface ToolExecutionEvent extends BaseTraceEntry {
       stack?: string;
     };
     truncated: boolean; // If output was truncated for storage
+    originalLength?: number; // Original output length before truncation
   };
 
   timing: {
@@ -361,6 +364,36 @@ export interface ContextTrimEvent extends BaseTraceEntry {
 }
 
 /**
+ * 10b. context:snapshot - Full context window snapshot before LLM call
+ */
+export interface ContextSnapshotEvent extends BaseTraceEntry {
+  type: 'context:snapshot';
+  iteration: number;
+
+  messageCount: number;
+  totalChars: number;
+  estimatedTokens: number;
+  toolCount: number;
+  tier: string;
+
+  slidingWindow: {
+    fullHistorySize: number;
+    windowedSize: number;
+    droppedMessages: number;
+  };
+
+  messages: Array<{
+    index: number;
+    role: string;
+    chars: number;
+    truncated?: boolean;
+    toolCalls?: string[];
+    toolCallId?: string;
+    preview?: string;
+  }>;
+}
+
+/**
  * 11. stopping:analysis - Stopping condition analysis
  */
 export interface StoppingAnalysisEvent extends BaseTraceEntry {
@@ -435,5 +468,6 @@ export type DetailedTraceEntry =
   | PromptDiffEvent
   | ToolFilterEvent
   | ContextTrimEvent
+  | ContextSnapshotEvent
   | StoppingAnalysisEvent
   | LLMValidationEvent;

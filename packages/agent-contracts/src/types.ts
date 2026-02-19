@@ -80,6 +80,9 @@ export type LLMTier = 'small' | 'medium' | 'large';
  * - simple: Single lookup, one action (e.g., "What is X?")
  * - research: Information gathering + synthesis (e.g., "Explain architecture")
  * - complex: Multi-step task with actions (e.g., "Implement feature X")
+ *
+ * @deprecated No longer used after orchestrator simplification (2026-02-18).
+ * All tasks now execute with single-agent mode. This type is kept for backward compatibility.
  */
 export type TaskComplexity = 'simple' | 'research' | 'complex';
 
@@ -95,7 +98,8 @@ export type DecompositionTaskType =
   | 'research'
   | 'implementation-single-domain'
   | 'implementation-cross-domain'
-  | 'simple';
+  | 'simple'
+  | 'single-agent'; // Added: no classification, direct agent execution
 
 /**
  * Decomposition decision result
@@ -190,11 +194,11 @@ export interface AgentConfig {
   // ═══════════════════════════════════════════════════════════════════════
 
   /**
-   * Callback for ask_orchestrator tool calls (Phase 1)
-   * When child agent calls ask_orchestrator, this callback is invoked
-   * The orchestrator can provide guidance, hints, or alter execution
+   * Callback for ask_parent tool calls.
+   * When sub-agent calls ask_parent, this callback is invoked.
+   * The parent agent can provide guidance, hints, or alter execution.
    */
-  onAskOrchestrator?: (request: {
+  onAskParent?: (request: {
     question: string;
     reason: 'stuck' | 'uncertain' | 'blocker' | 'clarification';
     context?: Record<string, unknown>;
@@ -535,49 +539,6 @@ export interface ResultProcessor {
    * Process task result (e.g., add summary, collect metrics, save artifacts)
    */
   process(result: TaskResult): Promise<TaskResult>;
-}
-
-/**
- * Orchestrator configuration
- */
-export interface OrchestratorConfig {
-  workingDir: string;
-  maxIterations: number;
-  temperature: number;
-  verbose: boolean;
-  sessionId?: string;
-  /** LLM tier passed from run-handler (used for analytics, not for child agents) */
-  tier?: LLMTier;
-  /** LLM tier for child agents (default: 'small') - use smaller models for efficiency */
-  childAgentTier?: LLMTier;
-  /** Enable tier escalation for child agents (default: false) */
-  enableEscalation?: boolean;
-  /** LLM tier for orchestrator (classify + plan, default: 'large') */
-  planningTier?: LLMTier;
-  /** Continue execution if subtask fails (default: true) */
-  continueOnFailure?: boolean;
-  /** Mode configuration (execute/plan/edit/debug) */
-  mode?: ModeConfig;
-  /** Tracer for recording execution (optional) */
-  tracer?: Tracer;
-  /** Result processors (optional) */
-  resultProcessors?: ResultProcessor[];
-  /** Memory system for context management (optional) */
-  memory?: AgentMemory;
-  /** Event callback for streaming orchestrator events to UI (optional) */
-  onEvent?: import('./events.js').AgentEventCallback;
-  /** Enable cross-tier verification of agent responses (default: true) */
-  enableVerification?: boolean;
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // Phase 3: Orchestrator Observation & Plan Updates
-  // ═══════════════════════════════════════════════════════════════════════
-
-  /**
-   * Callback for plan updates (Phase 3)
-   * When orchestrator modifies the execution plan based on agent progress
-   */
-  onPlanUpdated?: (update: PlanUpdate) => void | Promise<void>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

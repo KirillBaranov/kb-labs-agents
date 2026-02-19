@@ -24,11 +24,7 @@ export type AgentEventType =
   | 'tool:start'
   | 'tool:end'
   | 'tool:error'
-  // Orchestrator
-  | 'orchestrator:start'
-  | 'orchestrator:plan'    // Execution plan with LLM-estimated iterations
-  | 'orchestrator:answer'  // Synthesized answer for user
-  | 'orchestrator:end'
+  // Sub-agent lifecycle
   | 'subtask:start'
   | 'subtask:end'
   // Synthesis (forced on last iteration)
@@ -67,7 +63,7 @@ export interface AgentEventBase {
   /** Unique ID for this agent instance (e.g., "agent-abc123") */
   agentId?: string;
 
-  /** Parent agent ID for child agents spawned by orchestrator */
+  /** Parent agent ID for sub-agents spawned by main agent */
   parentAgentId?: string;
 
   /** For tool events: correlates tool:start → tool:end/tool:error */
@@ -132,6 +128,8 @@ export interface IterationEndEvent extends AgentEventBase {
     iteration: number;
     hadToolCalls: boolean;
     toolCallCount: number;
+    /** Cumulative tokens used across all iterations so far */
+    cumulativeTokens?: number;
   };
 }
 
@@ -295,67 +293,6 @@ export interface ToolEventMetadata {
   uiHint?: 'code' | 'diff' | 'table' | 'json' | 'markdown' | 'plain';
 }
 
-/**
- * Orchestrator events
- */
-export interface OrchestratorStartEvent extends AgentEventBase {
-  type: 'orchestrator:start';
-  data: {
-    task: string;
-    complexity: 'simple' | 'research' | 'complex';
-  };
-}
-
-export interface OrchestratorPlanEvent extends AgentEventBase {
-  type: 'orchestrator:plan';
-  data: {
-    /** Execution mode (single agent or multi-agent decomposition) */
-    executionMode?: string;
-    /** Task type from decomposition analysis */
-    taskType?: string;
-    /** Why this decomposition approach was chosen */
-    decompositionReason?: string;
-    /** LLM-estimated iterations needed for child agents (Phase 0) */
-    estimatedIterations?: number;
-    /** Number of subtasks (1 for single agent, N for decomposed) */
-    subtaskCount: number;
-    /** Subtask descriptions */
-    subtasks: Array<{
-      id: string;
-      description: string;
-    }>;
-  };
-}
-
-export interface OrchestratorAnswerEvent extends AgentEventBase {
-  type: 'orchestrator:answer';
-  data: {
-    /** The synthesized answer/response for the user */
-    answer: string;
-    /** Confidence level (0-1) from verification */
-    confidence?: number;
-    /** Completeness level (0-1) from verification */
-    completeness?: number;
-    /** Gaps in the answer (from verification) */
-    gaps?: string[];
-    /** Unverified mentions (potential hallucinations) */
-    unverifiedMentions?: string[];
-    /** Sources used to generate the answer */
-    sources?: string[];
-  };
-}
-
-export interface OrchestratorEndEvent extends AgentEventBase {
-  type: 'orchestrator:end';
-  data: {
-    success: boolean;
-    subtaskCount: number;
-    completedCount: number;
-    /** Duration in milliseconds */
-    durationMs?: number;
-  };
-}
-
 export interface SubtaskStartEvent extends AgentEventBase {
   type: 'subtask:start';
   data: {
@@ -505,10 +442,6 @@ export type AgentEvent =
   | ToolStartEvent
   | ToolEndEvent
   | ToolErrorEvent
-  | OrchestratorStartEvent
-  | OrchestratorPlanEvent
-  | OrchestratorAnswerEvent
-  | OrchestratorEndEvent
   | SubtaskStartEvent
   | SubtaskEndEvent
   | SynthesisForcedEvent
