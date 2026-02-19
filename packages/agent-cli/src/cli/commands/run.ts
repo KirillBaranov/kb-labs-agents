@@ -6,14 +6,14 @@
 
 import { defineCommand, type PluginContextV3 } from '@kb-labs/sdk';
 import {
-  OrchestratorAgent,
+  Agent,
   IncrementalTraceWriter,
   TraceSaverProcessor,
   MetricsCollectorProcessor,
   FileMemory,
 } from '@kb-labs/agent-core';
 import { createToolRegistry } from '@kb-labs/agent-tools';
-import type { OrchestratorConfig, ModeConfig, AgentMode, AgentEvent } from '@kb-labs/agent-contracts';
+import type { AgentConfig, ModeConfig, AgentMode, AgentEvent } from '@kb-labs/agent-contracts';
 import { createEventRenderer, createMinimalRenderer, createDetailedRenderer } from '../ui/index.js';
 
 type RunInput = {
@@ -149,8 +149,8 @@ export default defineCommand({
           eventRenderer(event);
         };
 
-        // Create orchestrator config with event callback
-        const config: OrchestratorConfig = {
+        // Create agent config with event callback
+        const config: AgentConfig = {
           workingDir,
           maxIterations,
           temperature,
@@ -158,8 +158,6 @@ export default defineCommand({
           sessionId,
           tier,
           enableEscalation: escalate,
-          planningTier: 'large',
-          continueOnFailure: false,
           tracer,
           resultProcessors,
           memory,
@@ -167,9 +165,9 @@ export default defineCommand({
           onEvent: compositeEventCallback, // Composite: tracer + UI rendering
         };
 
-        // Create and execute orchestrator
-        const orchestrator = new OrchestratorAgent(config, toolRegistry);
-        const result = await orchestrator.execute(task);
+        // Create and execute agent
+        const agent = new Agent(config, toolRegistry);
+        const result = await agent.execute(task);
 
         // Event renderer already showed the result via agent:end event
         // Just return the structured result

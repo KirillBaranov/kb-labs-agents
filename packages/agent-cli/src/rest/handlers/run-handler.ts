@@ -5,7 +5,7 @@
  */
 
 import { defineHandler, useAnalytics, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
-import { OrchestratorAgent, SessionManager, FileMemory } from '@kb-labs/agent-core';
+import { Agent, SessionManager, FileMemory } from '@kb-labs/agent-core';
 import { createToolRegistry } from '@kb-labs/agent-tools';
 import type { RunRequest, RunResponse } from '@kb-labs/agent-contracts';
 import {
@@ -78,8 +78,8 @@ export default defineHandler({
       maxContextTokens: 8000,
     });
 
-    // Create orchestrator with event broadcasting and session persistence
-    const orchestrator = new OrchestratorAgent(
+    // Create agent with event broadcasting and session persistence
+    const agent = new Agent(
       {
         sessionId: finalSessionId,
         workingDir,
@@ -103,13 +103,13 @@ export default defineHandler({
     );
 
     // Register run
-    const run = await RunManager.register(runId, body.task, orchestrator);
+    const run = await RunManager.register(runId, body.task, agent);
     await RunManager.updateStatus(runId, 'running');
 
     // Start execution in background (don't await)
     void (async () => {
       try {
-        const result = await orchestrator.execute(body.task);
+        const result = await agent.execute(body.task);
         const durationMs = Date.now() - startTime;
 
         await RunManager.updateStatus(runId, result.success ? 'completed' : 'failed', {

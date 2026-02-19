@@ -87,8 +87,8 @@ export default defineWebSocket<unknown, ClientMessage, ServerMessage>({
           ctx.platform.logger.error(`[events-ws] Failed to send event: ${err}`);
         });
 
-        // Check if run completed
-        if (event.type === 'agent:end') {
+        // Check if run completed (only when MAIN agent ends, not sub-agents)
+        if (event.type === 'agent:end' && !event.parentAgentId) {
           const completedMsg: RunCompletedMessage = {
             type: 'run:completed',
             payload: {
@@ -107,8 +107,6 @@ export default defineWebSocket<unknown, ClientMessage, ServerMessage>({
       // Store callback reference for cleanup
       (ctx as unknown as { _eventCallback?: typeof eventCallback })._eventCallback = eventCallback;
 
-      RunManager.addListener(runId, eventCallback);
-
       // Send connection ready message
       await sender.send({
         type: 'connection:ready',
@@ -118,6 +116,24 @@ export default defineWebSocket<unknown, ClientMessage, ServerMessage>({
         },
         timestamp: Date.now(),
       } satisfies ConnectionReadyMessage);
+
+      // Replay buffer: send all events emitted before WS connected
+      // This eliminates the gap between POST /run and WS connection
+      const missedEvents = RunManager.getEventBuffer(runId);
+      if (missedEvents.length > 0) {
+        ctx.platform.logger.info(`[events-ws] Replaying ${missedEvents.length} buffered events for run ${runId}`);
+        for (const event of missedEvents) {
+          const message: AgentEventMessage = {
+            type: 'agent:event',
+            payload: event,
+            timestamp: Date.now(),
+          };
+          await sender.send(message);
+        }
+      }
+
+      // Register listener for future events (after replay)
+      RunManager.addListener(runId, eventCallback);
 
       // If run already completed, send final status
       if (runState && (runState.status === 'completed' || runState.status === 'failed' || runState.status === 'stopped')) {

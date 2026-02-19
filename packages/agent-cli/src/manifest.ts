@@ -186,6 +186,53 @@ export const manifest = {
           'kb agent trace iteration --task-id=task-123 --iteration=5 --json',
         ],
       },
+      {
+        id: 'agent:trace:context',
+        group: 'agent',
+        describe: 'View what the LLM sees at each iteration — context window, truncations, responses',
+        longDescription:
+          'Shows the full context timeline for debugging agent behavior. ' +
+          'For each LLM call: what messages are in the sliding window, ' +
+          'what was truncated/dropped, and what the LLM responded with.',
+
+        handler: './cli/commands/trace-context.js#default',
+        handlerPath: './cli/commands/trace-context.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          iteration: { type: 'number', description: 'Filter to specific iteration' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace context --task-id=task-123',
+          'kb agent trace context --task-id=task-123 --iteration=3',
+          'kb agent trace context --task-id=task-123 --json',
+        ],
+      },
+      {
+        id: 'agent:trace:diagnose',
+        group: 'agent',
+        describe: 'Quick diagnostic analysis — answers "what went wrong?" in one command',
+        longDescription:
+          'Comprehensive diagnostic report for agent execution. ' +
+          'Analyzes errors, context window health (drops, truncations), ' +
+          'tool failures, LLM reasoning text, loop detection, and quality indicators. ' +
+          'One command to understand any agent issue.',
+
+        handler: './cli/commands/trace-diagnose.js#default',
+        handlerPath: './cli/commands/trace-diagnose.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace diagnose --task-id=task-123',
+          'kb agent trace diagnose --task-id=task-123 --json',
+        ],
+      },
       // File change history commands
       {
         id: 'agent:history',
