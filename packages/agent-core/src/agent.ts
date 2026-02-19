@@ -14,6 +14,7 @@ import type {
   AgentEvent,
 } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
+import { createToolRegistry } from '@kb-labs/agent-tools';
 import {
   useLLM,
   useLogger,
@@ -57,12 +58,7 @@ import {
 } from './tracer/trace-helpers.js';
 import { ContextFilter } from './context/context-filter.js';
 import { SmartSummarizer } from './context/smart-summarizer.js';
-import {
-  createContextRetrieveTool,
-  executeContextRetrieve,
-  formatContextRetrieveResult,
-  type ContextRetrieveInput,
-} from './tools/context-retrieve.js';
+// context_retrieve tool removed — agents should re-read files instead
 import { FileChangeTracker } from './history/file-change-tracker.js';
 import { SnapshotStorage } from './history/snapshot-storage.js';
 import { ConflictDetector } from './history/conflict-detector.js';
@@ -72,7 +68,7 @@ import { DEFAULT_FILE_HISTORY_CONFIG } from '@kb-labs/agent-contracts';
 /**
  * Default instruction file names to scan (in order of priority)
  */
-const INSTRUCTION_FILE_NAMES = ['AGENT.md', 'KB_AGENT.md', '.agent.md'];
+const INSTRUCTION_FILE_NAMES = ['CLAUDE.md', 'AGENT.md', 'KB_AGENT.md', '.agent.md'];
 
 /**
  * Generate unique agent ID
@@ -110,6 +106,8 @@ export class Agent {
   private currentTask?: string;
   private eventEmitter = createEventEmitter();
   private startTime = 0;
+  /** Recent tool call signatures for loop detection */
+  private recentToolCalls: string[] = [];
   private startTimestamp = ''; // ISO string for startedAt in agent:end events
 
   /** Unique ID for this agent instance (for event correlation) */
@@ -132,7 +130,7 @@ export class Agent {
 
   /**
    * Phase 2: Progress tracking to detect when agent is stuck
-   * Automatically triggers ask_orchestrator when stuck patterns detected
+   * Automatically triggers ask_parent when stuck patterns are detected
    */
   private progressTracker = {
     lastToolCalls: [] as string[], // Last 3 tool calls
@@ -148,6 +146,17 @@ export class Agent {
   private smartSummarizer: SmartSummarizer;
   private cachedSystemPrompt?: string;
   private cachedTaskMessage?: string;
+
+  /**
+   * Previous context snapshot for diff tracking between iterations
+   */
+  private previousContextSnapshot: {
+    iteration: number;
+    messageCount: number;
+    totalChars: number;
+    systemPromptChars: number;
+    messages: Array<{ role: string; chars: number }>;
+  } | null = null;
 
   /**
    * File change tracking (Phase 1: File History)
@@ -212,9 +221,92 @@ export class Agent {
       this.conflictResolver = new ConflictResolver(escalationPolicy);
 
       // Inject tracker into tool context for fs_write and fs_patch
-      // TypeScript doesn't see these new fields yet, so use type assertion
-      (context as any).fileChangeTracker = this.fileChangeTracker;
-      (context as any).agentId = this.agentId;
+      context.fileChangeTracker = this.fileChangeTracker;
+      context.agentId = this.agentId;
+
+      // Inject spawnAgent callback for main agents (sub-agents don't get it → no recursion)
+      if (!config.parentAgentId) {
+        let subtaskCounter = 0;
+
+        context.spawnAgent = async (request) => {
+          const subtaskIndex = subtaskCounter++;
+          const subtaskId = `subtask-${this.agentId}-${subtaskIndex}`;
+          const childWorkingDir = request.workingDir
+            ? path.resolve(config.workingDir, request.workingDir)
+            : config.workingDir;
+
+          // Emit subtask:start so UI/tracer can track sub-agent lifecycle
+          this.emit({
+            type: 'subtask:start',
+            timestamp: new Date().toISOString(),
+            sessionId: config.sessionId,
+            data: {
+              subtaskId,
+              description: request.task,
+              index: subtaskIndex,
+              total: 0, // unknown upfront
+            },
+          });
+
+          const childConfig: AgentConfig = {
+            workingDir: childWorkingDir,
+            maxIterations: request.maxIterations || 10,
+            temperature: config.temperature,
+            verbose: config.verbose,
+            sessionId: config.sessionId,
+            tier: config.tier || 'small',
+            parentAgentId: this.agentId,
+            tracer: config.tracer,
+            memory: config.memory,
+            onEvent: config.onEvent,
+          };
+
+          // Create fresh toolRegistry WITHOUT spawnAgent → sub-agent can't spawn further
+          const childToolContext = {
+            workingDir: childWorkingDir,
+            sessionId: config.sessionId,
+          };
+          const childToolRegistry = createToolRegistry(childToolContext);
+
+          const childAgent = new Agent(childConfig, childToolRegistry);
+
+          try {
+            const result = await childAgent.execute(request.task);
+
+            // Emit subtask:end with result
+            this.emit({
+              type: 'subtask:end',
+              timestamp: new Date().toISOString(),
+              sessionId: config.sessionId,
+              data: {
+                subtaskId,
+                success: result.success,
+                summary: `${result.iterations} iterations, ${result.tokensUsed} tokens: ${result.summary || 'No result'}`,
+              },
+            });
+
+            return {
+              success: result.success,
+              result: result.summary || 'No result',
+              iterations: result.iterations,
+              tokensUsed: result.tokensUsed,
+            };
+          } catch (error) {
+            // Emit subtask:end with failure
+            this.emit({
+              type: 'subtask:end',
+              timestamp: new Date().toISOString(),
+              sessionId: config.sessionId,
+              data: {
+                subtaskId,
+                success: false,
+                summary: `Failed: ${error instanceof Error ? error.message : String(error)}`,
+              },
+            });
+            throw error;
+          }
+        };
+      }
     } catch (error) {
       const logger = useLogger();
       // Non-critical: if tracker initialization fails, agent still works
@@ -224,8 +316,8 @@ export class Agent {
 
     // Initialize context optimization (Phase 4)
     this.contextFilter = new ContextFilter({
-      maxOutputLength: 500,
-      slidingWindowSize: 5,
+      maxOutputLength: 8000,   // 8K chars — enough for most file reads without exploding context
+      slidingWindowSize: 20,
       enableDeduplication: true,
     });
 
@@ -295,9 +387,103 @@ export class Agent {
   }
 
   /**
+   * Extract scope (subdirectory) from task using LLM tool calling.
+   * If task mentions a specific repo/folder, narrows workingDir for faster search.
+   * Only runs for main agents (not sub-agents).
+   */
+  private async extractScope(task: string): Promise<string | null> {
+    // Sub-agents already have scoped workingDir from parent
+    if (this.config.parentAgentId) { return null; }
+
+    const llm = useLLM({ tier: 'small' });
+    if (!llm || !llm.chatWithTools) { return null; }
+
+    const workingDir = this.config.workingDir;
+    let availableDirs: string[] = [];
+    try {
+      const entries = fs.readdirSync(workingDir, { withFileTypes: true });
+      availableDirs = entries
+        .filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules')
+        .map(e => e.name);
+    } catch {
+      return null;
+    }
+
+    if (availableDirs.length === 0) { return null; }
+
+    const scopeTool: LLMTool = {
+      name: 'select_scope',
+      description: 'Select the specific subdirectory/repository that this task is about, or indicate no specific scope',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: {
+            type: 'string',
+            enum: [...availableDirs, 'none'],
+            description: 'The directory name if task is about a specific one, or "none" if task is general',
+          },
+        },
+        required: ['scope'],
+      },
+    };
+
+    const prompt = `Analyze this task and determine if it refers to a specific subdirectory/repository.
+
+**Task:** ${task}
+
+**Available directories:**
+${availableDirs.map(d => `- ${d}`).join('\n')}
+
+If the task explicitly mentions or is clearly about ONE of these directories, select it.
+If the task is general or mentions multiple directories, select "none".
+
+Call select_scope with your choice.`;
+
+    try {
+      const response = await llm.chatWithTools(
+        [{ role: 'user', content: prompt }],
+        { tools: [scopeTool], temperature: 0 }
+      );
+
+      const toolCall = response.toolCalls?.[0];
+      if (toolCall && toolCall.name === 'select_scope') {
+        const input = toolCall.input as { scope: string };
+        const scope = input.scope;
+        if (scope && scope !== 'none' && availableDirs.includes(scope)) {
+          this.log(`🎯 Extracted scope: ${scope}`);
+          return scope;
+        }
+      }
+    } catch (error) {
+      this.log(`⚠️ Scope extraction error: ${error}`);
+    }
+
+    return null;
+  }
+
+  /**
+   * Apply extracted scope by narrowing workingDir in config and tool context.
+   */
+  private applyScope(scope: string): void {
+    const scopedDir = path.join(this.config.workingDir, scope);
+    if (fs.existsSync(scopedDir) && fs.statSync(scopedDir).isDirectory()) {
+      this.config = { ...this.config, workingDir: scopedDir };
+      const context = this.toolRegistry.getContext();
+      context.workingDir = scopedDir;
+      this.log(`📁 Scoped workingDir: ${scopedDir}`);
+    }
+  }
+
+  /**
    * Execute task with LLM tool calling
    */
   async execute(task: string): Promise<TaskResult> {
+    // Extract scope before execution (narrows workingDir if task targets a specific subdir)
+    const scope = await this.extractScope(task);
+    if (scope) {
+      this.applyScope(scope);
+    }
+
     // Check if mode-based execution is requested
     if (this.config.mode && this.config.mode.mode !== 'execute') {
       const { getModeHandler } = await import('./modes/mode-handler');
@@ -479,33 +665,8 @@ export class Agent {
       });
 
       try {
-        // On last iteration, only allow report_to_orchestrator tool
         const isLastIteration = iteration === this.config.maxIterations;
-        const beforeTools = tools.map(t => t.name);
-        const availableTools = isLastIteration
-          ? tools.filter(t => t.name === 'report_to_orchestrator')
-          : tools;
-        const afterTools = availableTools.map(t => t.name);
-
-        // Trace tool:filter event if tools were filtered
-        if (this.tracer && isLastIteration && beforeTools.length !== afterTools.length) {
-          const filtered = beforeTools
-            .filter(name => !afterTools.includes(name))
-            .map(name => ({
-              name,
-              reason: 'last_iteration' as const,
-              explanation: 'Only report_to_orchestrator allowed on last iteration',
-            }));
-
-          this.tracer.trace(
-            createToolFilterEvent({
-              iteration,
-              beforeTools,
-              afterTools,
-              filtered,
-            })
-          );
-        }
+        const availableTools = tools;
 
         // Trace iteration:detail event
         if (this.tracer) {
@@ -521,134 +682,6 @@ export class Agent {
               totalTokens: this.totalTokens,
             })
           );
-        }
-
-        // Add iteration context message for last iteration
-        if (isLastIteration) {
-          const beforeMessagesCount = messages.length;
-          const lastIterationMessage = `🛑 LAST ITERATION (${iteration}/${this.config.maxIterations}) - You MUST call report_to_orchestrator NOW with your synthesized answer from all information you gathered. This is your ONLY chance to report findings!`;
-
-          messages.push({
-            role: 'user',
-            content: lastIterationMessage,
-          });
-
-          // Trace prompt:diff event to debug prompt modifications
-          if (this.tracer) {
-            this.tracer.trace(
-              createPromptDiffEvent({
-                iteration,
-                messagesAdded: 1,
-                messagesRemoved: 0,
-                totalMessages: messages.length,
-                tokensBefore: beforeMessagesCount * 100,
-                tokensAfter: messages.length * 100,
-                changes: [
-                  {
-                    type: 'added',
-                    role: 'user',
-                    contentPreview: lastIterationMessage.slice(0, 100),
-                    index: messages.length - 1,
-                  },
-                ],
-              })
-            );
-          }
-        }
-
-        // AUTO-REFLECTION: Force reflection every 3 iterations (independent of LLM choice)
-        // This ensures agents assess progress regularly, even if LLM prefers simpler tools
-        if (iteration > 0 && iteration % 3 === 0 && iteration < this.config.maxIterations - 1) {
-          this.log(`\n🤔 Auto-reflection triggered (iteration ${iteration}/${this.config.maxIterations})\n`);
-
-          // Build reflection prompt with verification awareness
-          const reflectionPrompt = `You are on iteration ${iteration} of ${this.config.maxIterations}. Review your progress and decide whether to continue or report completion.
-
-Call reflect_on_progress with:
-- findings_summary: Brief summary of what you've accomplished (2-3 sentences)
-- confidence: Your confidence that the task is COMPLETE (0.0 = no progress, 1.0 = fully done)
-- questions_remaining: What aspects are still incomplete (empty array if all done)
-- should_continue: true if more work needed, false if ready to report
-- reason: Explanation for your decision (1 sentence)
-- evidence_of_completion: CONCRETE evidence of completion with VERIFICATION RESULTS
-
-**Evidence Requirements:**
-
-For RESEARCH tasks:
-- List sources/files you read
-- Quote key findings with file:line references
-- Example: "Found AuthService in src/auth/service.ts:15-45, implements OAuth2 with login(), validate() methods"
-
-For IMPLEMENTATION tasks:
-- List files created/modified
-- INCLUDE VERIFICATION RESULTS (critical!)
-  * Created code → did you run tests? Include results: "npm test: 18/18 passing" or "npm test: 2 failed, 16 passed"
-  * Created API → did you test endpoints? Include: "curl /health → 200 OK" or "Port conflict: EADDRINUSE 3000"
-  * Created deployment → did you verify? Include: "docker build successful" or "Build failed: missing dependency"
-- Example: "Created 15 files including package.json, src/index.ts. Ran npm install (success), npm test (2 failed: validation.test.js, auth.test.js)"
-
-**Confidence Assessment (be honest!):**
-- HIGH (≥0.8): Work done AND verified working (tests pass, service healthy, etc.)
-- MEDIUM (0.5-0.7): Work done BUT verification failed OR not verified yet
-- LOW (<0.5): Work incomplete OR verification blocked OR don't know how to verify
-
-**Decision Logic:**
-- Verification PASSED → should_continue: false (ready to report success)
-- Verification FAILED but you can fix → should_continue: true (retry, explain what you'll fix)
-- Verification FAILED multiple times → should_continue: false (report partial result, let orchestrator decide)
-- Haven't verified yet → should_continue: true (verify first before claiming completion)
-
-**CRITICAL:** Don't claim high confidence without verification proof. "Created files" ≠ "Working solution".`;
-
-          messages.push({
-            role: 'user',
-            content: reflectionPrompt,
-          });
-
-          // Call LLM to get reflection (only reflect_on_progress tool allowed)
-          const reflectionTools = tools.filter(t => t.name === 'reflect_on_progress');
-
-          // Phase 4: Use lean context for reflection too
-           
-          const reflectionResponse = await this.callLLMWithTools(
-            llm,
-            messages,
-            reflectionTools,
-            tier,
-            iteration,
-            this.cachedSystemPrompt,
-            this.cachedTaskMessage
-          );
-
-          messages.push({
-            role: 'assistant',
-            content: reflectionResponse.content || '[Reflecting...]',
-            toolCalls: reflectionResponse.toolCalls,
-          });
-
-          // If reflection includes tool call, execute it
-          if (reflectionResponse.toolCalls && reflectionResponse.toolCalls.length > 0) {
-             
-            const reflectionToolResults = await this.executeToolCalls(reflectionResponse.toolCalls, iteration);
-
-            // Add tool results to messages
-            messages.push(...reflectionToolResults);
-
-            // Check if should auto-report
-            for (const toolResultMsg of reflectionToolResults) {
-              const metadata = toolResultMsg.metadata as { shouldAutoReport?: boolean; reflection?: { findingsSummary: string; confidence: number } } | undefined;
-
-              if (metadata?.shouldAutoReport && metadata?.reflection) {
-                this.log(`\n🤔 Auto-reflection triggered early exit (confidence: ${metadata.reflection.confidence.toFixed(2)})\n`);
-
-                 
-                return await this.createSuccessResult({
-                  success: true,
-                  summary: metadata.reflection.findingsSummary,
-                }, iteration);
-              }
-            }
-          }
         }
 
         // Phase 4: Use lean context optimization
@@ -697,7 +730,7 @@ For IMPLEMENTATION tasks:
 
         // Check if done
         if (!response.toolCalls || response.toolCalls.length === 0) {
-          // On last iteration, FORCE synthesis if LLM didn't call report_to_orchestrator
+          // On last iteration, FORCE synthesis if LLM didn't call report
           if (isLastIteration) {
             // Emit forced synthesis event
             this.emit({
@@ -741,10 +774,17 @@ Your answer should be detailed, specific, and reference actual files and code yo
             } as AgentEvent);
 
             // Call LLM for synthesis (no tools needed)
+            // IMPORTANT: Use lean context instead of full messages to save tokens
+            const leanContext = await this.buildLeanContext(
+              this.cachedSystemPrompt!,
+              this.cachedTaskMessage!,
+              iteration
+            );
+
             const synthesisStartTime = Date.now();
             // Sequential LLM call required - part of agent iteration loop
-             
-            const synthesisResponse = await llm.chatWithTools(messages, {
+
+            const synthesisResponse = await llm.chatWithTools(leanContext, {
               tools: [], // No tools needed for synthesis
               toolChoice: 'none', // Explicitly disable tool calling
               temperature: this.config.temperature || 0.1,
@@ -795,6 +835,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
                 iteration,
                 hadToolCalls: false,
                 toolCallCount: 0,
+                cumulativeTokens: this.totalTokens,
               },
             } as AgentEvent);
 
@@ -817,20 +858,35 @@ Your answer should be detailed, specific, and reference actual files and code yo
               iteration,
               hadToolCalls: false,
               toolCallCount: 0,
+              cumulativeTokens: this.totalTokens,
             },
           } as AgentEvent);
 
-           
+
           const validation = await this.validateTaskCompletion(task, response.content);
            
           return await this.createSuccessResult(validation, iteration);
         }
 
         // Execute tools and update messages
-         
+
         const toolResults = await this.executeToolCalls(response.toolCalls, iteration);
-         
+
         await this.appendToolMessagesToHistory(messages, response, toolResults, iteration);
+
+        // Loop detection: if same tool calls repeat 3 iterations in a row, stop
+        const toolCallSigs = response.toolCalls.map(tc => ({
+          name: tc.name,
+          arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input || {}),
+        }));
+        if (this.detectLoop(toolCallSigs)) {
+          this.log(`\n🔄 Loop detected — same tool calls repeated 3 times. Stopping.\n`);
+          return this.createFailureResult(
+            'Agent stuck in a loop — repeating the same actions. Report what was found so far.',
+            iteration,
+            'loop_detected'
+          );
+        }
 
         // Phase 2: Update progress tracker after tool execution
         if (response.toolCalls.length > 0) {
@@ -848,19 +904,19 @@ Your answer should be detailed, specific, and reference actual files and code yo
             });
         }
 
-        // Phase 1: Check for ask_orchestrator tool call
-        const hasAskOrchestrator = response.toolCalls.some(tc => tc.name === 'ask_orchestrator');
-        if (hasAskOrchestrator && this.config.onAskOrchestrator) {
+        // Phase 1: Check for ask_parent tool call
+        const hasAskParent = response.toolCalls.some(tc => tc.name === 'ask_parent');
+        if (hasAskParent && this.config.onAskParent) {
           // Extract question from tool call
-          const askCall = response.toolCalls.find(tc => tc.name === 'ask_orchestrator');
+          const askCall = response.toolCalls.find(tc => tc.name === 'ask_parent');
           const input = askCall?.input as Record<string, unknown> | undefined;
           const question = (input?.question as string) || 'No question provided';
           const reason = (input?.reason as 'stuck' | 'uncertain' | 'blocker' | 'clarification') || 'uncertain';
           const context = input?.context as Record<string, unknown> | undefined;
 
-          // Call orchestrator callback
+          // Call parent agent callback
            
-          const orchestratorResponse = await this.config.onAskOrchestrator({
+          const parentResponse = await this.config.onAskParent({
             question,
             reason,
             context,
@@ -868,31 +924,31 @@ Your answer should be detailed, specific, and reference actual files and code yo
             subtask: this.currentTask,
           });
 
-          // Add orchestrator's answer to conversation history
+          // Add parent's answer to conversation history
           messages.push({
             role: 'user',
-            content: `📣 Orchestrator response:\n\n${orchestratorResponse.answer}${orchestratorResponse.hint ? `\n\n💡 Hint: ${orchestratorResponse.hint}` : ''}`,
+            content: `📣 Parent agent response:\n\n${parentResponse.answer}${parentResponse.hint ? `\n\n💡 Hint: ${parentResponse.hint}` : ''}`,
           });
 
-          // Handle orchestrator action
-          if (orchestratorResponse.action === 'skip') {
-            // Orchestrator says skip this subtask
+          // Handle parent action
+          if (parentResponse.action === 'skip') {
+            // Parent says skip this subtask
              
             return await this.createSuccessResult({
               success: true,
-              summary: `Skipped on orchestrator's guidance: ${orchestratorResponse.answer}`,
+              summary: `Skipped on parent's guidance: ${parentResponse.answer}`,
             }, iteration);
           }
 
-          // Continue with next iteration (orchestrator's answer is in history)
+          // Continue with next iteration (parent's answer is in history)
           continue;
         }
 
-        // Check for early exit via report_to_orchestrator
-        const hasReportTool = response.toolCalls.some(tc => tc.name === 'report_to_orchestrator');
+        // Check for early exit via report
+        const hasReportTool = response.toolCalls.some(tc => tc.name === 'report');
         if (hasReportTool) {
           // Extract answer from tool call
-          const reportCall = response.toolCalls.find(tc => tc.name === 'report_to_orchestrator');
+          const reportCall = response.toolCalls.find(tc => tc.name === 'report');
           const input = reportCall?.input as Record<string, unknown> | undefined;
           const answer = (input?.answer as string) || 'No answer provided';
           const confidence = (input?.confidence as number) || 0.5;
@@ -907,6 +963,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
               iteration,
               hadToolCalls: true,
               toolCallCount: response.toolCalls.length,
+              cumulativeTokens: this.totalTokens,
             },
           } as AgentEvent);
 
@@ -933,7 +990,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
           if (metadata?.shouldAutoReport && metadata?.reflection) {
             this.log(`\n🤔 Manual reflection triggered auto-report (confidence: ${metadata.reflection.confidence.toFixed(2)})\n`);
 
-            // Auto-trigger report_to_orchestrator
+            // Auto-trigger report
              
             return await this.createSuccessResult({
               success: true,
@@ -942,9 +999,9 @@ Your answer should be detailed, specific, and reference actual files and code yo
           }
         }
 
-        // Phase 2: Auto-detect stuck and ask orchestrator for help
-        if (this.detectStuck() && this.config.onAskOrchestrator) {
-          this.log(`\n🔄 Detected stuck pattern - asking orchestrator for guidance...\n`);
+        // Auto-detect stuck and ask parent for help
+        if (this.detectStuck() && this.config.onAskParent) {
+          this.log(`\n🔄 Detected stuck pattern - asking parent for guidance...\n`);
 
           const stuckReason = this.progressTracker.lastToolCalls.length >= 3 &&
                              new Set(this.progressTracker.lastToolCalls.slice(-3)).size === 1
@@ -952,7 +1009,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
             : `No progress for ${this.progressTracker.iterationsSinceProgress} iterations`;
 
            
-          const orchestratorResponse = await this.config.onAskOrchestrator({
+          const parentResponse = await this.config.onAskParent({
             question: `I appear to be stuck. ${stuckReason}. What should I do?`,
             reason: 'stuck',
             context: {
@@ -963,10 +1020,10 @@ Your answer should be detailed, specific, and reference actual files and code yo
             subtask: this.currentTask,
           });
 
-          // Add orchestrator's guidance to conversation
+          // Add parent's guidance to conversation
           messages.push({
             role: 'user',
-            content: `🤖 Auto-detected stuck pattern!\n\n📣 Orchestrator guidance:\n\n${orchestratorResponse.answer}${orchestratorResponse.hint ? `\n\n💡 Hint: ${orchestratorResponse.hint}` : ''}`,
+            content: `🤖 Auto-detected stuck pattern!\n\n📣 Parent guidance:\n\n${parentResponse.answer}${parentResponse.hint ? `\n\n💡 Hint: ${parentResponse.hint}` : ''}`,
           });
 
           // Reset progress tracker after getting help
@@ -974,16 +1031,16 @@ Your answer should be detailed, specific, and reference actual files and code yo
           this.progressTracker.lastToolCalls = [];
           this.progressTracker.lastOutputSizes = [];
 
-          // Handle orchestrator action
-          if (orchestratorResponse.action === 'skip') {
+          // Handle parent action
+          if (parentResponse.action === 'skip') {
              
             return await this.createSuccessResult({
               success: true,
-              summary: `Skipped on orchestrator's guidance (auto-stuck detection): ${orchestratorResponse.answer}`,
+              summary: `Skipped on parent's guidance (auto-stuck detection): ${parentResponse.answer}`,
             }, iteration);
           }
 
-          // Continue with orchestrator's guidance
+          // Continue with parent's guidance
           continue;
         }
 
@@ -1016,6 +1073,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
             iteration,
             hadToolCalls: true,
             toolCallCount: response.toolCalls.length,
+            cumulativeTokens: this.totalTokens,
           },
         } as AgentEvent);
       } catch (error) {
@@ -1094,25 +1152,14 @@ Your answer should be detailed, specific, and reference actual files and code yo
 
   /**
    * Convert tool definitions to LLM format
-   * Phase 4: Add context_retrieve tool for on-demand context retrieval
    */
   private convertToolDefinitions(): LLMTool[] {
     const toolDefinitions = this.toolRegistry.getDefinitions();
-    const registryTools = toolDefinitions.map(td => ({
+    return toolDefinitions.map(td => ({
       name: td.function.name,
       description: td.function.description,
       inputSchema: td.function.parameters as Record<string, unknown>,
     }));
-
-    // Add context_retrieve tool (Phase 4: On-demand retrieval)
-    const contextRetrieveTool = createContextRetrieveTool(
-      () => this.contextFilter.getHistorySnapshot()
-    );
-
-    return [
-      ...registryTools,
-      contextRetrieveTool,
-    ];
   }
 
   /**
@@ -1184,6 +1231,111 @@ Your answer should be detailed, specific, and reference actual files and code yo
       : messages;
 
     const llmStartTimestamp = new Date().toISOString();
+
+    // Trace context snapshot — what exactly the LLM sees
+    if (this.tracer) {
+      const contextMessages = contextToUse.map((msg, i) => {
+        const content = typeof msg.content === 'string' ? msg.content : '';
+        const toolCallsArr = (msg as any).toolCalls || [];
+        const truncated = content.includes('truncated)');
+        const entry: Record<string, unknown> = {
+          index: i,
+          role: msg.role,
+          chars: content.length,
+        };
+        if (truncated) entry.truncated = true;
+        if (toolCallsArr.length > 0) {
+          entry.toolCalls = toolCallsArr.map((tc: any) => tc.name || tc.function?.name);
+        }
+        if ((msg as any).toolCallId) entry.toolCallId = (msg as any).toolCallId;
+        // Preview: first 200 chars for system/user, first 100 for tool results
+        const previewLen = msg.role === 'tool' ? 100 : 200;
+        if (content.length > 0) entry.preview = content.slice(0, previewLen);
+        return entry;
+      });
+
+      const totalChars = contextToUse.reduce((sum, msg) =>
+        sum + (typeof msg.content === 'string' ? msg.content.length : 0), 0);
+
+      // Sliding window info — what was dropped
+      const fullHistorySize = this.contextFilter.getHistorySnapshot().length;
+      const windowedSize = contextToUse.length - 2; // minus system + task
+      const droppedMessages = Math.max(0, fullHistorySize - windowedSize);
+
+      this.tracer.trace({
+        type: 'context:snapshot',
+        seq: 0,
+        timestamp: llmStartTimestamp,
+        iteration,
+        tier,
+        messageCount: contextToUse.length,
+        totalChars,
+        estimatedTokens: Math.round(totalChars / 4),
+        toolCount: tools.length,
+        slidingWindow: {
+          fullHistorySize,
+          windowedSize,
+          droppedMessages,
+        },
+        messages: contextMessages,
+      } as any);
+
+      // Emit context:diff — what changed since last iteration
+      const firstMsg = contextToUse[0];
+      const systemPromptChars = firstMsg && firstMsg.role === 'system'
+        ? (typeof firstMsg.content === 'string' ? firstMsg.content.length : 0)
+        : 0;
+
+      const currentSnapshot = {
+        iteration,
+        messageCount: contextToUse.length,
+        totalChars,
+        systemPromptChars,
+        messages: contextMessages.map(m => ({ role: m.role as string, chars: m.chars as number })),
+      };
+
+      if (this.previousContextSnapshot) {
+        const prev = this.previousContextSnapshot;
+        const messagesAdded = currentSnapshot.messageCount - prev.messageCount;
+        const charsDelta = currentSnapshot.totalChars - prev.totalChars;
+        const tokensDelta = Math.round(charsDelta / 4);
+
+        // Detect system prompt changes
+        const systemPromptChanged = currentSnapshot.systemPromptChars !== prev.systemPromptChars;
+        const systemPromptCharsDelta = currentSnapshot.systemPromptChars - prev.systemPromptChars;
+
+        // Find new messages (ones that didn't exist in previous snapshot)
+        const newMessages = contextMessages.slice(prev.messageCount).map(m => ({
+          role: m.role as string,
+          chars: m.chars as number,
+          preview: (m.preview as string) || '',
+          toolCalls: m.toolCalls as string[] | undefined,
+        }));
+
+        this.tracer.trace({
+          type: 'context:diff',
+          seq: 0,
+          timestamp: llmStartTimestamp,
+          iteration,
+          previousIteration: prev.iteration,
+          diff: {
+            messagesAdded,
+            messagesBefore: prev.messageCount,
+            messagesAfter: currentSnapshot.messageCount,
+            charsBefore: prev.totalChars,
+            charsAfter: currentSnapshot.totalChars,
+            charsDelta,
+            tokensDelta,
+            droppedMessages,
+            systemPromptChanged,
+            systemPromptCharsDelta: systemPromptChanged ? systemPromptCharsDelta : undefined,
+            newMessages,
+          },
+        } as any);
+      }
+
+      this.previousContextSnapshot = currentSnapshot;
+    }
 
     // Emit llm:start
     this.emit({
@@ -1304,17 +1456,28 @@ Your answer should be detailed, specific, and reference actual files and code yo
       durationMs,
     });
 
-    // Record LLM response details
+    // Record LLM response with FULL reasoning text and tool calls
     this.recordTrace({
       iteration,
       timestamp: new Date().toISOString(),
       type: 'llm_response',
       data: {
+        // Full reasoning text — critical for debugging agent decisions
         content: response.content || '',
+        contentLength: (response.content || '').length,
         hasToolCalls: Boolean(response.toolCalls && response.toolCalls.length > 0),
         toolCallsCount: response.toolCalls?.length || 0,
+        toolCalls: response.toolCalls?.map(tc => ({
+          name: tc.name,
+          // Full args for debugging — not truncated
+          args: typeof tc.input === 'string'
+            ? tc.input
+            : JSON.stringify(tc.input || {}),
+        })),
+        // Stop reason helps understand why LLM chose tools vs text
+        stopReason: response.toolCalls && response.toolCalls.length > 0 ? 'tool_use' : 'end_turn',
       },
-      durationMs: 0,
+      durationMs,
     });
 
     return response;
@@ -1381,29 +1544,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
       });
 
       try {
-        // Phase 4: Handle context_retrieve tool (special case - not in registry)
-        let result: ToolResult;
-        if (toolCall.name === 'context_retrieve') {
-           
-          const retrieveResult = await executeContextRetrieve(
-            input as ContextRetrieveInput,
-            () => this.contextFilter.getHistorySnapshot()
-          );
-
-          const formattedOutput = formatContextRetrieveResult(retrieveResult);
-
-          result = {
-            success: retrieveResult.success,
-            output: formattedOutput,
-            error: retrieveResult.error,
-            metadata: {
-              messagesRetrieved: retrieveResult.count,
-            },
-          };
-        } else {
-           
-          result = await this.toolRegistry.execute(toolCall.name, input);
-        }
+        const result = await this.toolRegistry.execute(toolCall.name, input);
 
         // === DISABLED: Cache disabled (Phase 1, Step 1.4) ===
         // this.cacheResult(cacheKey, result);
@@ -1747,7 +1888,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
       iteration,
     }));
 
-    // Phase 4: Append to full history (preserved for tracing/context_retrieve)
+    // Append to full history (preserved for tracing)
     await this.contextFilter.appendToHistory([assistantMessage, ...toolResultsWithIteration]);
 
     // Also push to messages array (backward compatibility)
@@ -1917,7 +2058,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
   /**
    * Track file operations
    */
-  private trackFileOperation(toolName: string, input: Record<string, unknown>, result?: { metadata?: Record<string, unknown> }): void {
+  private trackFileOperation(toolName: string, input: Record<string, unknown>, _result?: unknown): void {
     const filePath = input.path as string | undefined;
 
     if (!filePath) {
@@ -1933,10 +2074,6 @@ Your answer should be detailed, specific, and reference actual files and code yo
       this.filesCreated.delete(filePath);
     } else if (toolName === 'fs_read') {
       this.filesRead.add(filePath);
-      // Save content hash for edit protection
-      if (result?.metadata?.contentHash) {
-        this.filesReadHash.set(filePath, result.metadata.contentHash as string);
-      }
     }
   }
 
@@ -2026,7 +2163,9 @@ Your answer should be detailed, specific, and reference actual files and code yo
     // This includes questions (what/how/why) AND research verbs (analyze/scan/inspect/review/identify/check)
     const isInformationalTask = /^(what|how|why|explain|tell|describe|show|list|find|search|where|when|who|analyze|scan|inspect|review|identify|check|examine|investigate|explore|map|determine)/i.test(task.trim());
 
-    if (isInformationalTask && agentResponse && agentResponse.trim().length > 50) {
+    // Require substantial answer (200+ chars) with evidence (file paths, code blocks, or technical details)
+    const hasEvidence = /\.(ts|js|tsx|jsx|md|json|py|go|rs|yaml|yml)|\/[a-z]|```|:\d+/.test(agentResponse || '');
+    if (isInformationalTask && agentResponse && agentResponse.trim().length > 200 && hasEvidence) {
       // For questions, the agent's response IS the answer - use it directly
       return {
         success: true,
@@ -2092,18 +2231,15 @@ Respond ONLY with valid JSON:
       this.log(`⚠️  Validation error: ${error}`);
     }
 
-    // Fallback: consider successful if files were modified/created OR agent provided a response
+    // Fallback: only file changes count as concrete success for non-informational tasks
     const hasFileChanges =
       this.filesCreated.size > 0 || this.filesModified.size > 0;
-    const hasResponse = Boolean(agentResponse && agentResponse.trim().length > 0);
 
     return {
-      success: hasFileChanges || hasResponse,
+      success: hasFileChanges,
       summary: hasFileChanges
         ? `Modified ${this.filesModified.size} file(s), created ${this.filesCreated.size} file(s)`
-        : hasResponse
-          ? agentResponse!.slice(0, 200)
-          : 'Task completed without file changes',
+        : agentResponse?.slice(0, 200) || 'Task did not produce concrete results',
     };
   }
 
@@ -2120,7 +2256,6 @@ Respond ONLY with valid JSON:
         if (fs.existsSync(filePath)) {
           const content = fs.readFileSync(filePath, 'utf-8');
           if (content.trim().length > 0) {
-            this.log(`📋 Loaded project instructions from ${fileName}`);
             return content;
           }
         }
@@ -2136,223 +2271,89 @@ Respond ONLY with valid JSON:
    * Build system prompt with memory context and project instructions
    */
   private async buildSystemPrompt(): Promise<string> {
-    let basePrompt = `You are an autonomous agent that helps users complete tasks.
+    let basePrompt = `You are an autonomous software engineering agent. You execute tasks end-to-end: research, implement, verify.
 
-**Available Tools:**
-You have access to ${this.toolRegistry.getDefinitions().length} tools:
-- Filesystem: fs_write, fs_read, fs_edit, fs_list
-- Search: glob_search, grep_search
-- Shell: shell_exec
-- Memory: memory_get, memory_preference, memory_constraint, memory_correction, memory_finding, memory_blocker
-- Session: session_save
-- TODO (optional): todo_create, todo_update, todo_get
-- Interaction: ask_user
+# Core rules
 
-**🧠 BEFORE EACH TOOL CALL - THINK FIRST:**
+- NEVER answer from memory. Search codebase first, report only what you found in files.
+- Read files before editing. Understand existing code before modifying.
+- Verify your work. After editing, read the file back to confirm changes applied correctly.
+- Prefer editing existing files over creating new ones.
+- When stuck, try a different approach. Don't repeat the same failed action.
 
-Before calling ANY tool, briefly think through:
-1. **Goal:** What am I trying to achieve with this call?
-2. **Already have:** Do I already have this information from a previous call?
-3. **Necessary:** Is this call strictly necessary to answer the user's question?
-4. **Alternative:** Could I answer without this call based on what I already found?
+# Available tools
 
-Example good thinking:
-"Goal: Find where AuthService is defined. Already have: Nothing about auth yet. Necessary: Yes. Alternative: None."
+## Search & Discovery
+- **find_definition** — find where a class/function/interface/type is defined. USE THIS FIRST for lookup queries.
+- **grep_search** — search for exact text or regex in file contents. Use for: imports, error messages, string patterns. Excludes node_modules/dist/.git by default; pass exclude=[] to search everywhere.
+- **glob_search** — find files by name pattern. Glob syntax: "*.ts", "*controller*", "src/**/*.tsx". NOT bare words. Same default excludes as grep_search.
+- **code_stats** — count lines/files by extension. Use to understand project structure.
 
-Example that should STOP:
-"Goal: Find more files about auth. Already have: Found AuthService in src/auth/service.ts with full implementation. Necessary: NO - I have enough to answer. Alternative: Synthesize from what I found."
+## File Operations
+- **fs_read** — read file contents (with line numbers). ALWAYS read before editing.
+- **fs_write** — create new file or overwrite existing (use for new files).
+- **fs_patch** — replace a range of lines in existing file. Requires fs_read first. Line numbers are 1-indexed, inclusive.
+- **fs_list** — list directory contents.
+- **mass_replace** — batch find-and-replace across files. Use dryRun first to preview. Great for renaming across codebase.
 
-**🛑 EARLY EXIT - Use report_to_orchestrator when you have enough information:**
+## Execution
+- **shell_exec** — run shell commands (build, test, lint). Use to verify your changes work.
 
-When you meet ANY of these stopping conditions, call **report_to_orchestrator** immediately:
+## Progress tracking
+- **todo_create** / **todo_update** / **todo_get** — track multi-step tasks. Create a checklist, mark items done.
 
-1. **Found the target:**
-   - User asked "What is X?" and you found X's definition/implementation
-   - User asked "Where is X?" and you found the file path
-   - User asked "How does X work?" and you read X's code
+## Memory
+- **memory_get** — retrieve stored preferences and context.
+- **memory_finding** — store important discoveries with confidence level.
+- **memory_blocker** — record blockers you can't resolve.
 
-2. **Sufficient context:**
-   - You've read 2-3 files directly relevant to the question
-   - You have code snippets that demonstrate the answer
-   - Additional searches return similar/related but not new information
+## Finishing
+- **report** — report your answer/result. Include evidence (file paths, code). Set confidence 0.0-1.0.
 
-3. **Diminishing returns:**
-   - Your last 2 searches found things you already knew
-   - You're finding the same files/patterns repeatedly
-   - Search results are getting less relevant
+# Workflow patterns
 
-4. **Practical limits:**
-   - You've made 5+ tool calls without finding something new
-   - You've read 5+ files on the topic
+## For research tasks (what/how/where questions):
+1. Search: find_definition or grep_search to locate relevant code
+2. Read: fs_read the files you found — get actual content, not just snippets
+3. Analyze: understand the code structure and relationships
+4. Report: report with file paths, code snippets, confidence
 
-5. **Last iteration:**
-   - You're on the last iteration - MUST call report_to_orchestrator with synthesized answer
-   - Include everything you found, with file references and specifics
+## For edit tasks (create/modify/fix/add/refactor):
+1. Understand: read the target file and its surroundings first
+2. Plan: identify exactly what needs to change
+3. Edit: fs_patch for existing files, fs_write for new files
+4. Verify: fs_read the edited file to confirm changes are correct
+5. Test: shell_exec to run build/test if applicable
+6. Report: report with files changed and verification results
 
-**How to use report_to_orchestrator:**
-- Call report_to_orchestrator with answer (string) and confidence (0.0-1.0)
-- Include file references, code snippets, and specific details
-- Example: answer = "In src/auth/service.ts, the AuthService class handles OAuth2. Methods: login(), validate()..."
-
-**IMPORTANT:** It's better to answer with "I found X but couldn't find Y" than to keep searching indefinitely. Users prefer honest partial answers over endless loops.
-
-**🤔 REFLECTION - Assess your progress regularly:**
-
-Every 3-4 iterations, OR when you think you might have enough information, call **reflect_on_progress** to:
-1. Summarize what you've found so far
-2. Rate your confidence (0.0-1.0)
-3. List remaining unanswered questions
-4. Decide whether to continue searching
-
-**When reflect_on_progress shows high confidence (≥0.7) AND no questions remain:**
-- The system will automatically call report_to_orchestrator with your findings
-- You DON'T need to manually call report_to_orchestrator
-- This prevents over-searching and saves tokens
-
-**Example reflection call:**
-reflect_on_progress with:
-  findings_summary: "Found AuthService in src/auth/service.ts with OAuth2 methods: login(), validate(), and refresh()"
-  confidence: 0.9
-  questions_remaining: []
-  should_continue: false
-  reason: "Have complete implementation details and no outstanding questions"
-
-**Reflection triggers:**
-- After 3-4 tool calls
-- When you've read 2-3 relevant files
-- When search results start repeating
-- BEFORE the last iteration (iteration 11/12)
-
-**DO NOT:**
-- Keep searching "just to be thorough" after finding the answer
-- Search for "more examples" when you have 2-3 good ones
-- Re-read files you already read
-- Search for synonyms of things you already found
-
-**⚠️ CRITICAL RULES - MUST FOLLOW:**
-
-1. **NEVER answer questions from general knowledge.** You MUST use tools to research the codebase first.
-   - For "What is X?" → Use grep_search or glob_search to find X, then fs_read to understand it
-   - For "How does X work?" → Find and read the actual implementation files
-   - For "Explain X" → Search for X in the codebase and read relevant files
-
-2. **Always show your research.** Before answering any informational question:
-   - FIRST: Use search tools (glob_search, grep_search) to find relevant files
-   - THEN: Use fs_read to read the actual code
-   - FINALLY: Synthesize your answer based on what you found
-
-3. **If you cannot find information, say so.** Never hallucinate or guess.
-
-**Task Completion Criteria:**
-- For code tasks: write, test, and verify the code works
-- For information tasks: SEARCH → READ → SYNTHESIZE (not from memory!)
-- For complex tasks: break down into steps and execute systematically
-
-**Tool Usage Order for Questions:**
-1. memory_get - check for relevant context
-2. glob_search / grep_search - find relevant files
-3. fs_read - read the actual code
-4. (Only then) Provide your answer based on what you found
-
-**Best Practices:**
-- Use memory_preference to save user preferences (persistent)
-- Use memory_constraint to save project rules (persistent)
-- Use memory_correction when user corrects your understanding (session)
-- Use memory_finding to save discoveries with confidence level (session)
-
-**When Done:**
-- Respond with a summary that includes WHAT FILES YOU READ and WHAT YOU FOUND
-- Include file paths in your answer to show your research
-
-Work systematically: SEARCH → READ → ANSWER.
-
-**✅ ADAPTIVE VERIFICATION - Verify your work and fix issues:**
-
-After completing work, VERIFY your results. Choose verification method based on what you created:
-
-**1. How to Decide Verification Method:**
-
-Ask yourself: "What artifact did I create and how can I prove it works?"
-
-- Created **Node.js project** with package.json → "npm install && npm test"
-- Created **Python project** with requirements.txt → "pip install -r requirements.txt && pytest"
-- Created **API/service** → "curl http://localhost:PORT/endpoint" or health check
-- Created **Docker setup** → "docker build -t myapp ."
-- Created **shell script** → "bash script.sh --help" or dry-run
-- Created **config file** → validate syntax (jq for JSON, yamllint for YAML)
-- Researched **code/architecture** → re-read files to verify claims
-
-**2. Verification Workflow:**
-
-   Create artifact → Verify it works → If FAIL: analyze + fix + retry (max 3x) → Report result
-
-**Examples:**
-
-**Code Project Verification:**
-   1. Created .agent-sandbox/package.json + src/ + tests/
-   2. Verify:
-      shell_exec: "cd .agent-sandbox && npm install"
-      shell_exec: "cd .agent-sandbox && npm test"
-   3. If FAIL: "Port 3000 EADDRINUSE"
-      - Fix: fs_edit server.js (change port 3000 → 3001)
-      - Retry: npm test again
-      - Result: PASS → confidence: 0.9
-   4. In reflection evidence:
-      "Created 15 files. npm install: success. npm test: 18/18 passing ✓"
-
-**API Verification:**
-   1. Created REST API with Express
-   2. Verify:
-      shell_exec: "cd .agent-sandbox && npm start &"
-      shell_exec: "sleep 2 && curl http://localhost:3000/health"
-   3. If FAIL: "Connection refused"
-      - Check logs: shell_exec "cat .agent-sandbox/logs/error.log"
-      - Fix: install missing dependency
-      - Retry: restart + curl again
-   4. In reflection evidence:
-      "API deployed. GET /health → 200 OK ✓"
-
-**Research Verification:**
-   1. Researched "How does AuthService work?"
-   2. Verify claims:
-      fs_read: src/auth/service.ts
-      → Confirm AuthService class exists at line 15
-      → Confirm methods: login(), validate()
-   3. In reflection evidence:
-      "Found AuthService in src/auth/service.ts:15-45. Verified methods: login(), validate(), refresh()"
-
-**3. When Verification Fails (Retry Loop):**
-
-   Attempt 1: Run verification → analyze error → fix obvious issue → re-verify
-   Attempt 2: Try alternative fix → re-verify
-   Attempt 3: Last attempt with different approach → re-verify
-   After 3 fails: Report to orchestrator with error details (don't keep banging your head)
-
-**4. Confidence Based on Verification:**
-
-- **0.9-1.0**: Work complete + verification PASSED (tests green, service healthy)
-- **0.6-0.8**: Work complete + verification FAILED but fixable (know what's wrong)
-- **0.3-0.5**: Work complete + verification FAILED + don't know how to fix
-- **0.0-0.2**: Work incomplete or verification not attempted
-
-**5. When to Skip Verification:**
-
-- Pure research questions (no artifacts created)
-- Explicitly told "don't test" or "dry run only"
-- No verification tools available (legacy project without tests)
-
-**IMPORTANT:** Your evidence_of_completion MUST include verification results. Saying "created files" without testing = LOW confidence.
-
+## When stuck:
+- Try a different search approach (grep vs find_definition vs glob)
+- Read surrounding files for context
+- If truly blocked, report partial findings with low confidence — a partial answer beats an infinite loop
 `;
 
-    // Add project-specific instructions from AGENT.md (truncated to prevent overflow)
+    // Add delegation section only for main agents (sub-agents don't have spawn_agent)
+    if (!this.config.parentAgentId) {
+      basePrompt += `
+## Delegation
+- **spawn_agent** — spawn a sub-agent for a subtask. The sub-agent works independently with its own iteration loop and returns the result. Use for: research in a different directory, isolated fixes, or multi-part analysis. Parameters: task (required string — be specific, sub-agent has no context), maxIterations (default 10), directory (optional, relative path for sub-agent workingDir).
+
+## For complex multi-part tasks:
+1. Break down: identify independent subtasks
+2. Delegate: use spawn_agent for each subtask (sub-agents work independently)
+3. Combine: merge sub-agent results into a unified answer
+4. Report: report the combined findings
+`;
+    }
+
+    // Add project-specific instructions from CLAUDE.md / AGENT.md (truncated to prevent overflow)
     const projectInstructions = this.loadProjectInstructions();
     if (projectInstructions) {
-      const MAX_INSTRUCTIONS_CHARS = 4000; // ~1000 tokens
+      const MAX_INSTRUCTIONS_CHARS = 12000; // ~3000 tokens
       const truncated = projectInstructions.length > MAX_INSTRUCTIONS_CHARS
         ? projectInstructions.slice(0, MAX_INSTRUCTIONS_CHARS) + '\n\n[...instructions truncated...]'
         : projectInstructions;
-      basePrompt += `\n\n**Project Instructions (from AGENT.md):**\n${truncated}`;
+      basePrompt += `\n\n**Project Instructions:**\n${truncated}`;
     }
 
     // Add memory context if available (already token-limited internally)
@@ -2362,15 +2363,15 @@ Ask yourself: "What artifact did I create and how can I prove it works?"
         basePrompt += `\n\n**Previous Context from Memory:**\n${memoryContext}`;
       }
 
-      // Check if there's an original user task in memory (from orchestrator)
-      // Orchestrator extracts structured context ONCE, agent just reads it
+      // Check if there's an original user task in memory (from parent agent)
+      // Parent extracts structured context ONCE, sub-agent just reads it
       const recentMemories = await this.memory.getRecent(20);
       const originalTaskEntry = recentMemories.find(
         (entry) => entry.metadata?.isOriginalUserTask === true
       );
 
       if (originalTaskEntry && this.currentTask !== originalTaskEntry.content) {
-        // Read structured context extracted by orchestrator
+        // Read structured context extracted by parent agent
         const globalContext = originalTaskEntry.metadata?.globalContext;
 
         basePrompt += `\n\n**⚠️ IMPORTANT CONTEXT - Original User Task:**\n${originalTaskEntry.content}\n`;
@@ -2415,6 +2416,31 @@ Ask yourself: "What artifact did I create and how can I prove it works?"
       }, {} as Record<string, unknown>);
 
     return JSON.stringify({ name: toolName, input: sortedInput });
+  }
+
+  /**
+   * Track tool calls and detect loops.
+   * Returns true if agent is stuck in a loop (same calls repeating).
+   */
+  private detectLoop(toolCalls: Array<{ name: string; arguments: string }>): boolean {
+    // Build signature for this iteration's tool calls
+    const sig = toolCalls.map(tc => `${tc.name}:${tc.arguments}`).sort().join('|');
+    this.recentToolCalls.push(sig);
+
+    // Keep last 6 iterations
+    if (this.recentToolCalls.length > 6) {
+      this.recentToolCalls.shift();
+    }
+
+    // Check if last 3 iterations have identical tool calls
+    if (this.recentToolCalls.length >= 3) {
+      const last3 = this.recentToolCalls.slice(-3);
+      if (last3[0] === last3[1] && last3[1] === last3[2]) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**

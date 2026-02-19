@@ -5,7 +5,6 @@
  */
 
 export { Agent } from './agent.js';
-export { OrchestratorAgent } from './orchestrator.js';
 
 // Tracer
 export * from './tracer/index.js';

@@ -586,7 +586,7 @@ ${lastAnswer.answer}
   } | null = null;
 
   /**
-   * Save the orchestrator's last answer (NEVER summarized)
+   * Save the agent's last answer (NEVER summarized)
    * Stored separately in last-answer.json - always available in full
    */
   async saveLastAnswer(
@@ -624,7 +624,7 @@ ${lastAnswer.answer}
   }
 
   /**
-   * Get the last orchestrator answer (full, unsummarized)
+   * Get the last agent answer (full, unsummarized)
    */
   async getLastAnswer(): Promise<{
     answer: string;

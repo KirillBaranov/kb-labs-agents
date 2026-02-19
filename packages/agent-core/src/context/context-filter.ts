@@ -163,7 +163,7 @@ export class ContextFilter {
 
     return {
       ...msg,
-      content: `${truncated}\n\n... (${remaining} more characters truncated - use context_retrieve tool to see full output)`,
+      content: `${truncated}\n\n... (${remaining} more characters truncated)`,
       metadata: {
         ...msg.metadata,
         ...metadata,
@@ -219,7 +219,7 @@ export class ContextFilter {
   formatDuplicateResponse(toolName: string, iteration: number, result: any): string {
     const resultPreview = typeof result === 'string' ? result.slice(0, 200) : JSON.stringify(result, null, 2).slice(0, 200);
 
-    return `Tool "${toolName}" was already called in iteration ${iteration} with identical arguments. Cached result:\n\n${resultPreview}\n\n(Use context_retrieve to see full cached result if needed)`;
+    return `Tool "${toolName}" was already called in iteration ${iteration} with identical arguments. Cached result:\n\n${resultPreview}`;
   }
 
   /**

@@ -132,9 +132,12 @@ export function createToolExecutionEvent(params: {
 }): Omit<ToolExecutionEvent, 'seq' | 'timestamp'> {
   const durationMs = params.endTime - params.startTime;
 
-  // Check if output was truncated (>10KB)
-  const resultStr = JSON.stringify(params.output.result || '');
-  const truncated = resultStr.length > 10000;
+  // Record full output for tracing (up to 50KB), with truncation flag
+  const resultStr = typeof params.output.result === 'string'
+    ? params.output.result
+    : JSON.stringify(params.output.result || '');
+  const TRACE_OUTPUT_LIMIT = 50000; // 50KB — generous for debugging
+  const truncated = resultStr.length > TRACE_OUTPUT_LIMIT;
 
   return {
     type: 'tool:execution',
@@ -146,9 +149,10 @@ export function createToolExecutionEvent(params: {
     input: params.input,
     output: {
       success: params.output.success,
-      result: truncated ? resultStr.substring(0, 10000) + '... (truncated)' : params.output.result,
+      result: truncated ? resultStr.substring(0, TRACE_OUTPUT_LIMIT) + `\n... (truncated from ${resultStr.length} chars)` : params.output.result,
       error: params.output.error,
       truncated,
+      originalLength: resultStr.length,
     },
     timing: {
       startedAt: new Date(params.startTime).toISOString(),

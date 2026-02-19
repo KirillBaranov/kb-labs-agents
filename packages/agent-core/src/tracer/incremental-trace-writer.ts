@@ -1,17 +1,19 @@
 /**
  * Incremental Trace Writer - NDJSON append-only tracer with crash safety
  *
+ * Design principle: reliability > speed.
+ * Every event is written synchronously to disk immediately.
+ * Even if the agent crashes mid-execution, all events up to the crash are on disk.
+ *
  * Features:
  * - NDJSON format (newline-delimited JSON) for append-only writes
- * - Automatic flush every 100ms OR every 10 events
- * - Race condition protection with flushing flag
- * - Process cleanup handler for setInterval
+ * - Synchronous writes — zero event loss, even on crash
  * - Privacy redaction on trace() call
  * - Auto-cleanup (keep last 30 traces)
  * - Index generation for fast CLI queries
  */
 
-import { promises as fs, mkdirSync, statSync, readFileSync } from 'fs';
+import { promises as fs, mkdirSync, statSync, readFileSync, appendFileSync } from 'fs';
 import path from 'path';
 import type { Tracer } from '@kb-labs/agent-contracts';
 import type { DetailedTraceEntry } from '@kb-labs/agent-contracts';
@@ -153,10 +155,7 @@ export const DEFAULT_TRACE_CONFIG: TraceConfig = {
  * Incremental Trace Writer - crash-safe NDJSON tracer
  */
 export class IncrementalTraceWriter implements Tracer {
-  private buffer: DetailedTraceEntry[] = [];
   private seq: number = 0;
-  private flushing: boolean = false;
-  private flushTimer?: NodeJS.Timeout;
   private filepath: string;
   private indexPath: string;
   private config: TraceConfig;
@@ -178,45 +177,29 @@ export class IncrementalTraceWriter implements Tracer {
 
     // Create output directory if not exists
     this.ensureDirectoryExists(dir);
-
-    // Start flush interval timer
-    if (this.config.incremental.enabled) {
-      this.startFlushInterval();
-    }
-
-    // Register cleanup handler for process exit (prevents setInterval leak)
-    process.on('exit', () => this.stopFlushInterval());
   }
 
   /**
-   * Record a trace entry
+   * Record a trace entry — writes synchronously to disk.
+   *
+   * Every call = one appendFileSync. No buffering, no async, no lost events.
+   * If the agent crashes on iteration 5, you have all events from iterations 1-5.
    */
   trace(entry: any): void {
     try {
-      // Auto-increment sequence
       const seq = ++this.seq;
-
-      // Add timestamp if missing
       const timestamp = entry.timestamp || new Date().toISOString();
 
-      // Build entry
       const fullEntry: DetailedTraceEntry = {
         ...entry,
         seq,
         timestamp,
       };
 
-      // Apply privacy redaction
       const redacted = this.redact(fullEntry);
 
-      // Add to buffer
-      this.buffer.push(redacted);
-
-      // Check size-based flush
-      if (this.buffer.length >= this.config.incremental.maxBufferSize) {
-        // Don't await - let it run async
-        void this.flush();
-      }
+      // Sync write — event is on disk before trace() returns
+      appendFileSync(this.filepath, JSON.stringify(redacted) + '\n', 'utf-8');
     } catch (error) {
       console.error('[IncrementalTraceWriter] trace() error:', error);
       // Don't crash agent - tracing failure should not stop execution
@@ -239,31 +222,24 @@ export class IncrementalTraceWriter implements Tracer {
   }
 
   /**
-   * Save trace to file (backward compat - alias for flush)
+   * Save trace to file (backward compat — no-op, already written synchronously)
    */
   async save(_filePath: string): Promise<void> {
-    await this.flush();
+    // No-op — all events are already on disk
   }
 
   /**
    * Clear all entries
    */
   clear(): void {
-    this.buffer = [];
     this.seq = 0;
   }
 
   /**
-   * Finalize trace (flush, generate index, cleanup old traces)
+   * Finalize trace (generate index, cleanup old traces)
    */
   async finalize(): Promise<void> {
     try {
-      // Stop flush interval timer
-      this.stopFlushInterval();
-
-      // Final flush
-      await this.flush();
-
       // Generate index
       await this.createIndex();
 
@@ -338,62 +314,6 @@ export class IncrementalTraceWriter implements Tracer {
   // ═══════════════════════════════════════════════════════════════════════
   // Private Methods
   // ═══════════════════════════════════════════════════════════════════════
-
-  /**
-   * Flush buffer to NDJSON file
-   */
-  private async flush(): Promise<void> {
-    // Check if already flushing (prevent race condition)
-    if (this.flushing) {
-      return;
-    }
-
-    try {
-      // Set flag
-      this.flushing = true;
-
-      // If buffer empty, return
-      if (this.buffer.length === 0) {
-        return;
-      }
-
-      // Convert buffer to NDJSON lines
-      const ndjsonLines = this.buffer.map((e) => JSON.stringify(e)).join('\n') + '\n';
-
-      // Append to file
-      await fs.appendFile(this.filepath, ndjsonLines, 'utf-8');
-
-      // Clear buffer
-      this.buffer = [];
-    } catch (error) {
-      console.error('[IncrementalTraceWriter] flush() error:', error);
-      // Clear buffer anyway to prevent memory growth
-      this.buffer = [];
-    } finally {
-      // Reset flag
-      this.flushing = false;
-    }
-  }
-
-  /**
-   * Start flush interval timer
-   */
-  private startFlushInterval(): void {
-    this.flushTimer = setInterval(
-      () => void this.flush(),
-      this.config.incremental.flushIntervalMs
-    );
-  }
-
-  /**
-   * Stop flush interval timer
-   */
-  private stopFlushInterval(): void {
-    if (this.flushTimer) {
-      clearInterval(this.flushTimer);
-      this.flushTimer = undefined;
-    }
-  }
 
   /**
    * Cleanup old traces (keep last N traces)

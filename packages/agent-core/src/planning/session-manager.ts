@@ -289,8 +289,8 @@ export class SessionManager {
    * Extract conversation history from session events
    *
    * Parses events.ndjson to reconstruct user-agent conversation turns.
-   * Uses orchestrator:start (real user requests) NOT agent:start (includes internal subtasks).
-   * Uses orchestrator:end for summaries.
+   * Uses agent:start events (without parentAgentId = top-level requests).
+   * Uses agent:end for summaries.
    *
    * @param sessionId - Session ID
    * @param maxTurns - Maximum number of turns to return (default: 10)
@@ -310,27 +310,24 @@ export class SessionManager {
     let currentTurn: { userTask: string; agentResponse?: string; timestamp: string } | null = null;
 
     for (const event of events) {
-      // IMPORTANT: Use orchestrator:start, NOT agent:start!
-      // agent:start includes internal subtasks (e.g., "Scan repository structure...")
-      // orchestrator:start is the actual user request
-      if (event.type === 'orchestrator:start') {
+      // Use agent:start without parentAgentId (top-level agent, not sub-agents)
+      if (event.type === 'agent:start' && !event.parentAgentId) {
         // Save previous turn if exists
         if (currentTurn) {
           turns.push(currentTurn);
         }
         currentTurn = {
-          userTask: event.data.task as string,
+          userTask: (event.data as { task: string }).task,
           timestamp: event.timestamp,
         };
       }
 
-      // Orchestrator answer - capture synthesized response
-      if (event.type === 'orchestrator:answer' && currentTurn) {
-        // Truncate answer to max 500 chars
-        const answer = String(event.data.answer);
-        currentTurn.agentResponse = answer.length > 500
-          ? answer.slice(0, 500) + '...'
-          : answer;
+      // Agent end - capture summary as response
+      if (event.type === 'agent:end' && !event.parentAgentId && currentTurn) {
+        const summary = (event.data as { summary: string }).summary;
+        currentTurn.agentResponse = summary.length > 500
+          ? summary.slice(0, 500) + '...'
+          : summary;
       }
     }
 
