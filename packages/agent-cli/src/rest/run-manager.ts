@@ -1,12 +1,12 @@
 /**
  * Run Manager - tracks active agent runs for REST/WS API
  *
- * Uses platform cache for persistence and in-memory Map for active orchestrators.
- * Cache stores serializable run state, Map stores live orchestrator references.
+ * Uses platform cache for persistence and in-memory Map for active agents.
+ * Cache stores serializable run state, Map stores live agent references.
  * Uses platform eventBus for cross-process event broadcasting.
  */
 
-import type { OrchestratorAgent } from '@kb-labs/agent-core';
+import type { Agent } from '@kb-labs/agent-core';
 import type { AgentEvent, AgentEventCallback } from '@kb-labs/agent-contracts';
 import { useCache, usePlatform } from '@kb-labs/sdk';
 
@@ -34,20 +34,22 @@ export interface RunState {
 }
 
 /**
- * Active run with live orchestrator (in-memory only)
+ * Active run with live agent (in-memory only)
  */
 export interface ActiveRun extends RunState {
-  orchestrator: OrchestratorAgent;
+  agent: Agent;
   listeners: Set<AgentEventCallback>;
   /** Monotonic sequence counter for event ordering */
   lastSeq: number;
+  /** Replay buffer: all events emitted since run start (for late WS connections) */
+  eventBuffer: AgentEvent[];
 }
 
 /**
  * Run Manager implementation
  */
 class RunManagerImpl {
-  /** Live orchestrators and listeners (not cacheable) */
+  /** Live agents and listeners (not cacheable) */
   private activeRuns: Map<string, ActiveRun> = new Map();
 
   /**
@@ -63,7 +65,7 @@ class RunManagerImpl {
   async register(
     runId: string,
     task: string,
-    orchestrator: OrchestratorAgent
+    agent: Agent
   ): Promise<ActiveRun> {
     const now = new Date().toISOString();
 
@@ -71,13 +73,14 @@ class RunManagerImpl {
       runId,
       task,
       status: 'pending',
-      orchestrator,
+      agent,
       startedAt: now,
       listeners: new Set(),
       lastSeq: 0,
+      eventBuffer: [],
     };
 
-    // Store in memory (for live orchestrator)
+    // Store in memory (for live agent)
     this.activeRuns.set(runId, run);
 
     // Store serializable state in cache
@@ -232,6 +235,9 @@ class RunManagerImpl {
     if (run) {
       run.lastSeq++;
       seqEvent = { ...event, seq: run.lastSeq };
+
+      // Store in replay buffer (for late WS connections)
+      run.eventBuffer.push(seqEvent);
     }
 
     // Publish to eventBus for cross-process delivery
@@ -254,6 +260,21 @@ class RunManagerImpl {
     }
 
     return seqEvent;
+  }
+
+  /**
+   * Get replay buffer for a run (all events emitted since start).
+   * Used by WS handler to send missed events on late connection.
+   * Optionally filter by afterSeq to only get events the client hasn't seen.
+   */
+  getEventBuffer(runId: string, afterSeq?: number): AgentEvent[] {
+    const run = this.activeRuns.get(runId);
+    if (!run) {return [];}
+
+    if (afterSeq != null) {
+      return run.eventBuffer.filter((e) => e.seq != null && e.seq > afterSeq);
+    }
+    return [...run.eventBuffer];
   }
 
   /**
