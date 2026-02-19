@@ -99,28 +99,7 @@ export function createFsReadTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_read',
-        description: `Read file contents with automatic chunking for large files.
-
-⚠️ IMPORTANT: DO NOT try to read entire large files (>1000 lines)!
-- Read small sections first to understand structure
-- Then request specific line ranges based on what you need
-- Tool will warn you when there are more lines available
-
-LIMITS:
-- Max ${MAX_LINES_PER_READ} lines per read (default: ${DEFAULT_LINES})
-- Max file size: ${formatSize(MAX_FILE_SIZE)}
-
-WORKFLOW FOR LARGE FILES:
-1. First read: fs_read(path="file.ts", limit=100) → see structure, get overview
-2. Tool tells you: "⚠️ File has 2500 more lines after this section"
-3. You decide: do I need to read more? If yes, which specific sections?
-4. Read specific sections: fs_read(path="file.ts", offset=500, limit=200)
-
-TIPS:
-- Start with small limit (50-100 lines) to see file structure
-- Use grep_search to find specific code before reading
-- Only read what you actually need for the task
-- Line numbers are 1-indexed (first line is 1)`,
+        description: `Read file contents. Supports offset/limit for large files. Default: ${DEFAULT_LINES} lines, max: ${MAX_LINES_PER_READ} lines per read.`,
         parameters: {
           type: 'object',
           properties: {
@@ -273,15 +252,7 @@ export function createFsWriteTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_write',
-        description: `Write content to a file. Creates parent directories if needed.
-
-LIMITS:
-- Max content size: ${formatSize(MAX_WRITE_SIZE)}
-
-TIPS:
-- Use for creating new files or completely replacing file contents
-- For partial edits, use fs_edit instead
-- Parent directories are created automatically`,
+        description: `Write content to a file. Creates parent directories if needed. For partial edits, use fs_patch instead.`,
         parameters: {
           type: 'object',
           properties: {
@@ -381,28 +352,7 @@ export function createFsPatchTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_patch',
-        description: `Edit file by replacing a range of lines with new content.
-
-⚠️ CRITICAL PROTECTION: You MUST read the file before editing it!
-- This prevents editing files you haven't seen
-- This prevents conflicts when file was changed externally
-
-WORKFLOW:
-1. Read the file: fs_read(path="file.ts", offset=100, limit=50)
-2. See the line numbers in the output (e.g., "  105→const x = 1;")
-3. Edit those lines: fs_patch(path="file.ts", startLine=105, endLine=105, newContent="const x = 2;")
-
-REQUIREMENTS:
-- You must have read this file in this session (protection against blind edits)
-- File must not have changed since you read it (protection against conflicts)
-- Line numbers are from fs_read output (1-indexed)
-- startLine and endLine are inclusive (both lines are replaced)
-
-TIPS:
-- Use fs_read first to see current content and line numbers
-- To insert lines: set startLine = endLine (replaces single line)
-- To delete lines: set newContent = "" (removes lines)
-- Line numbers match exactly what fs_read shows you`,
+        description: `Replace a range of lines in a file. You must fs_read the file first. Line numbers are 1-indexed and inclusive.`,
         parameters: {
           type: 'object',
           properties: {
@@ -611,16 +561,7 @@ export function createFsListTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_list',
-        description: `List files and directories at a path.
-
-FEATURES:
-- Shows files and directories separately
-- Non-recursive by default
-- Use recursive=true to see nested structure (limited depth)
-
-TIPS:
-- Start with root directory to understand project structure
-- Navigate into subdirectories for more detail`,
+        description: `List files and directories at a path. Non-recursive by default.`,
         parameters: {
           type: 'object',
           properties: {

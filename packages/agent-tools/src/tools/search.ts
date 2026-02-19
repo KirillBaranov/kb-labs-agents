@@ -3,8 +3,55 @@
  */
 
 import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
+
+/** Default directories to exclude from search */
+const DEFAULT_EXCLUDES = ['node_modules', '.git', 'dist', 'build', '.next', '.kb', '.pnpm', 'coverage', '__pycache__', '.venv', '.cache'];
+
+/**
+ * Build find exclude flags from exclude list
+ */
+function buildFindExcludes(excludes: string[]): string {
+  return excludes.map(d => `! -path "*/${d}/*"`).join(' ');
+}
+
+/**
+ * Build grep exclude-dir flags from exclude list
+ */
+function buildGrepExcludes(excludes: string[]): string {
+  return excludes.map(d => `--exclude-dir=${d}`).join(' ');
+}
+
+/** Exec timeout for search commands (30s) */
+const SEARCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Check if directory exists and return error message if not.
+ * Lists available top-level directories as a hint.
+ */
+function validateDirectory(workingDir: string, directory: string): string | null {
+  const fullPath = path.resolve(workingDir, directory);
+  if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
+    return null;
+  }
+
+  // List available directories as hint
+  let hint = '';
+  try {
+    const entries = fs.readdirSync(workingDir, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules')
+      .map(e => e.name)
+      .sort();
+    if (dirs.length > 0) {
+      hint = `\nAvailable directories: ${dirs.slice(0, 15).join(', ')}${dirs.length > 15 ? ` ... (${dirs.length} total)` : ''}`;
+    }
+  } catch { /* ignore */ }
+
+  return `Directory "${directory}" not found (resolved to ${fullPath}). Use "." to search from project root.${hint}`;
+}
 
 /**
  * Search for files by pattern (glob)
@@ -15,17 +62,22 @@ export function createGlobSearchTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'glob_search',
-        description: 'Search for files matching a pattern using glob syntax. Use to find files by name or extension. Returns up to 50 results. IMPORTANT: Pattern matches filename only - use exact filename like "user.ts" not just "user".',
+        description: 'Find files by name pattern (glob). Pattern matches filename only — use "*.ts" or "user.ts", not bare words. Returns up to 50 results.',
         parameters: {
           type: 'object',
           properties: {
             pattern: {
               type: 'string',
-              description: 'Glob pattern to search for. MUST include file extension for exact match (e.g., "user.ts", "*.ts", "*.tsx"). Pattern "user" will NOT find "user.ts" - use "user.ts" or "*user*.ts" instead.',
+              description: 'Glob pattern (e.g., "*.ts", "user.ts", "*user*.ts")',
             },
             directory: {
               type: 'string',
               description: 'Directory to search in (default: ".")',
+            },
+            exclude: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Directories to exclude (default: node_modules, dist, .git, build, .next, .kb, .pnpm, coverage). Override to search in excluded dirs.',
             },
           },
           required: ['pattern'],
@@ -35,24 +87,23 @@ export function createGlobSearchTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const pattern = input.pattern as string;
       const directory = (input.directory as string) || '.';
+      const excludes = (input.exclude as string[] | undefined) || DEFAULT_EXCLUDES;
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
 
-        // Build find command to search for pattern
-        // Exclude common directories
-        const cmd = `find "${fullPath}" -type f -name "${pattern}" \
-          ! -path "*/node_modules/*" \
-          ! -path "*/.git/*" \
-          ! -path "*/dist/*" \
-          ! -path "*/build/*" \
-          ! -path "*/.next/*" \
-          | head -50`;
+        const dirError = validateDirectory(context.workingDir, directory);
+        if (dirError) {
+          return { success: true, output: dirError };
+        }
+
+        const cmd = `find "${fullPath}" -type f -iname "${pattern}" ${buildFindExcludes(excludes)} | head -50`;
 
         const output = execSync(cmd, {
           cwd: context.workingDir,
           encoding: 'utf-8',
-          maxBuffer: 1024 * 1024, // 1MB
+          maxBuffer: 1024 * 1024,
+          timeout: SEARCH_TIMEOUT_MS,
         });
 
         const files = output
@@ -64,7 +115,7 @@ export function createGlobSearchTool(context: ToolContext): Tool {
         if (files.length === 0) {
           return {
             success: true,
-            output: `No files found matching pattern: ${pattern}`,
+            output: `No files found matching pattern: ${pattern} in ${directory === '.' ? 'project root' : directory}. Note: glob_search matches filenames only. To search file contents, use grep_search. To find class/function definitions, use find_definition.`,
           };
         }
 
@@ -79,6 +130,12 @@ export function createGlobSearchTool(context: ToolContext): Tool {
           output: result,
         };
       } catch (error) {
+        if (error instanceof Error && 'killed' in error && error.killed) {
+          return {
+            success: false,
+            error: `Glob search timed out after ${SEARCH_TIMEOUT_MS / 1000}s. Try narrowing the directory or pattern.`,
+          };
+        }
         return {
           success: false,
           error: `Glob search failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -97,7 +154,7 @@ export function createGrepSearchTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'grep_search',
-        description: 'Search for text patterns in files using grep. Returns file paths and line numbers. Use to find where specific code or text appears. Returns up to 100 matches.',
+        description: 'Search for exact text/regex in files. Returns file paths, line numbers, and matching lines. Up to 100 matches.',
         parameters: {
           type: 'object',
           properties: {
@@ -113,6 +170,11 @@ export function createGrepSearchTool(context: ToolContext): Tool {
               type: 'string',
               description: 'Filter by file pattern (e.g., "*.ts")',
             },
+            exclude: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Directories to exclude (default: node_modules, dist, .git, build, .next, .kb, .pnpm, coverage). Override to search in excluded dirs.',
+            },
           },
           required: ['pattern'],
         },
@@ -122,17 +184,17 @@ export function createGrepSearchTool(context: ToolContext): Tool {
       const pattern = input.pattern as string;
       const directory = (input.directory as string) || '.';
       const filePattern = input.filePattern as string | undefined;
+      const excludes = (input.exclude as string[] | undefined) || DEFAULT_EXCLUDES;
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
 
-        // Build grep command
-        let cmd = `grep -rn "${pattern}" "${fullPath}" \
-          --exclude-dir=node_modules \
-          --exclude-dir=.git \
-          --exclude-dir=dist \
-          --exclude-dir=build \
-          --exclude-dir=.next`;
+        const dirError = validateDirectory(context.workingDir, directory);
+        if (dirError) {
+          return { success: true, output: dirError };
+        }
+
+        let cmd = `grep -rn "${pattern}" "${fullPath}" ${buildGrepExcludes(excludes)}`;
 
         if (filePattern) {
           cmd += ` --include="${filePattern}"`;
@@ -143,7 +205,8 @@ export function createGrepSearchTool(context: ToolContext): Tool {
         const output = execSync(cmd, {
           cwd: context.workingDir,
           encoding: 'utf-8',
-          maxBuffer: 1024 * 1024, // 1MB
+          maxBuffer: 1024 * 1024,
+          timeout: SEARCH_TIMEOUT_MS,
         });
 
         const lines = output.trim().split('\n').filter(Boolean);
@@ -151,7 +214,7 @@ export function createGrepSearchTool(context: ToolContext): Tool {
         if (lines.length === 0) {
           return {
             success: true,
-            output: `No matches found for pattern: ${pattern}`,
+            output: `No matches found for "${pattern}" in ${directory === '.' ? 'project root' : directory}.${filePattern ? '' : ' Try adding filePattern (e.g. "*.ts") to narrow the search.'}`,
           };
         }
 
@@ -159,7 +222,6 @@ export function createGrepSearchTool(context: ToolContext): Tool {
           `Found ${lines.length} match(es) for "${pattern}":`,
           '',
           ...lines.map(line => {
-            // Parse grep output: /path/to/file:linenum:content
             const match = line.match(/^(.+?):(\d+):(.+)$/);
             if (match) {
               const [, filePath, lineNum, content] = match;
@@ -176,10 +238,17 @@ export function createGrepSearchTool(context: ToolContext): Tool {
         };
       } catch (error) {
         // grep returns exit code 1 when no matches found
-        if (error instanceof Error && 'status' in error && error.status === 1) {
+        if (error instanceof Error && 'status' in error && (error as any).status === 1) {
           return {
             success: true,
-            output: `No matches found for pattern: ${pattern}`,
+            output: `No matches found for "${pattern}" in ${directory === '.' ? 'project root' : directory}.${filePattern ? '' : ' Try adding filePattern (e.g. "*.ts") to narrow the search.'}`,
+          };
+        }
+
+        if (error instanceof Error && 'killed' in error && (error as any).killed) {
+          return {
+            success: false,
+            error: `Grep search timed out after ${SEARCH_TIMEOUT_MS / 1000}s. Try narrowing the directory or adding a filePattern.`,
           };
         }
 
@@ -201,7 +270,7 @@ export function createListFilesTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'list_files',
-        description: 'List all files in a directory. Use this FIRST when you need to find files - it shows exactly what files exist. More reliable than glob_search for discovering available files.',
+        description: 'List files and directories at a path. Good for exploring what exists.',
         parameters: {
           type: 'object',
           properties: {
@@ -282,7 +351,7 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'find_definition',
-        description: 'Find where a class, function, interface, type, struct, enum, or variable is defined. Works with any language (TypeScript, Python, C#, Go, Rust, Java, etc.). Searches for common definition patterns.',
+        description: 'Find where a symbol (class, function, interface, type, etc.) is defined. Works with any language. Uses project root as default directory, which works well for monorepos with nested packages.',
         parameters: {
           type: 'object',
           properties: {
@@ -310,6 +379,11 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
+
+        const dirError = validateDirectory(context.workingDir, directory);
+        if (dirError) {
+          return { success: true, output: dirError };
+        }
 
         // Language-agnostic definition patterns
         const patterns = [
@@ -356,20 +430,17 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
 
         const cmd = `grep -rn -E "(${patterns.join('|')})" "${fullPath}" \
           ${includeFlags} \
-          --exclude-dir=node_modules \
-          --exclude-dir=dist \
-          --exclude-dir=.git \
+          ${buildGrepExcludes(DEFAULT_EXCLUDES)} \
           --exclude-dir=bin \
           --exclude-dir=obj \
           --exclude-dir=target \
-          --exclude-dir=__pycache__ \
-          --exclude-dir=.venv \
           | head -30`;
 
         const output = execSync(cmd, {
           cwd: context.workingDir,
           encoding: 'utf-8',
           maxBuffer: 1024 * 1024,
+          timeout: SEARCH_TIMEOUT_MS,
         });
 
         const lines = output.trim().split('\n').filter(Boolean);
@@ -377,7 +448,7 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
         if (lines.length === 0) {
           return {
             success: true,
-            output: `No definition found for "${name}"`,
+            output: `No definition found for "${name}" in ${directory === '.' ? 'project root' : directory}. Try: grep_search for text matching, or glob_search with "*${name.toLowerCase()}*" for filename matching.`,
           };
         }
 
@@ -396,10 +467,16 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
           output: `Found definition(s) for "${name}":\n\n${result.join('\n\n')}`,
         };
       } catch (error) {
-        if (error instanceof Error && 'status' in error && error.status === 1) {
+        if (error instanceof Error && 'status' in error && (error as any).status === 1) {
           return {
             success: true,
-            output: `No definition found for "${name}"`,
+            output: `No definition found for "${name}" in ${directory === '.' ? 'project root' : directory}. Try: grep_search for text matching, or glob_search with "*${name.toLowerCase()}*" for filename matching.`,
+          };
+        }
+        if (error instanceof Error && 'killed' in error && (error as any).killed) {
+          return {
+            success: false,
+            error: `Find definition timed out after ${SEARCH_TIMEOUT_MS / 1000}s. Try specifying a narrower directory.`,
           };
         }
         return {
@@ -412,7 +489,7 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
 }
 
 /**
- * Get project structure overview
+ * Get project structure overview — level-by-level exploration
  */
 export function createProjectStructureTool(context: ToolContext): Tool {
   return {
@@ -420,46 +497,94 @@ export function createProjectStructureTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'project_structure',
-        description: 'Get an overview of the project structure - shows directories and key files. Use this to understand the codebase layout before diving into specific files.',
+        description: 'Show directory contents at a given path. Defaults to project root, depth 1. Use to explore the codebase incrementally — first see top-level, then drill into specific directories.',
         parameters: {
           type: 'object',
           properties: {
+            targetPath: {
+              type: 'string',
+              description: 'Directory to explore (default: project root). Use to drill deeper into a specific folder.',
+            },
             depth: {
               type: 'number',
-              description: 'How many levels deep to show (default: 3)',
+              description: 'How many levels deep (default: 1, max: 3)',
             },
           },
         },
       },
     },
     executor: async (input: Record<string, unknown>) => {
-      const depth = (input.depth as number) || 3;
+      const depth = Math.min((input.depth as number) || 1, 3);
+      const targetPath = (input.targetPath as string) || '.';
+
+      // Resolve and validate target path
+      const resolvedPath = path.resolve(context.workingDir, targetPath);
+      if (!resolvedPath.startsWith(context.workingDir)) {
+        return {
+          success: false,
+          error: 'Cannot access paths outside project directory.',
+        };
+      }
+
+      if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) {
+        return {
+          success: false,
+          error: `"${targetPath}" is not a directory or does not exist.`,
+        };
+      }
 
       try {
-        // Use tree command if available, otherwise fallback to find
-        let output: string;
-        try {
-          output = execSync(`tree -L ${depth} -I "node_modules|dist|.git|.next|build" --dirsfirst`, {
-            cwd: context.workingDir,
-            encoding: 'utf-8',
-            maxBuffer: 1024 * 1024,
-          });
-        } catch {
-          // Fallback to find + awk for systems without tree
-          output = execSync(`find . -maxdepth ${depth} -type d \
-            ! -path "*/node_modules/*" \
-            ! -path "*/.git/*" \
-            ! -path "*/dist/*" \
-            | sort | head -100`, {
-            cwd: context.workingDir,
-            encoding: 'utf-8',
-            maxBuffer: 1024 * 1024,
-          });
+        const skipNames = new Set(['node_modules', '.git', 'dist', '.next', 'build']);
+        const lines: string[] = [];
+
+        function listLevel(dir: string, prefix: string, currentDepth: number): void {
+          let entries: fs.Dirent[];
+          try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+          } catch {
+            return;
+          }
+
+          // Separate dirs and files, sort each group
+          const dirs = entries.filter(e => e.isDirectory() && !skipNames.has(e.name)).sort((a, b) => a.name.localeCompare(b.name));
+          const files = entries.filter(e => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
+
+          // Show directories with child counts
+          for (const d of dirs) {
+            const fullPath = path.join(dir, d.name);
+            let childDirs = 0;
+            let childFiles = 0;
+            try {
+              const children = fs.readdirSync(fullPath, { withFileTypes: true });
+              childDirs = children.filter(c => c.isDirectory() && !skipNames.has(c.name)).length;
+              childFiles = children.filter(c => c.isFile()).length;
+            } catch {
+              // inaccessible
+            }
+            const info = `${childDirs} dirs, ${childFiles} files`;
+            lines.push(`${prefix}${d.name}/  (${info})`);
+
+            if (currentDepth < depth) {
+              listLevel(fullPath, prefix + '  ', currentDepth + 1);
+            }
+          }
+
+          // Show files (only at requested depth, not intermediate levels for brevity)
+          if (currentDepth === 1 || depth === 1) {
+            for (const f of files) {
+              lines.push(`${prefix}${f.name}`);
+            }
+          }
         }
+
+        listLevel(resolvedPath, '', 1);
+
+        const relPath = path.relative(context.workingDir, resolvedPath) || '.';
+        const header = `${relPath}/ (depth ${depth})`;
 
         return {
           success: true,
-          output: `Project structure:\n\n${output}`,
+          output: `${header}\n\n${lines.join('\n')}`,
         };
       } catch (error) {
         return {
@@ -480,7 +605,7 @@ export function createCodeStatsTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'code_stats',
-        description: 'Get code statistics - line counts by file type. Works with any language. Shows breakdown by extension.',
+        description: 'Get line counts and file counts by extension.',
         parameters: {
           type: 'object',
           properties: {
@@ -502,6 +627,11 @@ export function createCodeStatsTool(context: ToolContext): Tool {
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
+
+        const dirError = validateDirectory(context.workingDir, directory);
+        if (dirError) {
+          return { success: true, output: dirError };
+        }
 
         // Build extension filter
         let extFilter: string;

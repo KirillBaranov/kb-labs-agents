@@ -18,6 +18,20 @@ export interface Tool {
 }
 
 /**
+ * Interface for file change tracking (matches FileChangeTracker from agent-core).
+ * Defined here to avoid circular dependency: agent-tools cannot import agent-core.
+ */
+export interface IFileChangeTracker {
+  captureChange(
+    filePath: string,
+    operation: 'write' | 'patch' | 'delete',
+    beforeContent: string | null,
+    afterContent: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<unknown>;
+}
+
+/**
  * Tool context (working directory, etc.)
  */
 export interface ToolContext {
@@ -29,7 +43,13 @@ export interface ToolContext {
   /** File content hashes from when files were read (for change detection) */
   filesReadHash?: Map<string, string>;
   /** File change tracker for history (optional - injected by Agent) */
-  fileChangeTracker?: any; // Import cycle - use any for now
+  fileChangeTracker?: IFileChangeTracker;
   /** Agent ID for attribution */
   agentId?: string;
+  /** Spawn sub-agent callback (injected by Agent, not available for sub-agents) */
+  spawnAgent?: (request: {
+    task: string;
+    maxIterations?: number;
+    workingDir?: string;
+  }) => Promise<{ success: boolean; result: string; iterations: number; tokensUsed: number }>;
 }

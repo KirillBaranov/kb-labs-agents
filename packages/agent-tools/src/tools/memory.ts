@@ -110,7 +110,7 @@ export function createMemoryGetTool(context: ToolContext): Tool {
       function: {
         name: 'memory_get',
         description:
-          'Retrieve shared memory: user preferences, project constraints, and session history. Use at the start of tasks to understand project rules and user preferences.',
+          'Get stored user preferences, project constraints, and session history.',
         parameters: {
           type: 'object',
           properties: {
@@ -189,7 +189,7 @@ export function createMemoryPreferenceTool(context: ToolContext): Tool {
       function: {
         name: 'memory_preference',
         description:
-          'Store a user preference that persists across sessions. Use for coding style preferences, tool preferences, or workflow preferences. Examples: "Always use TypeScript strict mode", "Prefer functional components over class components".',
+          'Store a persistent user preference (coding style, tool choices, etc.).',
         parameters: {
           type: 'object',
           properties: {
@@ -253,7 +253,7 @@ export function createMemoryConstraintTool(context: ToolContext): Tool {
       function: {
         name: 'memory_constraint',
         description:
-          'Store a project constraint or rule that must be followed. Persists across sessions. Use for project rules like "never modify files in /legacy/" or "all API endpoints must be versioned".',
+          'Store a persistent project constraint or rule.',
         parameters: {
           type: 'object',
           properties: {
@@ -338,7 +338,7 @@ export function createMemoryCorrectionTool(context: ToolContext): Tool {
       function: {
         name: 'memory_correction',
         description:
-          'Store a user correction in session memory. Use when the user corrects your understanding or provides accurate information that overrides your assumptions. Session-scoped (not persistent across sessions).',
+          'Store a user correction (session-scoped).',
         parameters: {
           type: 'object',
           properties: {
@@ -399,7 +399,7 @@ export function createMemoryFindingTool(context: ToolContext): Tool {
       function: {
         name: 'memory_finding',
         description:
-          'Store a discovery or finding in session memory. Use when you discover something important about the codebase with a confidence level.',
+          'Store a codebase finding with confidence level (session-scoped).',
         parameters: {
           type: 'object',
           properties: {
@@ -465,7 +465,7 @@ export function createMemoryBlockerTool(context: ToolContext): Tool {
       function: {
         name: 'memory_blocker',
         description:
-          'Store a blocker in session memory. Use when you cannot proceed without additional information or user input.',
+          'Store a blocker that prevents progress (session-scoped).',
         parameters: {
           type: 'object',
           properties: {
@@ -528,7 +528,7 @@ export function createSessionSaveTool(context: ToolContext): Tool {
       function: {
         name: 'session_save',
         description:
-          'Save session summary and learnings to shared memory. Use at the end of a session to record what was accomplished. This helps future sessions understand project history.',
+          'Save session summary and learnings to persistent memory.',
         parameters: {
           type: 'object',
           properties: {

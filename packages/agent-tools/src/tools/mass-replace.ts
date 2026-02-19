@@ -67,37 +67,7 @@ export function createMassReplaceTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'mass_replace',
-        description: `Perform batch text replacement across multiple files with automatic rollback support.
-
-⚠️ IMPORTANT: All changes are tracked in file history for easy rollback!
-
-MODES:
-- literal (default): Replace exact string matches
-- regex: Use JavaScript regex pattern for complex replacements
-
-SAFETY:
-- Validates all paths within working directory
-- Skips files >${MAX_FILE_SIZE / 1000}KB
-- Limits to ${MAX_FILES} files per operation
-- Dry-run mode available for preview
-- Auto-creates snapshots for rollback
-
-EXAMPLES:
-1. Simple literal replacement:
-   mass_replace(pattern="oldName", replacement="newName", scope="src/components", files="**/*.ts")
-
-2. Regex replacement (remove console.log):
-   mass_replace(pattern="console\\.log\\(.*?\\);?", replacement="", scope="src", files="**/*.ts", mode="regex")
-
-3. Preview changes (dry-run):
-   mass_replace(pattern="foo", replacement="bar", scope=".", files="*.js", dryRun=true)
-
-USE CASES:
-- Renaming variables/functions across files
-- Removing debug statements
-- Fixing common typos in documentation
-- Updating import paths after refactoring
-- Mass linting fixes`,
+        description: `Batch find-and-replace across multiple files. Supports literal and regex modes. Use dryRun=true to preview. Changes are tracked for rollback.`,
         parameters: {
           type: 'object',
           properties: {

@@ -22,7 +22,6 @@ import {
   createGrepSearchTool,
   createListFilesTool,
   createFindDefinitionTool,
-  createProjectStructureTool,
   createCodeStatsTool,
 } from './search.js';
 
@@ -52,8 +51,11 @@ import {
 // Interaction tools
 import { createAskUserTool } from './interaction.js';
 
-// Orchestration tools
-import { createAskOrchestratorTool, createReportToOrchestratorTool, createReflectOnProgressTool } from './orchestration.js';
+// Reporting tools (sub-agent ↔ parent communication)
+import { createAskParentTool, createReportTool } from './reporting.js';
+
+// Delegation tools
+import { createSpawnAgentTool } from './delegation.js';
 
 /**
  * Create and register all tools
@@ -68,12 +70,10 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   registry.register(createFsListTool(context));
   registry.register(createMassReplaceTool(context));
 
-  // Register search tools
-  registry.register(createListFilesTool(context)); // List first - most reliable for discovery
+  // Register search tools (list_files removed — duplicates fs_list)
   registry.register(createGlobSearchTool(context));
   registry.register(createGrepSearchTool(context));
   registry.register(createFindDefinitionTool(context));
-  registry.register(createProjectStructureTool(context));
   registry.register(createCodeStatsTool(context));
 
   // Register shell tool
@@ -98,10 +98,14 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   // Register interaction tools
   registry.register(createAskUserTool(context));
 
-  // Register orchestration tools
-  registry.register(createAskOrchestratorTool(context));
-  registry.register(createReportToOrchestratorTool(context));
-  registry.register(createReflectOnProgressTool(context));
+  // Register reporting tools (sub-agent ↔ parent communication)
+  registry.register(createAskParentTool(context));
+  registry.register(createReportTool(context));
+
+  // Register delegation tools (only for main agent — sub-agents don't get spawn_agent)
+  if (context.spawnAgent) {
+    registry.register(createSpawnAgentTool(context));
+  }
 
   return registry;
 }
@@ -117,7 +121,6 @@ export {
   createGlobSearchTool,
   createGrepSearchTool,
   createFindDefinitionTool,
-  createProjectStructureTool,
   createCodeStatsTool,
   createShellExecTool,
   // Shared memory
@@ -134,7 +137,7 @@ export {
   createTodoUpdateTool,
   createTodoGetTool,
   createAskUserTool,
-  createAskOrchestratorTool,
-  createReportToOrchestratorTool,
-  createReflectOnProgressTool,
+  createAskParentTool,
+  createReportTool,
+  createSpawnAgentTool,
 };
