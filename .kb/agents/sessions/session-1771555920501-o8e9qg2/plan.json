@@ -1,0 +1,87 @@
+{
+  "id": "plan-1771555929679-7o6eze5",
+  "sessionId": "session-1771555920501-o8e9qg2",
+  "task": "Коротко: как устроены агенты в KB Labs?",
+  "mode": "plan",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Clarify context and sources",
+      "description": "Gather existing internal knowledge about KB Labs agent architecture",
+      "dependencies": [],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-1-1",
+          "action": "Search for internal docs or notes on KB Labs agents architecture",
+          "tool": "fs:search",
+          "args": {},
+          "expectedOutcome": "List of files mentioning KB Labs agents architecture",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Collect and review content",
+      "description": "Read relevant files to extract accurate details",
+      "dependencies": [
+        "phase-1"
+      ],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-2-1",
+          "action": "Read key files identified in search",
+          "tool": "fs:read",
+          "args": {},
+          "expectedOutcome": "Understanding of agents architecture, components, and workflows",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-3",
+      "name": "Draft concise explanation",
+      "description": "Synthesize findings into a short, clear description",
+      "dependencies": [
+        "phase-2"
+      ],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-3-1",
+          "action": "Write a concise summary of how agents are structured in KB Labs",
+          "tool": "fs:write",
+          "args": {},
+          "expectedOutcome": "Draft text explaining KB Labs agents architecture",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "name": "Review and finalize",
+      "description": "Ensure accuracy and brevity of the explanation",
+      "dependencies": [
+        "phase-3"
+      ],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-4-1",
+          "action": "Edit for clarity and correctness",
+          "tool": "fs:edit",
+          "args": {},
+          "expectedOutcome": "Polished final version ready to share",
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+  "estimatedDuration": "1 hour",
+  "complexity": "medium",
+  "createdAt": "2026-02-20T02:52:09.679Z",
+  "updatedAt": "2026-02-20T02:52:09.679Z",
+  "status": "draft"
+}
