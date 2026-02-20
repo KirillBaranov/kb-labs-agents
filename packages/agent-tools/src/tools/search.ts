@@ -24,6 +24,10 @@ function buildGrepExcludes(excludes: string[]): string {
   return excludes.map(d => `--exclude-dir=${d}`).join(' ');
 }
 
+function toSingleQuoted(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
 /** Exec timeout for search commands (30s) */
 const SEARCH_TIMEOUT_MS = 30_000;
 
@@ -194,7 +198,7 @@ export function createGrepSearchTool(context: ToolContext): Tool {
           return { success: true, output: dirError };
         }
 
-        let cmd = `grep -rn "${pattern}" "${fullPath}" ${buildGrepExcludes(excludes)}`;
+        let cmd = `grep -rn ${toSingleQuoted(pattern)} "${fullPath}" ${buildGrepExcludes(excludes)}`;
 
         if (filePattern) {
           cmd += ` --include="${filePattern}"`;
@@ -202,12 +206,44 @@ export function createGrepSearchTool(context: ToolContext): Tool {
 
         cmd += ' | head -100';
 
-        const output = execSync(cmd, {
-          cwd: context.workingDir,
-          encoding: 'utf-8',
-          maxBuffer: 1024 * 1024,
-          timeout: SEARCH_TIMEOUT_MS,
-        });
+        let output = '';
+        let usedLiteralFallback = false;
+
+        try {
+          output = execSync(cmd, {
+            cwd: context.workingDir,
+            encoding: 'utf-8',
+            maxBuffer: 1024 * 1024,
+            timeout: SEARCH_TIMEOUT_MS,
+          });
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          const stderrRaw = (error as { stderr?: string | Buffer }).stderr;
+          const stderr = typeof stderrRaw === 'string'
+            ? stderrRaw
+            : stderrRaw instanceof Buffer
+              ? stderrRaw.toString('utf-8')
+              : '';
+          const looksLikeInvalidRegex = status === 2
+            && /(unbalanced|parentheses|invalid regular expression|regular expression)/i.test(stderr);
+
+          if (!looksLikeInvalidRegex) {
+            throw error;
+          }
+
+          usedLiteralFallback = true;
+          let literalCmd = `grep -rFn ${toSingleQuoted(pattern)} "${fullPath}" ${buildGrepExcludes(excludes)}`;
+          if (filePattern) {
+            literalCmd += ` --include="${filePattern}"`;
+          }
+          literalCmd += ' | head -100';
+          output = execSync(literalCmd, {
+            cwd: context.workingDir,
+            encoding: 'utf-8',
+            maxBuffer: 1024 * 1024,
+            timeout: SEARCH_TIMEOUT_MS,
+          });
+        }
 
         const lines = output.trim().split('\n').filter(Boolean);
 
@@ -219,7 +255,7 @@ export function createGrepSearchTool(context: ToolContext): Tool {
         }
 
         const result = [
-          `Found ${lines.length} match(es) for "${pattern}":`,
+          `Found ${lines.length} match(es) for "${pattern}"${usedLiteralFallback ? ' (literal fallback)' : ''}:`,
           '',
           ...lines.map(line => {
             const match = line.match(/^(.+?):(\d+):(.+)$/);
@@ -605,13 +641,13 @@ export function createCodeStatsTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'code_stats',
-        description: 'Get line counts and file counts by extension.',
+        description: 'Get line counts and file counts by extension for a directory scope (not single-file line counts).',
         parameters: {
           type: 'object',
           properties: {
             directory: {
               type: 'string',
-              description: 'Directory to analyze (default: ".")',
+              description: 'Directory to analyze (default: "."). If a file path is provided by mistake, use its parent directory.',
             },
             extensions: {
               type: 'string',
@@ -680,7 +716,7 @@ export function createCodeStatsTool(context: ToolContext): Tool {
 
         return {
           success: true,
-          output: `Code statistics for ${directory}:\n\nTotal lines: ${totalOutput}\nTotal files: ${fileCount}\n\nFiles by extension:\n${countByExt}`,
+          output: `Code statistics for directory ${directory}:\n\nTotal lines: ${totalOutput}\nTotal files: ${fileCount}\n\nFiles by extension:\n${countByExt}\n\nNote: This is directory-level aggregate. For a single file line count, use fs_read on that file and rely on metadata.totalLines.`,
         };
       } catch (error) {
         return {
