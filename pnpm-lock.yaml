@@ -42,6 +42,106 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.10.4)
 
+  fixtures/broken-build:
+    dependencies:
+      '@kb-labs/agent-contracts':
+        specifier: workspace:*
+        version: link:../../packages/agent-contracts
+      '@kb-labs/agent-core':
+        specifier: workspace:*
+        version: link:../../packages/agent-core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@kb-labs/devkit':
+        specifier: link:../../../kb-labs-devkit
+        version: link:../../../kb-labs-devkit
+      '@types/node':
+        specifier: ^24.3.3
+        version: 24.10.4
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.0(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@24.10.4)
+
+  fixtures/broken-imports:
+    dependencies:
+      '@kb-labs/agent-contracts':
+        specifier: workspace:*
+        version: link:../../packages/agent-contracts
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@kb-labs/devkit':
+        specifier: link:../../../kb-labs-devkit
+        version: link:../../../kb-labs-devkit
+      '@types/node':
+        specifier: ^24.3.3
+        version: 24.10.4
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.0(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@24.10.4)
+
+  fixtures/broken-tsconfig:
+    dependencies:
+      '@kb-labs/agent-contracts':
+        specifier: workspace:*
+        version: link:../../packages/agent-contracts
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@kb-labs/devkit':
+        specifier: link:../../../kb-labs-devkit
+        version: link:../../../kb-labs-devkit
+      '@types/node':
+        specifier: ^24.3.3
+        version: 24.10.4
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.0(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@24.10.4)
+
+  fixtures/broken-vitest-config:
+    dependencies:
+      '@kb-labs/agent-contracts':
+        specifier: workspace:*
+        version: link:../../packages/agent-contracts
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.3.3
+        version: 24.10.4
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.0(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@24.10.4)
+
   packages/agent-cli:
     dependencies:
       '@kb-labs/agent-contracts':
