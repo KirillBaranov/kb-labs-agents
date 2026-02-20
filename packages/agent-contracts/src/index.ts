@@ -8,6 +8,7 @@ export type * from './types.js';
 export type * from './events.js';
 export type * from './ws-messages.js';
 export type * from './verification.js';
+export type * from './turn.js';
 export * from './schemas.js';
 export * from './routes.js';
 export * from './analytics.js';

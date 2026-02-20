@@ -72,8 +72,18 @@ export interface AgentEventBase {
   /** For *:end events: when the operation started (ISO string) */
   startedAt?: string;
 
-  /** Monotonic sequence number for event ordering (assigned by RunManager) */
+  /** Monotonic sequence number within a single run (assigned by RunManager) */
   seq?: number;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Session-level Ordering
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Run ID that produced this event (assigned before persistence) */
+  runId?: string;
+
+  /** Global monotonic sequence across all runs in a session (assigned by SessionManager on persist) */
+  sessionSeq?: number;
 }
 
 /**

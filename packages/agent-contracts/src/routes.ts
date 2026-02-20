@@ -44,16 +44,16 @@ export const AGENTS_ROUTES = {
   /** POST /sessions - Create new session */
   SESSION_CREATE: '/sessions',
 
-  /** GET /sessions/:sessionId/events - Get session events (chat history) */
-  SESSION_EVENTS: '/sessions/:sessionId/events',
+  /** GET /sessions/:sessionId/turns - Get session turns (turn-based UI) */
+  SESSION_TURNS: '/sessions/:sessionId/turns',
 } as const;
 
 /**
  * WebSocket channel paths (relative to wsBasePath)
  */
 export const AGENTS_WS_CHANNELS = {
-  /** WS /events/:runId - Real-time event stream for a run */
-  EVENTS: '/events/:runId',
+  /** WS /session/:sessionId - Persistent session stream (all runs in session) */
+  SESSION_STREAM: '/session/:sessionId',
 } as const;
 
 /**

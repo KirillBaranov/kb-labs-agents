@@ -74,6 +74,27 @@ export interface DebugContext {
  */
 export type LLMTier = 'small' | 'medium' | 'large';
 
+export interface AgentSmartTieringConfig {
+  enabled?: boolean;
+  nodes?: {
+    intentInference?: boolean;
+    searchAssessment?: boolean;
+    taskValidation?: boolean;
+  };
+  auditTasksPreferMedium?: boolean;
+  minEvidenceDensityForSmallValidation?: number;
+  maxIterationsWithoutProgressForMediumSearch?: number;
+  intentInferenceMinTaskCharsForMedium?: number;
+}
+
+/**
+ * Response verbosity/rigor mode for final answers.
+ * - auto: adapt format by question complexity (default)
+ * - brief: concise output for simple questions
+ * - deep: thorough structured output for complex questions
+ */
+export type AgentResponseMode = 'auto' | 'brief' | 'deep';
+
 /**
  * Task complexity classification
  *
@@ -168,7 +189,9 @@ export interface AgentConfig {
   verbose: boolean;
   sessionId?: string;
   tier?: LLMTier;
+  responseMode?: AgentResponseMode;
   enableEscalation?: boolean;
+  smartTiering?: AgentSmartTieringConfig;
   /** Mode configuration (execute/plan/edit/debug) */
   mode?: ModeConfig;
   /** Tracer for recording execution (optional) */
@@ -332,6 +355,7 @@ export interface ToolResult {
   success: boolean;
   output?: string;
   error?: string;
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -945,30 +969,6 @@ export interface GetSessionRequest {
 export interface GetSessionResponse {
   /** Session details */
   session: AgentSessionInfo;
-}
-
-/**
- * Request to get session events (chat history)
- */
-export interface GetSessionEventsRequest {
-  /** Session ID */
-  sessionId: string;
-  /** Maximum number of events to return */
-  limit?: number;
-  /** Offset for pagination */
-  offset?: number;
-  /** Filter by event types */
-  types?: string[];
-}
-
-/**
- * Response with session events
- */
-export interface GetSessionEventsResponse {
-  /** List of events */
-  events: import('./events.js').AgentEvent[];
-  /** Total count for pagination */
-  total: number;
 }
 
 /**

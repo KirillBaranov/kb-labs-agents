@@ -1,6 +1,7 @@
 /**
  * Agent configuration types for kb.config.json
  */
+import type { AgentSmartTieringConfig } from './types.js';
 
 /**
  * Storage configuration for file history snapshots
@@ -82,6 +83,8 @@ export interface FileHistoryConfig {
 export interface AgentsPluginConfig {
   /** Enable agents plugin */
   enabled: boolean;
+  /** Adaptive helper-node elevation policy (small -> medium on risk) */
+  smartTiering?: AgentSmartTieringConfig;
   /** File history tracking configuration */
   fileHistory: FileHistoryConfig;
 }
