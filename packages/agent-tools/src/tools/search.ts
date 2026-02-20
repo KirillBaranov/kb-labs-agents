@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
+import { toolError } from './tool-error.js';
 
 /** Default directories to exclude from search */
 const DEFAULT_EXCLUDES = ['node_modules', '.git', 'dist', 'build', '.next', '.kb', '.pnpm', 'coverage', '__pycache__', '.venv', '.cache'];
@@ -30,6 +31,9 @@ function toSingleQuoted(value: string): string {
 
 /** Exec timeout for search commands (30s) */
 const SEARCH_TIMEOUT_MS = 30_000;
+const SEARCH_MAX_BUFFER = 16 * 1024 * 1024;
+const DEFAULT_RESULT_LIMIT = 100;
+const MAX_RESULT_LIMIT = 200;
 
 /**
  * Check if directory exists and return error message if not.
@@ -55,6 +59,26 @@ function validateDirectory(workingDir: string, directory: string): string | null
   } catch { /* ignore */ }
 
   return `Directory "${directory}" not found (resolved to ${fullPath}). Use "." to search from project root.${hint}`;
+}
+
+function normalizeOffsetLimit(input: Record<string, unknown>): { offset: number; limit: number } {
+  const rawOffset = Number(input.offset);
+  const rawLimit = Number(input.limit);
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.min(MAX_RESULT_LIMIT, Math.floor(rawLimit))
+    : DEFAULT_RESULT_LIMIT;
+  return { offset, limit };
+}
+
+function paginate<T>(items: T[], offset: number, limit: number): { page: T[]; hasMore: boolean; nextOffset: number | null } {
+  const page = items.slice(offset, offset + limit);
+  const hasMore = offset + limit < items.length;
+  return {
+    page,
+    hasMore,
+    nextOffset: hasMore ? offset + limit : null,
+  };
 }
 
 /**
@@ -83,6 +107,14 @@ export function createGlobSearchTool(context: ToolContext): Tool {
               items: { type: 'string' },
               description: 'Directories to exclude (default: node_modules, dist, .git, build, .next, .kb, .pnpm, coverage). Override to search in excluded dirs.',
             },
+            offset: {
+              type: 'number',
+              description: 'Result offset for pagination (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Max results per page (default: ${DEFAULT_RESULT_LIMIT}, max: ${MAX_RESULT_LIMIT})`,
+            },
           },
           required: ['pattern'],
         },
@@ -92,6 +124,7 @@ export function createGlobSearchTool(context: ToolContext): Tool {
       const pattern = input.pattern as string;
       const directory = (input.directory as string) || '.';
       const excludes = (input.exclude as string[] | undefined) || DEFAULT_EXCLUDES;
+      const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
@@ -101,12 +134,13 @@ export function createGlobSearchTool(context: ToolContext): Tool {
           return { success: true, output: dirError };
         }
 
-        const cmd = `find "${fullPath}" -type f -iname "${pattern}" ${buildFindExcludes(excludes)} | head -50`;
+        const windowSize = Math.min(2000, Math.max(500, offset + limit));
+        const cmd = `find "${fullPath}" -type f -iname "${pattern}" ${buildFindExcludes(excludes)} | head -${windowSize}`;
 
         const output = execSync(cmd, {
           cwd: context.workingDir,
           encoding: 'utf-8',
-          maxBuffer: 1024 * 1024,
+          maxBuffer: SEARCH_MAX_BUFFER,
           timeout: SEARCH_TIMEOUT_MS,
         });
 
@@ -123,27 +157,52 @@ export function createGlobSearchTool(context: ToolContext): Tool {
           };
         }
 
+        const page = paginate(files, offset, limit);
         const result = [
-          `Found ${files.length} file(s) matching "${pattern}":`,
+          `Found ${files.length} file(s) matching "${pattern}" (showing ${page.page.length}, offset=${offset}, limit=${limit}):`,
           '',
-          ...files.map(f => `  ${f}`),
+          ...page.page.map(f => `  ${f}`),
+          page.hasMore ? '' : '',
+          page.hasMore ? `Next page: glob_search(pattern="${pattern}", directory="${directory}", offset=${page.nextOffset}, limit=${limit})` : '',
         ].join('\n');
 
         return {
           success: true,
           output: result,
+          metadata: {
+            totalMatches: files.length,
+            offset,
+            limit,
+            hasMore: page.hasMore,
+            nextOffset: page.nextOffset,
+          },
         };
       } catch (error) {
         if (error instanceof Error && 'killed' in error && error.killed) {
-          return {
-            success: false,
-            error: `Glob search timed out after ${SEARCH_TIMEOUT_MS / 1000}s. Try narrowing the directory or pattern.`,
-          };
+          return toolError({
+            code: 'SEARCH_TIMEOUT',
+            message: `Glob search timed out after ${SEARCH_TIMEOUT_MS / 1000}s.`,
+            retryable: true,
+            hint: 'Narrow directory/pattern or lower limit.',
+            details: { directory, pattern, timeoutMs: SEARCH_TIMEOUT_MS },
+          });
         }
-        return {
-          success: false,
-          error: `Glob search failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        if ((error as { code?: string }).code === 'ENOBUFS') {
+          return toolError({
+            code: 'SEARCH_BUFFER_OVERFLOW',
+            message: 'Search output exceeded buffer.',
+            retryable: true,
+            hint: 'Narrow directory/pattern or reduce limit.',
+            details: { directory, pattern, offset, limit },
+          });
+        }
+        return toolError({
+          code: 'SEARCH_FAILED',
+          message: `Glob search failed: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          hint: 'Check pattern syntax and directory.',
+          details: { directory, pattern },
+        });
       }
     },
   };
@@ -179,6 +238,19 @@ export function createGrepSearchTool(context: ToolContext): Tool {
               items: { type: 'string' },
               description: 'Directories to exclude (default: node_modules, dist, .git, build, .next, .kb, .pnpm, coverage). Override to search in excluded dirs.',
             },
+            mode: {
+              type: 'string',
+              enum: ['auto', 'regex', 'literal'],
+              description: 'Search mode: auto (default), regex, or literal',
+            },
+            offset: {
+              type: 'number',
+              description: 'Result offset for pagination (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Max matches per page (default: ${DEFAULT_RESULT_LIMIT}, max: ${MAX_RESULT_LIMIT})`,
+            },
           },
           required: ['pattern'],
         },
@@ -189,6 +261,8 @@ export function createGrepSearchTool(context: ToolContext): Tool {
       const directory = (input.directory as string) || '.';
       const filePattern = input.filePattern as string | undefined;
       const excludes = (input.exclude as string[] | undefined) || DEFAULT_EXCLUDES;
+      const mode = ((input.mode as string) || 'auto').toLowerCase();
+      const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
@@ -198,13 +272,11 @@ export function createGrepSearchTool(context: ToolContext): Tool {
           return { success: true, output: dirError };
         }
 
-        let cmd = `grep -rn ${toSingleQuoted(pattern)} "${fullPath}" ${buildGrepExcludes(excludes)}`;
-
-        if (filePattern) {
-          cmd += ` --include="${filePattern}"`;
-        }
-
-        cmd += ' | head -100';
+        const windowSize = Math.min(2000, Math.max(500, offset + limit));
+        const regexCmd = `grep -rIn ${toSingleQuoted(pattern)} "${fullPath}" ${buildGrepExcludes(excludes)}${filePattern ? ` --include="${filePattern}"` : ''}`;
+        const literalCmd = `grep -rIFn ${toSingleQuoted(pattern)} "${fullPath}" ${buildGrepExcludes(excludes)}${filePattern ? ` --include="${filePattern}"` : ''}`;
+        let cmd = mode === 'literal' ? literalCmd : regexCmd;
+        cmd += ` | head -${windowSize}`;
 
         let output = '';
         let usedLiteralFallback = false;
@@ -213,7 +285,7 @@ export function createGrepSearchTool(context: ToolContext): Tool {
           output = execSync(cmd, {
             cwd: context.workingDir,
             encoding: 'utf-8',
-            maxBuffer: 1024 * 1024,
+            maxBuffer: SEARCH_MAX_BUFFER,
             timeout: SEARCH_TIMEOUT_MS,
           });
         } catch (error) {
@@ -232,15 +304,13 @@ export function createGrepSearchTool(context: ToolContext): Tool {
           }
 
           usedLiteralFallback = true;
-          let literalCmd = `grep -rFn ${toSingleQuoted(pattern)} "${fullPath}" ${buildGrepExcludes(excludes)}`;
-          if (filePattern) {
-            literalCmd += ` --include="${filePattern}"`;
+          if (mode === 'regex') {
+            throw error;
           }
-          literalCmd += ' | head -100';
-          output = execSync(literalCmd, {
+          output = execSync(`${literalCmd} | head -${windowSize}`, {
             cwd: context.workingDir,
             encoding: 'utf-8',
-            maxBuffer: 1024 * 1024,
+            maxBuffer: SEARCH_MAX_BUFFER,
             timeout: SEARCH_TIMEOUT_MS,
           });
         }
@@ -254,10 +324,11 @@ export function createGrepSearchTool(context: ToolContext): Tool {
           };
         }
 
+        const page = paginate(lines, offset, limit);
         const result = [
-          `Found ${lines.length} match(es) for "${pattern}"${usedLiteralFallback ? ' (literal fallback)' : ''}:`,
+          `Found ${lines.length} match(es) for "${pattern}"${usedLiteralFallback ? ' (literal fallback)' : ''} (showing ${page.page.length}, offset=${offset}, limit=${limit}):`,
           '',
-          ...lines.map(line => {
+          ...page.page.map(line => {
             const match = line.match(/^(.+?):(\d+):(.+)$/);
             if (match) {
               const [, filePath, lineNum, content] = match;
@@ -266,11 +337,21 @@ export function createGrepSearchTool(context: ToolContext): Tool {
             }
             return `  ${line}`;
           }),
+          page.hasMore ? '' : '',
+          page.hasMore ? `Next page: grep_search(pattern="${pattern}", directory="${directory}", offset=${page.nextOffset}, limit=${limit})` : '',
         ].join('\n');
 
         return {
           success: true,
           output: result,
+          metadata: {
+            totalMatches: lines.length,
+            offset,
+            limit,
+            hasMore: page.hasMore,
+            nextOffset: page.nextOffset,
+            modeUsed: usedLiteralFallback ? 'literal' : mode === 'auto' ? 'regex' : mode,
+          },
         };
       } catch (error) {
         // grep returns exit code 1 when no matches found
@@ -282,16 +363,31 @@ export function createGrepSearchTool(context: ToolContext): Tool {
         }
 
         if (error instanceof Error && 'killed' in error && (error as any).killed) {
-          return {
-            success: false,
-            error: `Grep search timed out after ${SEARCH_TIMEOUT_MS / 1000}s. Try narrowing the directory or adding a filePattern.`,
-          };
+          return toolError({
+            code: 'SEARCH_TIMEOUT',
+            message: `Grep search timed out after ${SEARCH_TIMEOUT_MS / 1000}s.`,
+            retryable: true,
+            hint: 'Narrow directory, add filePattern, or lower limit.',
+            details: { directory, pattern, timeoutMs: SEARCH_TIMEOUT_MS },
+          });
+        }
+        if ((error as { code?: string }).code === 'ENOBUFS') {
+          return toolError({
+            code: 'SEARCH_BUFFER_OVERFLOW',
+            message: 'Search output exceeded buffer.',
+            retryable: true,
+            hint: 'Narrow directory, add filePattern, or reduce limit.',
+            details: { directory, pattern, filePattern, offset, limit, mode },
+          });
         }
 
-        return {
-          success: false,
-          error: `Grep search failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        return toolError({
+          code: 'SEARCH_FAILED',
+          message: `Grep search failed: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          hint: 'Try mode="literal" for special characters, or narrow directory.',
+          details: { directory, pattern, filePattern, mode },
+        });
       }
     },
   };
@@ -318,6 +414,14 @@ export function createListFilesTool(context: ToolContext): Tool {
               type: 'boolean',
               description: 'Include subdirectories (default: false)',
             },
+            offset: {
+              type: 'number',
+              description: 'Result offset for pagination (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Max results per page (default: ${DEFAULT_RESULT_LIMIT}, max: ${MAX_RESULT_LIMIT})`,
+            },
           },
         },
       },
@@ -325,6 +429,7 @@ export function createListFilesTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const directory = (input.directory as string) || '.';
       const recursive = (input.recursive as boolean) || false;
+      const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
@@ -355,11 +460,19 @@ export function createListFilesTool(context: ToolContext): Tool {
             .filter(Boolean)
             .map(f => path.relative(context.workingDir, f));
 
+          const page = paginate(files, offset, limit);
           return {
             success: true,
             output: files.length > 0
-              ? `Files in ${directory} (recursive):\n\n${files.map(f => `  ${f}`).join('\n')}`
+              ? `Files in ${directory} (recursive, showing ${page.page.length}/${files.length}, offset=${offset}, limit=${limit}):\n\n${page.page.map(f => `  ${f}`).join('\n')}${page.hasMore ? `\n\nNext page: list_files(directory="${directory}", recursive=true, offset=${page.nextOffset}, limit=${limit})` : ''}`
               : `No files found in ${directory}`,
+            metadata: {
+              totalMatches: files.length,
+              offset,
+              limit,
+              hasMore: page.hasMore,
+              nextOffset: page.nextOffset,
+            },
           };
         }
 
@@ -653,6 +766,14 @@ export function createCodeStatsTool(context: ToolContext): Tool {
               type: 'string',
               description: 'Comma-separated list of extensions to count (e.g., "ts,tsx,js" or "cs,csproj" or "py"). If not specified, counts all source files.',
             },
+            offset: {
+              type: 'number',
+              description: 'Offset for extension summary rows (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Rows per page for extension summary (default: ${DEFAULT_RESULT_LIMIT}, max: ${MAX_RESULT_LIMIT})`,
+            },
           },
         },
       },
@@ -660,6 +781,7 @@ export function createCodeStatsTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const directory = (input.directory as string) || '.';
       const extensionsInput = input.extensions as string | undefined;
+      const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
@@ -697,12 +819,12 @@ export function createCodeStatsTool(context: ToolContext): Tool {
         const countByExtCmd = `find "${fullPath}" -type f \\( ${extFilter} \\) \
           ! -path "*/node_modules/*" ! -path "*/dist/*" ! -path "*/.git/*" \
           ! -path "*/bin/*" ! -path "*/obj/*" ! -path "*/target/*" ! -path "*/__pycache__/*" \
-          | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -15`;
+          | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -200`;
 
         const countByExt = execSync(countByExtCmd, {
           cwd: context.workingDir,
           encoding: 'utf-8',
-        }).trim();
+        }).trim().split('\n').filter(Boolean);
 
         // Total file count
         const fileCountCmd = `find "${fullPath}" -type f \\( ${extFilter} \\) \
@@ -714,15 +836,26 @@ export function createCodeStatsTool(context: ToolContext): Tool {
           encoding: 'utf-8',
         }).trim();
 
+        const page = paginate(countByExt, offset, limit);
         return {
           success: true,
-          output: `Code statistics for directory ${directory}:\n\nTotal lines: ${totalOutput}\nTotal files: ${fileCount}\n\nFiles by extension:\n${countByExt}\n\nNote: This is directory-level aggregate. For a single file line count, use fs_read on that file and rely on metadata.totalLines.`,
+          output: `Code statistics for directory ${directory}:\n\nTotal lines: ${totalOutput}\nTotal files: ${fileCount}\n\nFiles by extension (showing ${page.page.length}/${countByExt.length}, offset=${offset}, limit=${limit}):\n${page.page.join('\n')}${page.hasMore ? `\n\nNext page: code_stats(directory="${directory}", offset=${page.nextOffset}, limit=${limit})` : ''}\n\nNote: This is directory-level aggregate. For a single file line count, use fs_read on that file and rely on metadata.totalLines.`,
+          metadata: {
+            totalExtensionRows: countByExt.length,
+            offset,
+            limit,
+            hasMore: page.hasMore,
+            nextOffset: page.nextOffset,
+          },
         };
       } catch (error) {
-        return {
-          success: false,
-          error: `Code stats failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        return toolError({
+          code: 'CODE_STATS_FAILED',
+          message: `Code stats failed: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          hint: 'Narrow directory or provide extensions.',
+          details: { directory, extensions: extensionsInput },
+        });
       }
     },
   };

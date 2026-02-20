@@ -297,6 +297,39 @@ describe('grep_search', () => {
     expect(cmd).toContain('--include="*.ts"');
   });
 
+  it('should support pagination via offset/limit', async () => {
+    mockExecSync.mockReturnValue(
+      '/test/project/src/a.ts:1:Foo\n' +
+      '/test/project/src/b.ts:2:Foo\n' +
+      '/test/project/src/c.ts:3:Foo\n',
+    );
+    const tool = createGrepSearchTool(ctx());
+
+    const result = await tool.executor({ pattern: 'Foo', offset: 1, limit: 1 });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('showing 1, offset=1, limit=1');
+    expect(result.output).toContain('src/b.ts:2');
+    expect(result.output).toContain('Next page');
+    expect((result.metadata as any)?.nextOffset).toBe(2);
+  });
+
+  it('should fallback to literal mode for invalid regex in auto mode', async () => {
+    const regexError = new Error('grep failed');
+    (regexError as any).status = 2;
+    (regexError as any).stderr = 'grep: parentheses not balanced';
+    mockExecSync
+      .mockImplementationOnce(() => { throw regexError; })
+      .mockImplementationOnce(() => '/test/project/src/a.ts:1:useLLM(\n');
+
+    const tool = createGrepSearchTool(ctx());
+    const result = await tool.executor({ pattern: 'useLLM\\(' });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('literal fallback');
+    expect((result.metadata as any)?.modeUsed).toBe('literal');
+  });
+
   it('should include default excludes', async () => {
     mockExecSync.mockReturnValue('');
     const tool = createGrepSearchTool(ctx());

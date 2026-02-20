@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { Tool, ToolContext } from '../types.js';
+import { toolError } from './tool-error.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Constants
@@ -28,6 +29,8 @@ const DEFAULT_LINES = 100;
 
 /** Maximum content size for write operations (1MB) */
 const MAX_WRITE_SIZE = 1_000_000;
+const DEFAULT_LIST_LIMIT = 100;
+const MAX_LIST_LIMIT = 200;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -86,6 +89,16 @@ function computeHash(content: string): string {
   return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
 }
 
+function normalizeListWindow(input: Record<string, unknown>): { offset: number; limit: number } {
+  const rawOffset = Number(input.offset);
+  const rawLimit = Number(input.limit);
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.min(MAX_LIST_LIMIT, Math.floor(rawLimit))
+    : DEFAULT_LIST_LIMIT;
+  return { offset, limit };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // fs_read - Read file with offset/limit support
 // ═══════════════════════════════════════════════════════════════════════════
@@ -129,48 +142,49 @@ export function createFsReadTool(context: ToolContext): Tool {
       // Validate path
       const pathValidation = validatePath(context.workingDir, filePath);
       if (!pathValidation.valid) {
-        return { success: false, error: pathValidation.error };
+        return toolError({
+          code: 'PATH_VALIDATION_FAILED',
+          message: pathValidation.error || 'Invalid path',
+          retryable: false,
+          hint: 'Use a path inside working directory.',
+          details: { filePath, workingDir: context.workingDir },
+        });
       }
 
       const fullPath = pathValidation.resolved;
 
       // Check file exists
       if (!fs.existsSync(fullPath)) {
-        return {
-          success: false,
-          error: `FILE_NOT_FOUND: "${filePath}" does not exist.
-
-HOW TO FIX:
-1. Use fs_list to see available files in the directory
-2. Check for typos in the file name
-3. Verify the path is relative to working directory
-
-WORKING_DIR: ${context.workingDir}`,
-        };
+        return toolError({
+          code: 'FILE_NOT_FOUND',
+          message: `"${filePath}" does not exist.`,
+          retryable: true,
+          hint: `Use fs_list(path="${path.dirname(filePath) || '.'}") to inspect available files.`,
+          details: { filePath, workingDir: context.workingDir },
+        });
       }
 
       // Check if it's a file
       const stats = fs.statSync(fullPath);
       if (stats.isDirectory()) {
-        return {
-          success: false,
-          error: `NOT_A_FILE: "${filePath}" is a directory, not a file.
-
-HOW TO FIX: Use fs_list to explore directory contents, or specify a file path.`,
-        };
+        return toolError({
+          code: 'NOT_A_FILE',
+          message: `"${filePath}" is a directory, not a file.`,
+          retryable: false,
+          hint: 'Use fs_list for directories or provide a file path.',
+          details: { filePath },
+        });
       }
 
       // Check file size
       if (stats.size > MAX_FILE_SIZE) {
-        return {
-          success: false,
-          error: `FILE_TOO_LARGE: "${filePath}" is ${formatSize(stats.size)}, exceeds limit of ${formatSize(MAX_FILE_SIZE)}.
-
-HOW TO FIX: This file is too large to read entirely. Use offset and limit to read sections:
-- Read first 100 lines: fs_read(path="${filePath}", limit=100)
-- Read lines 500-600: fs_read(path="${filePath}", offset=500, limit=100)
-- Read last section: first check total lines, then read from there`,
-        };
+        return toolError({
+          code: 'FILE_TOO_LARGE',
+          message: `"${filePath}" is ${formatSize(stats.size)}, exceeds limit ${formatSize(MAX_FILE_SIZE)}.`,
+          retryable: true,
+          hint: `Use fs_read(path="${filePath}", offset=<line>, limit=<small number>).`,
+          details: { filePath, size: stats.size, maxSize: MAX_FILE_SIZE },
+        });
       }
 
       // Read file
@@ -180,12 +194,13 @@ HOW TO FIX: This file is too large to read entirely. Use offset and limit to rea
 
       // Validate offset
       if (offset > totalLines) {
-        return {
-          success: false,
-          error: `OFFSET_OUT_OF_RANGE: Requested offset ${offset} but file only has ${totalLines} lines.
-
-HOW TO FIX: Use offset between 1 and ${totalLines}.`,
-        };
+        return toolError({
+          code: 'OFFSET_OUT_OF_RANGE',
+          message: `Requested offset ${offset} but file has ${totalLines} lines.`,
+          retryable: true,
+          hint: `Use offset between 1 and ${totalLines}.`,
+          details: { filePath, offset, totalLines },
+        });
       }
 
       // Extract requested lines (convert to 0-indexed)
@@ -276,7 +291,13 @@ export function createFsWriteTool(context: ToolContext): Tool {
       // Validate path
       const pathValidation = validatePath(context.workingDir, filePath);
       if (!pathValidation.valid) {
-        return { success: false, error: pathValidation.error };
+        return toolError({
+          code: 'PATH_VALIDATION_FAILED',
+          message: pathValidation.error || 'Invalid path',
+          retryable: false,
+          hint: 'Use a path inside working directory.',
+          details: { filePath, workingDir: context.workingDir },
+        });
       }
 
       const fullPath = pathValidation.resolved;
@@ -395,40 +416,24 @@ export function createFsPatchTool(context: ToolContext): Tool {
       // PROTECTION 1: File must have been read in this session
       // ═══════════════════════════════════════════════════════════════════════
       if (context.filesRead && !context.filesRead.has(filePath)) {
-        return {
-          success: false,
-          error: `CANNOT_EDIT_UNREAD_FILE: You must read "${filePath}" before editing it.
-
-WHY THIS ERROR:
-This is a safety feature to prevent:
-- Editing files you haven't seen (blind edits)
-- Making changes without understanding current content
-- Accidentally breaking code you didn't review
-
-HOW TO FIX:
-1. First: fs_read(path="${filePath}", limit=100) → see file structure
-2. Find the section you want to edit
-3. Read that section: fs_read(path="${filePath}", offset=<line>, limit=50)
-4. Then: fs_patch(path="${filePath}", startLine=<num>, endLine=<num>, newContent="...")
-
-EXAMPLE:
-  fs_read(path="${filePath}", offset=100, limit=20)
-  → You see lines 100-120 with their content
-  fs_patch(path="${filePath}", startLine=105, endLine=108, newContent="new code")`,
-        };
+        return toolError({
+          code: 'CANNOT_EDIT_UNREAD_FILE',
+          message: `You must read "${filePath}" before editing it.`,
+          retryable: true,
+          hint: `Run fs_read(path="${filePath}") first, then patch specific lines.`,
+          details: { filePath, startLine, endLine },
+        });
       }
 
       // Check file exists
       if (!fs.existsSync(fullPath)) {
-        return {
-          success: false,
-          error: `FILE_NOT_FOUND: "${filePath}" does not exist.
-
-HOW TO FIX:
-1. Use fs_list to see available files
-2. Check path spelling
-3. Use fs_write to create a new file instead`,
-        };
+        return toolError({
+          code: 'FILE_NOT_FOUND',
+          message: `"${filePath}" does not exist.`,
+          retryable: true,
+          hint: 'Use fs_list to find files or fs_write to create a new file.',
+          details: { filePath },
+        });
       }
 
       // Read current content
@@ -442,25 +447,13 @@ HOW TO FIX:
         const currentHash = computeHash(currentContent);
 
         if (savedHash && savedHash !== currentHash) {
-          return {
-            success: false,
-            error: `FILE_CHANGED_SINCE_READ: "${filePath}" was modified since you last read it.
-
-WHY THIS ERROR:
-The file content changed between when you read it and now. This could cause:
-- Line numbers to be wrong (your edit might target wrong lines)
-- Merge conflicts (your changes might conflict with other changes)
-- Loss of work (your edit might overwrite important changes)
-
-HOW TO FIX:
-1. Re-read the file to see current content:
-   fs_read(path="${filePath}", offset=${Math.max(1, startLine - 10)}, limit=${endLine - startLine + 20})
-2. Review the current state
-3. Adjust your edit based on new line numbers/content
-4. Apply the patch again
-
-NOTE: This protection ensures you're always editing the file you actually read.`,
-          };
+          return toolError({
+            code: 'FILE_CHANGED_SINCE_READ',
+            message: `"${filePath}" was modified since last read.`,
+            retryable: true,
+            hint: `Re-read: fs_read(path="${filePath}", offset=${Math.max(1, startLine - 10)}, limit=${endLine - startLine + 20})`,
+            details: { filePath, startLine, endLine },
+          });
         }
       }
 
@@ -469,21 +462,23 @@ NOTE: This protection ensures you're always editing the file you actually read.`
 
       // Validate line numbers
       if (startLine < 1 || startLine > totalLines) {
-        return {
-          success: false,
-          error: `INVALID_START_LINE: startLine ${startLine} is out of range (file has ${totalLines} lines).
-
-HOW TO FIX: Use startLine between 1 and ${totalLines}.`,
-        };
+        return toolError({
+          code: 'INVALID_START_LINE',
+          message: `startLine ${startLine} is out of range (file has ${totalLines} lines).`,
+          retryable: true,
+          hint: `Use startLine between 1 and ${totalLines}.`,
+          details: { filePath, startLine, totalLines },
+        });
       }
 
       if (endLine < startLine || endLine > totalLines) {
-        return {
-          success: false,
-          error: `INVALID_END_LINE: endLine ${endLine} is invalid (startLine=${startLine}, file has ${totalLines} lines).
-
-HOW TO FIX: Use endLine between ${startLine} and ${totalLines}.`,
-        };
+        return toolError({
+          code: 'INVALID_END_LINE',
+          message: `endLine ${endLine} is invalid (startLine=${startLine}, file has ${totalLines} lines).`,
+          retryable: true,
+          hint: `Use endLine between ${startLine} and ${totalLines}.`,
+          details: { filePath, startLine, endLine, totalLines },
+        });
       }
 
       // Apply patch (convert to 0-indexed)
@@ -573,6 +568,14 @@ export function createFsListTool(context: ToolContext): Tool {
               type: 'boolean',
               description: 'Include subdirectories recursively (default: false, max depth: 3)',
             },
+            offset: {
+              type: 'number',
+              description: 'Result offset for pagination (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Result limit per page (default: ${DEFAULT_LIST_LIMIT}, max: ${MAX_LIST_LIMIT})`,
+            },
           },
         },
       },
@@ -580,37 +583,43 @@ export function createFsListTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const dirPath = (input.path as string) || '.';
       const recursive = (input.recursive as boolean) || false;
+      const { offset, limit } = normalizeListWindow(input);
 
       // Validate path
       const pathValidation = validatePath(context.workingDir, dirPath);
       if (!pathValidation.valid) {
-        return { success: false, error: pathValidation.error };
+        return toolError({
+          code: 'PATH_VALIDATION_FAILED',
+          message: pathValidation.error || 'Invalid path',
+          retryable: false,
+          hint: 'Use a path inside working directory.',
+          details: { path: dirPath, workingDir: context.workingDir },
+        });
       }
 
       const fullPath = pathValidation.resolved;
 
       // Check exists
       if (!fs.existsSync(fullPath)) {
-        return {
-          success: false,
-          error: `DIRECTORY_NOT_FOUND: "${dirPath}" does not exist.
-
-HOW TO FIX:
-1. Check the path spelling
-2. Use fs_list with parent directory to see available directories
-3. Working directory is: ${context.workingDir}`,
-        };
+        return toolError({
+          code: 'DIRECTORY_NOT_FOUND',
+          message: `"${dirPath}" does not exist.`,
+          retryable: true,
+          hint: 'Use fs_list on parent directory to discover valid paths.',
+          details: { path: dirPath, workingDir: context.workingDir },
+        });
       }
 
       // Check is directory
       const stats = fs.statSync(fullPath);
       if (!stats.isDirectory()) {
-        return {
-          success: false,
-          error: `NOT_A_DIRECTORY: "${dirPath}" is a file, not a directory.
-
-HOW TO FIX: Use fs_read to read file contents, or specify a directory path.`,
-        };
+        return toolError({
+          code: 'NOT_A_DIRECTORY',
+          message: `"${dirPath}" is a file, not a directory.`,
+          retryable: false,
+          hint: 'Use fs_read for files or provide a directory path.',
+          details: { path: dirPath },
+        });
       }
 
       // List contents
@@ -629,31 +638,41 @@ HOW TO FIX: Use fs_read to read file contents, or specify a directory path.`,
         .filter(name => !name.startsWith('.') && name !== 'node_modules')
         .sort();
 
+      const combinedEntries = [
+        ...dirs.map((name) => ({ type: 'dir' as const, name })),
+        ...files.map((name) => ({ type: 'file' as const, name })),
+      ];
+      const pageEntries = combinedEntries.slice(offset, offset + limit);
+      const hasMore = offset + limit < combinedEntries.length;
+      const nextOffset = hasMore ? offset + limit : null;
+      const pageDirs = pageEntries.filter((entry) => entry.type === 'dir');
+      const pageFiles = pageEntries.filter((entry) => entry.type === 'file');
+
       // Format output
       const outputParts = [
-        `📁 ${dirPath === '.' ? 'Working Directory' : dirPath}`,
+        `📁 ${dirPath === '.' ? 'Working Directory' : dirPath} (showing ${pageEntries.length}/${combinedEntries.length}, offset=${offset}, limit=${limit})`,
         '',
       ];
 
-      if (dirs.length > 0) {
+      if (pageDirs.length > 0) {
         outputParts.push(`Directories (${dirs.length}):`);
-        for (const d of dirs) {
-          outputParts.push(`  📁 ${d}/`);
+        for (const d of pageDirs) {
+          outputParts.push(`  📁 ${d.name}/`);
         }
         outputParts.push('');
       }
 
-      if (files.length > 0) {
+      if (pageFiles.length > 0) {
         outputParts.push(`Files (${files.length}):`);
-        for (const f of files) {
+        for (const f of pageFiles) {
           // Get file size
-          const filePath = path.join(fullPath, f);
+          const filePath = path.join(fullPath, f.name);
           const fileStats = fs.statSync(filePath);
-          outputParts.push(`  📄 ${f} (${formatSize(fileStats.size)})`);
+          outputParts.push(`  📄 ${f.name} (${formatSize(fileStats.size)})`);
         }
       }
 
-      if (dirs.length === 0 && files.length === 0) {
+      if (combinedEntries.length === 0) {
         outputParts.push('(empty directory)');
       }
 
@@ -694,6 +713,11 @@ HOW TO FIX: Use fs_read to read file contents, or specify a directory path.`,
         }
       }
 
+      if (hasMore) {
+        outputParts.push('');
+        outputParts.push(`Next page: fs_list(path="${dirPath}", recursive=${recursive ? 'true' : 'false'}, offset=${nextOffset}, limit=${limit})`);
+      }
+
       return {
         success: true,
         output: outputParts.join('\n'),
@@ -703,6 +727,11 @@ HOW TO FIX: Use fs_read to read file contents, or specify a directory path.`,
           fileCount: files.length,
           directories: dirs,
           files,
+          totalEntries: combinedEntries.length,
+          offset,
+          limit,
+          hasMore,
+          nextOffset,
         },
       };
     },

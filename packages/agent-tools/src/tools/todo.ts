@@ -4,6 +4,7 @@
 
 import type { Tool, ToolContext } from '../types.js';
 import type { TodoList, TodoItem } from '@kb-labs/agent-contracts';
+import { toolError } from './tool-error.js';
 
 // In-memory TODO storage (session-scoped)
 const todoLists = new Map<string, TodoList>();
@@ -30,6 +31,34 @@ async function persistTodoList(context: ToolContext, todoList: TodoList): Promis
   if (context.cache) {
     await context.cache.set(getTodoCacheKey(todoList.sessionId), todoList, TODO_CACHE_TTL_MS);
   }
+}
+
+function resolveTodoItem(todoList: TodoList, sessionId: string, itemId: string): TodoItem | null {
+  const direct = todoList.items.find((i) => i.id === itemId);
+  if (direct) {
+    return direct;
+  }
+
+  const asIndex = Number(itemId);
+  if (Number.isFinite(asIndex) && asIndex >= 1) {
+    const indexed = todoList.items.find((i) => i.id === `${sessionId}-${Math.floor(asIndex)}`);
+    if (indexed) {
+      return indexed;
+    }
+  }
+
+  const normalized = itemId.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  const descriptionMatches = todoList.items.filter(
+    (i) => i.description.toLowerCase().includes(normalized)
+  );
+  if (descriptionMatches.length === 1) {
+    return descriptionMatches[0]!;
+  }
+
+  return null;
 }
 
 /**
@@ -108,6 +137,10 @@ export function createTodoCreateTool(context: ToolContext): Tool {
       return {
         success: true,
         output,
+        metadata: {
+          uiHint: 'todo',
+          structured: { todoList },
+        },
       };
     },
   };
@@ -157,19 +190,29 @@ export function createTodoUpdateTool(context: ToolContext): Tool {
       const todoList = await loadTodoList(context, sessionId);
 
       if (!todoList) {
-        return {
-          success: false,
-          error: `No TODO list found for session: ${sessionId}`,
-        };
+        return toolError({
+          code: 'TODO_LIST_NOT_FOUND',
+          message: `No TODO list found for session: ${sessionId}`,
+          retryable: true,
+          hint: 'Call todo_create first, then todo_update.',
+          details: { sessionId },
+        });
       }
 
-      const item = todoList.items.find(i => i.id === itemId);
+      const item = resolveTodoItem(todoList, sessionId, itemId);
 
       if (!item) {
-        return {
-          success: false,
-          error: `TODO item not found: ${itemId}`,
-        };
+        return toolError({
+          code: 'TODO_ITEM_NOT_FOUND',
+          message: `TODO item not found: ${itemId}`,
+          retryable: true,
+          hint: 'Use todo_get to list valid item IDs, then retry with exact itemId.',
+          details: {
+            sessionId,
+            itemId,
+            knownIds: todoList.items.map((i) => i.id),
+          },
+        });
       }
 
       item.status = status;
@@ -191,9 +234,14 @@ export function createTodoUpdateTool(context: ToolContext): Tool {
               ? '🚫'
               : ' ';
 
+      const updatedList = await loadTodoList(context, sessionId);
       return {
         success: true,
         output: `[${statusIcon}] ${item.description} → ${status}${notes ? `\n  Note: ${notes}` : ''}`,
+        metadata: {
+          uiHint: 'todo',
+          structured: { todoList: updatedList },
+        },
       };
     },
   };
@@ -227,10 +275,13 @@ export function createTodoGetTool(context: ToolContext): Tool {
       const todoList = await loadTodoList(context, sessionId);
 
       if (!todoList) {
-        return {
-          success: false,
-          error: `No TODO list found for session: ${sessionId}`,
-        };
+        return toolError({
+          code: 'TODO_LIST_NOT_FOUND',
+          message: `No TODO list found for session: ${sessionId}`,
+          retryable: true,
+          hint: 'Create a TODO list with todo_create before calling todo_get.',
+          details: { sessionId },
+        });
       }
 
       const completed = todoList.items.filter(i => i.status === 'completed')
@@ -256,6 +307,10 @@ export function createTodoGetTool(context: ToolContext): Tool {
       return {
         success: true,
         output,
+        metadata: {
+          uiHint: 'todo',
+          structured: { todoList },
+        },
       };
     },
   };
