@@ -69,6 +69,13 @@ interface ToolResult {
   success: boolean;
   output?: string;
   error?: string;
+  errorDetails?: {
+    code: string;
+    message: string;
+    retryable?: boolean;
+    hint?: string;
+    details?: Record<string, unknown>;
+  };
   /** Optional metadata from tool execution (e.g., reflection results, file counts, etc.) */
   metadata?: Record<string, unknown>;
 }
@@ -235,6 +242,9 @@ export class Agent {
     lastOutputSizes: [] as number[], // Output sizes to detect if gaining information
     iterationsSinceProgress: 0,
     stuckThreshold: 3, // Iterations before considering stuck
+    lastFailureCount: 0,
+    lastProgressIteration: 0,
+    lastSearchSignalHits: 0,
   };
 
   /**
@@ -1402,14 +1412,19 @@ Your answer should be detailed, specific, and reference actual files and code yo
           );
         }
 
+        await this.updateNoResultTracker(response.toolCalls, toolResults, iteration);
         // Phase 2: Update progress tracker after tool execution
         if (response.toolCalls.length > 0) {
           const firstToolName = response.toolCalls[0]!.name;
           const totalOutputSize = toolResults.reduce((sum, msg) => sum + (msg.content?.length || 0), 0);
-          this.updateProgressTracker(firstToolName, totalOutputSize, evidenceDelta);
+          this.updateProgressTracker(firstToolName, totalOutputSize, {
+            iteration,
+            evidenceDelta,
+            failedToolsThisIteration,
+            searchSignalHits: this.searchSignalHits,
+          });
         }
 
-        await this.updateNoResultTracker(response.toolCalls, toolResults, iteration);
         await this.maybeRunOperationalReflection(
           {
             trigger: 'post_tools',
@@ -1625,6 +1640,9 @@ Your answer should be detailed, specific, and reference actual files and code yo
           this.progressTracker.iterationsSinceProgress = 0;
           this.progressTracker.lastToolCalls = [];
           this.progressTracker.lastOutputSizes = [];
+          this.progressTracker.lastFailureCount = 0;
+          this.progressTracker.lastSearchSignalHits = this.searchSignalHits;
+          this.progressTracker.lastProgressIteration = iteration;
 
           // Handle parent action
           if (parentResponse.action === 'skip') {
@@ -1769,6 +1787,12 @@ Your answer should be detailed, specific, and reference actual files and code yo
     this.hypothesisSwitches = 0;
     this.lastReflectionHypothesis = '';
     this.iterationBudgetExtensions = 0;
+    this.progressTracker.lastToolCalls = [];
+    this.progressTracker.lastOutputSizes = [];
+    this.progressTracker.iterationsSinceProgress = 0;
+    this.progressTracker.lastFailureCount = 0;
+    this.progressTracker.lastProgressIteration = 0;
+    this.progressTracker.lastSearchSignalHits = 0;
     this.executionStateMachine = new ExecutionStateMachine();
     this.taskLedger = new TaskLedger();
     this.lastQualityGate = null;
@@ -2209,8 +2233,13 @@ Your answer should be detailed, specific, and reference actual files and code yo
       try {
         this.assertToolCallIsAllowed(toolCall.name, input);
         const result = await this.toolRegistry.execute(toolCall.name, input);
-        this.toolSuccessCount++;
-        this.taskLedger.completeStep(ledgerStepId, result.output?.slice(0, 500));
+        if (result.success) {
+          this.toolSuccessCount++;
+          this.taskLedger.completeStep(ledgerStepId, result.output?.slice(0, 500));
+        } else {
+          this.toolErrorCount++;
+          this.taskLedger.failStep(ledgerStepId, result.error || 'tool returned error');
+        }
 
         // === DISABLED: Cache disabled (Phase 1, Step 1.4) ===
         // this.cacheResult(cacheKey, result);
@@ -2229,6 +2258,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
         }
         this.logToolResult(result);
         this.recordToolTrace(toolCall, result, iteration, toolDurationMs);
+        this.trackToolOutcome(toolCall.name, result, toolDurationMs);
 
         // Trace detailed tool:execution event
         if (this.tracer) {
@@ -2284,6 +2314,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
         }
         const toolDurationMs = Date.now() - toolStartTime;
         this.log(`  ✗ Tool error: ${errorMsg}`);
+        this.trackToolOutcome(toolCall.name, { success: false, error: errorMsg }, toolDurationMs);
 
         // Trace detailed tool:execution event (failed)
         if (this.tracer) {
@@ -2972,7 +3003,7 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
   private async executeTodoTool(
     toolName: 'todo_create' | 'todo_update' | 'todo_get',
     input: Record<string, unknown>
-  ): Promise<{ success: boolean; output?: string; error?: string }> {
+  ): Promise<{ success: boolean; output?: string; error?: string; errorDetails?: ToolResult['errorDetails'] }> {
     const ledgerStepId = this.taskLedger.startStep({
       goal: `Todo sync: ${toolName}`,
       capability: mapToolToCapability(toolName),
@@ -2992,6 +3023,7 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
         success: result.success,
         output: result.output,
         error: result.error,
+        errorDetails: result.errorDetails,
       };
     } catch (err) {
       this.toolErrorCount++;
@@ -3024,6 +3056,13 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
     });
     if (result.success) {
       this.todoPhaseStatus[phase] = status;
+      return;
+    }
+
+    const code = result.errorDetails?.code || '';
+    if (code === 'TODO_LIST_NOT_FOUND' || code === 'TODO_ITEM_NOT_FOUND') {
+      this.todoSyncEnabled = false;
+      this.log(`[Agent] TODO sync disabled after ${code} to avoid repeated failed updates.`);
     }
   }
 
@@ -3209,6 +3248,36 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
     );
   }
 
+  private extractToolErrorCode(result: ToolResult): string | null {
+    if (result.errorDetails?.code) {
+      return result.errorDetails.code;
+    }
+    if (result.metadata && typeof result.metadata.errorCode === 'string' && result.metadata.errorCode.trim()) {
+      return result.metadata.errorCode;
+    }
+    const errorText = result.error || '';
+    const prefixed = errorText.match(/^([A-Z0-9_]{3,}):/);
+    return prefixed?.[1] || null;
+  }
+
+  private trackToolOutcome(toolName: string, result: ToolResult, durationMs: number): void {
+    const analytics = useAnalytics();
+    if (!analytics) {
+      return;
+    }
+
+    const errorCode = result.success ? null : this.extractToolErrorCode(result);
+    void analytics.track(AGENT_ANALYTICS_EVENTS.TOOL_CALLED, {
+      toolName,
+      success: result.success,
+      durationMs,
+      errorCode: errorCode ?? undefined,
+      retryable: result.errorDetails?.retryable ?? result.metadata?.retryable ?? undefined,
+    }).catch((err) => {
+      this.log(`[Agent] Failed to emit tool analytics: ${String(err)}`);
+    });
+  }
+
   private resolveShellCwd(input: Record<string, unknown>): string {
     const baseDir = this.config.workingDir || process.cwd();
     const requested = typeof input.cwd === 'string' ? input.cwd.trim() : '.';
@@ -3269,7 +3338,7 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
 
     let output = result.success
       ? result.output || 'Success'
-      : `Error: ${result.error}`;
+      : `Error${result.errorDetails?.code ? ` [${result.errorDetails.code}]` : ''}: ${result.error}`;
 
     const originalLength = output.length;
     const wasTruncated = originalLength > MAX_TOOL_OUTPUT_CHARS;
@@ -3808,7 +3877,16 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
   /**
    * Phase 2: Update progress tracker after each iteration
    */
-  private updateProgressTracker(toolName: string, outputSize: number, evidenceDelta = 0): void {
+  private updateProgressTracker(
+    toolName: string,
+    outputSize: number,
+    input: {
+      iteration: number;
+      evidenceDelta: number;
+      failedToolsThisIteration: number;
+      searchSignalHits: number;
+    }
+  ): void {
     // Track last 3 tool calls
     this.progressTracker.lastToolCalls.push(toolName);
     if (this.progressTracker.lastToolCalls.length > 3) {
@@ -3821,23 +3899,46 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
       this.progressTracker.lastOutputSizes.shift();
     }
 
-    if (evidenceDelta > 0) {
-      this.progressTracker.iterationsSinceProgress = 0;
-      return;
+    const previousOutputSize = this.progressTracker.lastOutputSizes.length >= 2
+      ? this.progressTracker.lastOutputSizes[this.progressTracker.lastOutputSizes.length - 2] ?? 0
+      : 0;
+    const outputGrowth = outputSize - previousOutputSize;
+    const outputGrowthRatio = previousOutputSize > 0 ? outputSize / previousOutputSize : (outputSize > 0 ? 1 : 0);
+    const searchSignalDelta = Math.max(0, input.searchSignalHits - this.progressTracker.lastSearchSignalHits);
+    const failedToolDelta = this.progressTracker.lastFailureCount - input.failedToolsThisIteration;
+    const repeatedSingleTool = this.progressTracker.lastToolCalls.length >= 3
+      && new Set(this.progressTracker.lastToolCalls.slice(-3)).size === 1;
+
+    let progressScore = 0;
+    if (input.evidenceDelta > 0) {
+      progressScore += 3;
+    }
+    if (searchSignalDelta > 0) {
+      progressScore += 2;
+    }
+    if (failedToolDelta > 0) {
+      progressScore += 2;
+    }
+    if (outputGrowth >= 300 || outputGrowthRatio >= 1.35) {
+      progressScore += 1;
+    }
+    if (!repeatedSingleTool && this.progressTracker.lastToolCalls.length >= 2) {
+      progressScore += 1;
     }
 
-    // Check if making progress (output size increasing)
-    if (this.progressTracker.lastOutputSizes.length >= 2) {
-      const latest = this.progressTracker.lastOutputSizes[this.progressTracker.lastOutputSizes.length - 1];
-      const previous = this.progressTracker.lastOutputSizes[this.progressTracker.lastOutputSizes.length - 2];
-      if (latest! > previous! * 0.5) {
-        // Making progress - output size grew by >50%
-        this.progressTracker.iterationsSinceProgress = 0;
-      } else {
-        // Not making progress - output size stagnant
-        this.progressTracker.iterationsSinceProgress++;
-      }
+    if (progressScore >= 2) {
+      this.progressTracker.iterationsSinceProgress = 0;
+      this.progressTracker.lastProgressIteration = input.iteration;
+    } else if (progressScore === 1) {
+      // Weak but real signal: avoid false "hard stall" and keep momentum.
+      this.progressTracker.iterationsSinceProgress = Math.max(0, this.progressTracker.iterationsSinceProgress - 1);
+      this.progressTracker.lastProgressIteration = input.iteration;
+    } else {
+      this.progressTracker.iterationsSinceProgress += 1;
     }
+
+    this.progressTracker.lastFailureCount = input.failedToolsThisIteration;
+    this.progressTracker.lastSearchSignalHits = input.searchSignalHits;
   }
 
   private getEvidenceProgressScore(): number {
@@ -4211,8 +4312,12 @@ ${toolRows.join('\n') || '(none)'}`;
     }
 
     const hasRecentSignal = this.lastSignalIteration > 0 && (currentIteration - this.lastSignalIteration) <= 3;
+    const hasRecentProgress = this.progressTracker.lastProgressIteration > 0
+      && (currentIteration - this.progressTracker.lastProgressIteration) <= 2;
     const hasLargeFile = Array.from(this.fileTotalLinesByPath.values()).some((lines) => lines >= 2000);
-    const hasProgress = this.progressTracker.iterationsSinceProgress < this.progressTracker.stuckThreshold || hasRecentSignal;
+    const hasProgress = this.progressTracker.iterationsSinceProgress < this.progressTracker.stuckThreshold
+      || hasRecentSignal
+      || hasRecentProgress;
 
     if (!hasProgress) {
       return currentBudget;
@@ -4304,7 +4409,9 @@ ${toolRows.join('\n') || '(none)'}`;
     }
 
     const hasRecentSignal = this.lastSignalIteration > 0 && (input.iteration - this.lastSignalIteration) <= 3;
-    if (hasRecentSignal) {
+    const hasRecentProgress = this.progressTracker.lastProgressIteration > 0
+      && (input.iteration - this.progressTracker.lastProgressIteration) <= 2;
+    if (hasRecentSignal || hasRecentProgress) {
       return { shouldEscalate: false, reason: '' };
     }
 

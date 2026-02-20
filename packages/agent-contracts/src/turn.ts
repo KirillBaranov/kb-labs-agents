@@ -91,6 +91,34 @@ export interface ToolUseStep {
   error?: string;
   /** Set when status = done */
   durationMs?: number;
+  /**
+   * Optional rich metadata from tool event — propagated from ToolEventMetadata.
+   * Includes diff, filePath, resultCount, confidence, exitCode, etc.
+   */
+  metadata?: {
+    /** File path being operated on */
+    filePath?: string;
+    /** Unified diff output (for fs:edit, fs:patch, fs:write) */
+    diff?: string;
+    /** Lines changed count */
+    linesChanged?: number;
+    /** Lines added */
+    linesAdded?: number;
+    /** Lines removed */
+    linesRemoved?: number;
+    /** Search result count (for grep, glob, rag-query) */
+    resultCount?: number;
+    /** Confidence score 0-1 (for RAG queries) */
+    confidence?: number;
+    /** Exit code (for bash/shell tools) */
+    exitCode?: number;
+    /** Human-readable summary from the tool */
+    summary?: string;
+    /** UI rendering hint */
+    uiHint?: 'code' | 'diff' | 'table' | 'json' | 'markdown' | 'plain' | 'todo';
+    /** Any extra structured data */
+    structured?: Record<string, unknown>;
+  };
 }
 
 /**

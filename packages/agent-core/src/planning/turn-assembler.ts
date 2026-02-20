@@ -249,6 +249,7 @@ export class TurnAssembler {
       }
 
       case 'tool:start': {
+        const startMeta = event.data?.metadata;
         const step: ToolUseStep = {
           type: 'tool_use',
           id: `step-${turn.steps.length + 1}`,
@@ -257,6 +258,14 @@ export class TurnAssembler {
           toolCallId: (event.data?.toolCallId as string | undefined),
           input: (event.data?.input as Record<string, unknown>) ?? {},
           status: 'pending',
+          ...(startMeta ? {
+            metadata: {
+              filePath: startMeta.filePath,
+              summary: startMeta.summary,
+              uiHint: startMeta.uiHint,
+              structured: startMeta.structured,
+            }
+          } : {}),
         };
         turn.steps.push(step);
         return true;
@@ -276,6 +285,23 @@ export class TurnAssembler {
           existing.status = 'done';
           existing.output = event.data?.output;
           existing.durationMs = event.data?.durationMs as number | undefined;
+          // Propagate rich metadata for UI rendering (diff, resultCount, confidence, etc.)
+          const m = event.data?.metadata;
+          if (m) {
+            existing.metadata = {
+              filePath: m.filePath,
+              diff: m.diff,
+              linesChanged: m.linesChanged,
+              linesAdded: m.linesAdded,
+              linesRemoved: m.linesRemoved,
+              resultCount: m.resultCount,
+              confidence: m.confidence,
+              exitCode: m.exitCode,
+              summary: m.summary,
+              uiHint: m.uiHint,
+              structured: m.structured,
+            };
+          }
         }
         return true;
       }

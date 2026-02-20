@@ -355,6 +355,13 @@ export interface ToolResult {
   success: boolean;
   output?: string;
   error?: string;
+  errorDetails?: {
+    code: string;
+    message: string;
+    retryable?: boolean;
+    hint?: string;
+    details?: Record<string, unknown>;
+  };
   metadata?: Record<string, unknown>;
 }
 
