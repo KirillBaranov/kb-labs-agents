@@ -3,6 +3,7 @@
  */
 
 import type { ToolDefinition, ToolResult } from '@kb-labs/agent-contracts';
+import type { ICache } from '@kb-labs/core-platform';
 
 /**
  * Tool executor function
@@ -38,6 +39,8 @@ export interface ToolContext {
   workingDir: string;
   sessionId?: string;
   verbose?: boolean;
+  /** Shared platform cache adapter (optional) */
+  cache?: ICache;
   /** Files that were read in this session (for edit protection) */
   filesRead?: Set<string>;
   /** File content hashes from when files were read (for change detection) */

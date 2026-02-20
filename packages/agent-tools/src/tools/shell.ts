@@ -3,6 +3,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import path from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
 
 /**
@@ -22,6 +23,10 @@ export function createShellExecTool(context: ToolContext): Tool {
               type: 'string',
               description: 'Shell command to execute',
             },
+            cwd: {
+              type: 'string',
+              description: 'Optional working directory relative to agent workingDir. Use to run command in a specific package/subdirectory.',
+            },
           },
           required: ['command'],
         },
@@ -29,10 +34,22 @@ export function createShellExecTool(context: ToolContext): Tool {
     },
     executor: async (input: Record<string, unknown>) => {
       const command = input.command as string;
+      const requestedCwd = typeof input.cwd === 'string' ? input.cwd.trim() : '';
+      const resolvedCwd = requestedCwd
+        ? path.resolve(context.workingDir, requestedCwd)
+        : context.workingDir;
+
+      const relative = path.relative(context.workingDir, resolvedCwd);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        return {
+          success: false,
+          error: `Invalid cwd "${requestedCwd}" - outside working directory.`,
+        };
+      }
 
       try {
         const output = execSync(command, {
-          cwd: context.workingDir,
+          cwd: resolvedCwd,
           encoding: 'utf-8',
           maxBuffer: 5 * 1024 * 1024, // 5MB
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -40,7 +57,10 @@ export function createShellExecTool(context: ToolContext): Tool {
 
         return {
           success: true,
-          output: output || '(command completed with no output)',
+          output: `[cwd: ${resolvedCwd}]\n${output || '(command completed with no output)'}`,
+          metadata: {
+            cwd: resolvedCwd,
+          },
         };
       } catch (error: any) {
         // execSync throws when command exits with non-zero code
@@ -50,7 +70,11 @@ export function createShellExecTool(context: ToolContext): Tool {
 
         return {
           success: false,
-          error: `Command failed with exit code ${exitCode}\n\nStdout:\n${stdout}\n\nStderr:\n${stderr}`,
+          error: `Command failed with exit code ${exitCode}\n[cwd: ${resolvedCwd}]\n\nStdout:\n${stdout}\n\nStderr:\n${stderr}`,
+          metadata: {
+            cwd: resolvedCwd,
+            exitCode,
+          },
         };
       }
     },

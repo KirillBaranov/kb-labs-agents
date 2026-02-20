@@ -7,11 +7,35 @@ import type { TodoList, TodoItem } from '@kb-labs/agent-contracts';
 
 // In-memory TODO storage (session-scoped)
 const todoLists = new Map<string, TodoList>();
+const TODO_CACHE_PREFIX = 'agent:todo:';
+const TODO_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getTodoCacheKey(sessionId: string): string {
+  return `${TODO_CACHE_PREFIX}${sessionId}`;
+}
+
+async function loadTodoList(context: ToolContext, sessionId: string): Promise<TodoList | null> {
+  if (context.cache) {
+    const cached = await context.cache.get<TodoList>(getTodoCacheKey(sessionId));
+    if (cached) {
+      todoLists.set(sessionId, cached);
+      return cached;
+    }
+  }
+  return todoLists.get(sessionId) ?? null;
+}
+
+async function persistTodoList(context: ToolContext, todoList: TodoList): Promise<void> {
+  todoLists.set(todoList.sessionId, todoList);
+  if (context.cache) {
+    await context.cache.set(getTodoCacheKey(todoList.sessionId), todoList, TODO_CACHE_TTL_MS);
+  }
+}
 
 /**
  * Create TODO list with tasks
  */
-export function createTodoCreateTool(_context: ToolContext): Tool {
+export function createTodoCreateTool(context: ToolContext): Tool {
   return {
     definition: {
       type: 'function',
@@ -71,7 +95,7 @@ export function createTodoCreateTool(_context: ToolContext): Tool {
         updatedAt: new Date().toISOString(),
       };
 
-      todoLists.set(sessionId, todoList);
+      await persistTodoList(context, todoList);
 
       const output = [
         `TODO list created for session: ${sessionId}`,
@@ -92,7 +116,7 @@ export function createTodoCreateTool(_context: ToolContext): Tool {
 /**
  * Update TODO item status
  */
-export function createTodoUpdateTool(_context: ToolContext): Tool {
+export function createTodoUpdateTool(context: ToolContext): Tool {
   return {
     definition: {
       type: 'function',
@@ -130,7 +154,7 @@ export function createTodoUpdateTool(_context: ToolContext): Tool {
       const status = input.status as TodoItem['status'];
       const notes = input.notes as string | undefined;
 
-      const todoList = todoLists.get(sessionId);
+      const todoList = await loadTodoList(context, sessionId);
 
       if (!todoList) {
         return {
@@ -156,6 +180,7 @@ export function createTodoUpdateTool(_context: ToolContext): Tool {
       }
 
       todoList.updatedAt = new Date().toISOString();
+      await persistTodoList(context, todoList);
 
       const statusIcon =
         status === 'completed'
@@ -177,7 +202,7 @@ export function createTodoUpdateTool(_context: ToolContext): Tool {
 /**
  * Get TODO list status
  */
-export function createTodoGetTool(_context: ToolContext): Tool {
+export function createTodoGetTool(context: ToolContext): Tool {
   return {
     definition: {
       type: 'function',
@@ -199,7 +224,7 @@ export function createTodoGetTool(_context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const sessionId = input.sessionId as string;
 
-      const todoList = todoLists.get(sessionId);
+      const todoList = await loadTodoList(context, sessionId);
 
       if (!todoList) {
         return {

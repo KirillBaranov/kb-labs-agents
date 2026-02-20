@@ -26,3 +26,6 @@ export * from './events/index.js';
 
 // File history - change tracking and rollback
 export * from './history/index.js';
+
+// Execution primitives - state machine and ledger
+export * from './execution/index.js';

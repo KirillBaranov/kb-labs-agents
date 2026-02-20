@@ -113,23 +113,40 @@ export class FileMemory implements AgentMemory {
 
     const indexKey = this.getIndexKey();
     const now = Date.now();
-    const oneHourAgo = now - 3600000; // 1 hour
 
-    // Get recent memory IDs from sorted set
-    const memoryIds = await cache.zrangebyscore(indexKey, oneHourAgo, now);
+    // Get all indexed IDs up to now. Hard 1-hour window caused context loss on follow-ups.
+    const memoryIds = await cache.zrangebyscore(indexKey, 0, now);
 
-    // Get actual memories
+    // Resolve actual memories from cache (most recent first)
     const memories: MemoryEntry[] = [];
-    for (const id of memoryIds.slice(-limit)) {
+    for (const id of [...memoryIds].reverse()) {
       const key = this.getMemoryKey(id);
-       
       const memory = await cache.get<MemoryEntry>(key);
       if (memory) {
         memories.push(memory);
       }
+      if (memories.length >= limit) {
+        break;
+      }
     }
 
-    return memories.reverse(); // Most recent first
+    // Backfill from file storage if cache misses happened (e.g., summarized/evicted entries)
+    if (memories.length < limit) {
+      const fromFiles = await this.loadFromFile(limit * 3);
+      const seen = new Set(memories.map((m) => m.id));
+      for (const memory of fromFiles) {
+        if (!memory.id || seen.has(memory.id)) {
+          continue;
+        }
+        memories.push(memory);
+        seen.add(memory.id);
+        if (memories.length >= limit) {
+          break;
+        }
+      }
+    }
+
+    return memories.slice(0, limit);
   }
 
   /**
@@ -807,7 +824,7 @@ ${lastAnswer.answer}
       // Read all session directories
       const entries = await fs.readdir(memoryRoot, { withFileTypes: true });
       const sessionDirs = entries
-        .filter((e) => e.isDirectory())
+        .filter((e) => e.isDirectory() && e.name.startsWith('session-'))
         .map((e) => path.join(memoryRoot, e.name));
 
       // If we're under the limit, nothing to do
