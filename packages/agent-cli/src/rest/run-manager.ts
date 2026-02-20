@@ -7,6 +7,7 @@
  */
 
 import type { Agent } from '@kb-labs/agent-core';
+import { SessionManager } from '@kb-labs/agent-core';
 import type { AgentEvent, AgentEventCallback } from '@kb-labs/agent-contracts';
 import { useCache, usePlatform } from '@kb-labs/sdk';
 
@@ -38,6 +39,7 @@ export interface RunState {
  */
 export interface ActiveRun extends RunState {
   agent: Agent;
+  sessionManager: SessionManager;
   listeners: Set<AgentEventCallback>;
   /** Monotonic sequence counter for event ordering */
   lastSeq: number;
@@ -52,6 +54,12 @@ class RunManagerImpl {
   /** Live agents and listeners (not cacheable) */
   private activeRuns: Map<string, ActiveRun> = new Map();
 
+  /** Session-level listeners: sessionId → Set<callback> — receive events from ALL runs in session */
+  private sessionListeners: Map<string, Set<AgentEventCallback>> = new Map();
+
+  /** sessionId per runId — set when run is registered */
+  private runSessionMap: Map<string, string> = new Map();
+
   /**
    * Generate unique run ID
    */
@@ -65,7 +73,9 @@ class RunManagerImpl {
   async register(
     runId: string,
     task: string,
-    agent: Agent
+    agent: Agent,
+    sessionManager: SessionManager,
+    sessionId?: string
   ): Promise<ActiveRun> {
     const now = new Date().toISOString();
 
@@ -74,6 +84,7 @@ class RunManagerImpl {
       task,
       status: 'pending',
       agent,
+      sessionManager,
       startedAt: now,
       listeners: new Set(),
       lastSeq: 0,
@@ -82,6 +93,11 @@ class RunManagerImpl {
 
     // Store in memory (for live agent)
     this.activeRuns.set(runId, run);
+
+    // Track sessionId → runId mapping for session-level listeners
+    if (sessionId) {
+      this.runSessionMap.set(runId, sessionId);
+    }
 
     // Store serializable state in cache
     await this.saveToCache(run);
@@ -234,7 +250,7 @@ class RunManagerImpl {
     let seqEvent = event;
     if (run) {
       run.lastSeq++;
-      seqEvent = { ...event, seq: run.lastSeq };
+      seqEvent = { ...event, seq: run.lastSeq, runId };
 
       // Store in replay buffer (for late WS connections)
       run.eventBuffer.push(seqEvent);
@@ -259,7 +275,45 @@ class RunManagerImpl {
       }
     }
 
+    // Notify session-level listeners (persistent connections)
+    const sessionId = this.runSessionMap.get(runId);
+    if (sessionId) {
+      const sListeners = this.sessionListeners.get(sessionId);
+      if (sListeners) {
+        for (const listener of sListeners) {
+          try {
+            listener(seqEvent);
+          } catch {
+            // Ignore listener errors
+          }
+        }
+      }
+    }
+
     return seqEvent;
+  }
+
+  /**
+   * Add a session-level listener — receives events from ALL runs in this session.
+   */
+  addSessionListener(sessionId: string, callback: AgentEventCallback): void {
+    if (!this.sessionListeners.has(sessionId)) {
+      this.sessionListeners.set(sessionId, new Set());
+    }
+    this.sessionListeners.get(sessionId)!.add(callback);
+  }
+
+  /**
+   * Remove a session-level listener.
+   */
+  removeSessionListener(sessionId: string, callback: AgentEventCallback): void {
+    const listeners = this.sessionListeners.get(sessionId);
+    if (listeners) {
+      listeners.delete(callback);
+      if (listeners.size === 0) {
+        this.sessionListeners.delete(sessionId);
+      }
+    }
   }
 
   /**
@@ -303,6 +357,13 @@ class RunManagerImpl {
 }
 
 /**
- * Singleton instance
+ * Singleton instance — stored on globalThis so all bundled modules share one instance.
+ * When tsup compiles multiple entry points, each gets its own module scope,
+ * so a plain `export const RunManager = new RunManagerImpl()` creates separate instances.
+ * Using globalThis ensures run-handler.js and session-stream-handler.js share one RunManager.
  */
-export const RunManager = new RunManagerImpl();
+const GLOBAL_KEY = '__kb_agent_run_manager__';
+if (!(globalThis as Record<string, unknown>)[GLOBAL_KEY]) {
+  (globalThis as Record<string, unknown>)[GLOBAL_KEY] = new RunManagerImpl();
+}
+export const RunManager = (globalThis as Record<string, unknown>)[GLOBAL_KEY] as RunManagerImpl;

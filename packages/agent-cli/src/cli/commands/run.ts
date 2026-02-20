@@ -4,16 +4,17 @@
  * Uses event-driven UI rendering instead of simple loaders.
  */
 
-import { defineCommand, type PluginContextV3 } from '@kb-labs/sdk';
+import { defineCommand, useCache, useConfig, type PluginContextV3 } from '@kb-labs/sdk';
 import {
   Agent,
   IncrementalTraceWriter,
   TraceSaverProcessor,
   MetricsCollectorProcessor,
   FileMemory,
+  SessionManager,
 } from '@kb-labs/agent-core';
 import { createToolRegistry } from '@kb-labs/agent-tools';
-import type { AgentConfig, ModeConfig, AgentMode, AgentEvent } from '@kb-labs/agent-contracts';
+import type { AgentConfig, ModeConfig, AgentMode, AgentEvent, AgentsPluginConfig } from '@kb-labs/agent-contracts';
 import { createEventRenderer, createMinimalRenderer, createDetailedRenderer } from '../ui/index.js';
 
 type RunInput = {
@@ -66,8 +67,8 @@ export default defineCommand({
         quiet = false,
         detailed = false,
         sessionId,
-        tier = 'small',
-        escalate = false,
+        tier = 'medium',
+        escalate = true,
         mode = 'execute',
         complexity,
         files,
@@ -110,6 +111,34 @@ export default defineCommand({
       }
 
       try {
+        const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const sessionManager = new SessionManager(workingDir);
+        let effectiveSessionId = sessionId as string | undefined;
+
+        // Ensure session exists for consistent history/memory behavior in CLI path.
+        if (!effectiveSessionId) {
+          const createdSession = await sessionManager.createSession({
+            mode: 'execute',
+            task,
+            agentId: 'cli-agent',
+          });
+          effectiveSessionId = createdSession.id;
+        } else {
+          const existing = await sessionManager.loadSession(effectiveSessionId);
+          if (!existing) {
+            const createdSession = await sessionManager.createSession({
+              mode: 'execute',
+              task,
+              agentId: 'cli-agent',
+              sessionId: effectiveSessionId,
+            });
+            effectiveSessionId = createdSession.id;
+          }
+        }
+
+        // Persist user turn first so timeline ordering is deterministic.
+        await sessionManager.createUserTurn(effectiveSessionId, task, runId);
+
         // Create shared file tracking (for edit protection)
         const filesRead = new Set<string>();
         const filesReadHash = new Map<string, string>();
@@ -117,8 +146,9 @@ export default defineCommand({
         // Create tool registry
         const toolRegistry = createToolRegistry({
           workingDir,
-          sessionId,
+          sessionId: effectiveSessionId,
           verbose: false, // Disable tool registry verbose - we have event renderer
+          cache: useCache(),
           filesRead,
           filesReadHash,
         });
@@ -130,7 +160,7 @@ export default defineCommand({
         // Create memory system
         const memory = new FileMemory({
           workingDir,
-          sessionId,
+          sessionId: effectiveSessionId,
           maxShortTermMemories: 50,
           maxContextTokens: 4000,
         });
@@ -141,23 +171,50 @@ export default defineCommand({
           new MetricsCollectorProcessor(),
         ];
 
-        // Create composite event callback that writes to tracer AND renders UI
+        // Track pending session writes so we can flush before exit
+        let pendingSessionWrite: Promise<void> = Promise.resolve();
+        let persistedEventCount = 0;
+
+        // Create composite event callback that writes to tracer, renders UI, AND persists to session
         const compositeEventCallback = (event: AgentEvent) => {
           // Write to tracer
           tracer.trace(event);
           // Render UI
           eventRenderer(event);
+          // Persist to session for conversation history
+          pendingSessionWrite = pendingSessionWrite
+            .then(async () => {
+              await sessionManager.addEvent(effectiveSessionId!, {
+                ...event,
+                sessionId: effectiveSessionId,
+                runId,
+                metadata: {
+                  ...(event as Record<string, unknown>).metadata as Record<string, unknown> | undefined,
+                  sessionId: effectiveSessionId,
+                  runId,
+                  workingDir,
+                },
+              } as AgentEvent);
+              persistedEventCount += 1;
+            })
+            .catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              console.warn(`[agent:run] Failed to persist event: ${message}`);
+            });
         };
 
         // Create agent config with event callback
+        const agentsConfig = await useConfig<AgentsPluginConfig>();
+        const smartTiering = agentsConfig?.smartTiering;
         const config: AgentConfig = {
           workingDir,
           maxIterations,
           temperature,
           verbose: false, // Disable internal verbose logging - we use events now
-          sessionId,
+          sessionId: effectiveSessionId,
           tier,
           enableEscalation: escalate,
+          smartTiering,
           tracer,
           resultProcessors,
           memory,
@@ -168,6 +225,59 @@ export default defineCommand({
         // Create and execute agent
         const agent = new Agent(config, toolRegistry);
         const result = await agent.execute(task);
+
+        // Flush pending session writes (ensures agent:end is persisted before exit)
+        await pendingSessionWrite;
+
+        // Some modes can complete without emitting event stream.
+        // Persist synthetic assistant turn events so history stays complete.
+        if (persistedEventCount === 0 && result.summary?.trim()) {
+          const now = new Date().toISOString();
+          const agentId = `agent-${runId}`;
+          const baseMetadata = { sessionId: effectiveSessionId, runId, workingDir };
+          await sessionManager.addEvent(effectiveSessionId, {
+            type: 'agent:start',
+            timestamp: now,
+            sessionId: effectiveSessionId,
+            agentId,
+            runId,
+            data: { task, tier, maxIterations, toolCount: 0 },
+            metadata: baseMetadata,
+          } as AgentEvent);
+          await sessionManager.addEvent(effectiveSessionId, {
+            type: 'llm:end',
+            timestamp: now,
+            sessionId: effectiveSessionId,
+            agentId,
+            runId,
+            data: {
+              content: result.summary,
+              hasToolCalls: false,
+            },
+            metadata: baseMetadata,
+          } as AgentEvent);
+          await sessionManager.addEvent(effectiveSessionId, {
+            type: 'agent:end',
+            timestamp: now,
+            sessionId: effectiveSessionId,
+            agentId,
+            runId,
+            data: {
+              success: result.success,
+              summary: result.summary,
+              iterations: result.iterations,
+              tokensUsed: result.tokensUsed,
+              filesCreated: result.filesCreated,
+              filesModified: result.filesModified,
+            },
+            metadata: baseMetadata,
+          } as AgentEvent);
+        }
+
+        const detailedTrace = tracer.getEntries() as Array<Record<string, unknown>>;
+        if (detailedTrace.length > 0) {
+          await sessionManager.storeTraceArtifacts(effectiveSessionId, runId, detailedTrace);
+        }
 
         // Event renderer already showed the result via agent:end event
         // Just return the structured result

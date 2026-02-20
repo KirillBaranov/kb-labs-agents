@@ -86,6 +86,9 @@ export const manifest = {
     tags: ['agent', 'autonomous', 'llm', 'orchestration'],
   },
 
+  // Configuration lives under kb.config.json -> agents
+  configSection: 'agents',
+
   platform: {
     requires: ['llm'],
     optional: ['cache', 'analytics', 'logger'],
@@ -233,6 +236,32 @@ export const manifest = {
           'kb agent trace diagnose --task-id=task-123 --json',
         ],
       },
+      {
+        id: 'agent:quality:report',
+        group: 'agent',
+        describe: 'Show quality control report for recent agent runs',
+        longDescription:
+          'Aggregates agent KPI telemetry from analytics buffer and shows ' +
+          'quality, token usage, tool efficiency, drift, and regression alerts. ' +
+          'Useful for continuous quality control and cost/performance monitoring.',
+
+        handler: './cli/commands/quality-report.js#default',
+        handlerPath: './cli/commands/quality-report.js',
+
+        flags: defineCommandFlags({
+          days: { type: 'number', description: 'Lookback period in days', default: 1 },
+          limit: { type: 'number', description: 'Max KPI runs to analyze', default: 200 },
+          sessionId: { type: 'string', description: 'Filter by session ID' },
+          json: { type: 'boolean', description: 'Output JSON for automation', default: false },
+        }),
+
+        examples: [
+          'kb agent quality report',
+          'kb agent quality report --days=7',
+          'kb agent quality report --session-id=session-123',
+          'kb agent quality report --days=3 --json',
+        ],
+      },
       // File change history commands
       {
         id: 'agent:history',
@@ -377,9 +406,9 @@ export const manifest = {
       },
       {
         method: 'GET',
-        path: AGENTS_ROUTES.SESSION_EVENTS,
-        description: 'Get session events (chat history)',
-        handler: './rest/handlers/get-session-events-handler.js',
+        path: AGENTS_ROUTES.SESSION_TURNS,
+        description: 'Get session turns (turn-based UI)',
+        handler: './rest/handlers/get-session-turns-handler.js',
         security: ['none'],
       },
     ],
@@ -394,9 +423,9 @@ export const manifest = {
     },
     channels: [
       {
-        path: AGENTS_WS_CHANNELS.EVENTS,
-        description: 'Real-time agent event streaming',
-        handler: './ws/events-handler.js',
+        path: AGENTS_WS_CHANNELS.SESSION_STREAM,
+        description: 'Persistent session stream (all runs in session)',
+        handler: './ws/session-stream-handler.js',
         auth: 'none',
       },
     ],
