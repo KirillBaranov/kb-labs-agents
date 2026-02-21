@@ -40,6 +40,7 @@
   "dependencies": {
     "@kb-labs/agent-contracts": "workspace:*",
     "@kb-labs/agent-core": "workspace:*",
+    "@kb-labs/agent-history": "workspace:*",
     "@kb-labs/agent-tools": "workspace:*",
     "@kb-labs/agent-tracing": "workspace:*",
     "@kb-labs/sdk": "link:../../../kb-labs-sdk/packages/sdk",

@@ -150,6 +150,9 @@ importers:
       '@kb-labs/agent-core':
         specifier: workspace:*
         version: link:../agent-core
+      '@kb-labs/agent-history':
+        specifier: workspace:*
+        version: link:../agent-history
       '@kb-labs/agent-tools':
         specifier: workspace:*
         version: link:../agent-tools
