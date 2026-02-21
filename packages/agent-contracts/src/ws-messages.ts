@@ -2,21 +2,12 @@
  * WebSocket message types for agent event streaming
  */
 
-import type { AgentEvent } from './events.js';
+import type { Turn } from './turn.js';
+import type { AgentResponseMode, AgentSmartTieringConfig } from './types.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Server → Client Messages
 // ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Agent event message (server → client)
- * Wraps AgentEvent for WebSocket transport
- */
-export interface AgentEventMessage {
-  type: 'agent:event';
-  payload: AgentEvent;
-  timestamp: number;
-}
 
 /**
  * Connection ready message (server → client)
@@ -72,15 +63,54 @@ export interface CorrectionAckMessage {
   timestamp: number;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Turn Snapshot Messages (NEW - Phase 1: Backend Turn Assembly)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Turn snapshot message (server → client)
+ * Sent whenever a turn is created or updated (incremental updates)
+ */
+export interface TurnSnapshotMessage {
+  type: 'turn:snapshot';
+  payload: {
+    sessionId: string;
+    turn: Turn;
+    sequenceNumber: number;
+  };
+  timestamp: number;
+}
+
+/**
+ * Conversation snapshot message (server → client)
+ * Sent on initial WebSocket connection to provide recent history
+ */
+export interface ConversationSnapshotMessage {
+  type: 'conversation:snapshot';
+  payload: {
+    sessionId: string;
+    /** Recent completed turns (last 20) */
+    completedTurns: Turn[];
+    /** Currently streaming turns */
+    activeTurns: Turn[];
+    /** Total turns in session */
+    totalTurns: number;
+    /** Snapshot timestamp */
+    timestamp: string;
+  };
+  timestamp: number;
+}
+
 /**
  * Union of all server → client messages
  */
 export type ServerMessage =
-  | AgentEventMessage
   | ConnectionReadyMessage
   | RunCompletedMessage
   | ErrorMessage
-  | CorrectionAckMessage;
+  | CorrectionAckMessage
+  | TurnSnapshotMessage
+  | ConversationSnapshotMessage;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Client → Server Messages
@@ -151,6 +181,12 @@ export interface RunRequest {
   verbose?: boolean;
   /** LLM tier (small/medium/large) */
   tier?: 'small' | 'medium' | 'large';
+  /** Auto escalate to higher tier when agent is stuck */
+  enableEscalation?: boolean;
+  /** Adaptive elevation of helper LLM nodes (small -> medium on risk signals) */
+  smartTiering?: AgentSmartTieringConfig;
+  /** Answer style depth (auto/brief/deep) */
+  responseMode?: AgentResponseMode;
 }
 
 /**

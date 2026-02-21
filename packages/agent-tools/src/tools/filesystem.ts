@@ -10,23 +10,22 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import type { Tool, ToolContext } from '../types.js';
+import { toolError } from './tool-error.js';
+import { FILESYSTEM_CONFIG } from '../config.js';
+import { normalizeOffsetLimit, validatePath } from '../utils.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Constants
+// Constants (sourced from centralized config)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Maximum file size to read in bytes (500KB) */
-const MAX_FILE_SIZE = 500_000;
-
-/** Maximum lines to return per read (prevents context overflow) */
-const MAX_LINES_PER_READ = 500;
-
-/** Default lines to return if not specified */
-const DEFAULT_LINES = 200;
-
-/** Maximum content size for write operations (1MB) */
-const MAX_WRITE_SIZE = 1_000_000;
+const MAX_FILE_SIZE = FILESYSTEM_CONFIG.maxFileSize;
+const MAX_LINES_PER_READ = FILESYSTEM_CONFIG.maxLinesPerRead;
+const DEFAULT_LINES = FILESYSTEM_CONFIG.defaultLines;
+const MAX_WRITE_SIZE = FILESYSTEM_CONFIG.maxWriteSize;
+const DEFAULT_LIST_LIMIT = FILESYSTEM_CONFIG.defaultListLimit;
+const MAX_LIST_LIMIT = FILESYSTEM_CONFIG.maxListLimit;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -35,26 +34,6 @@ const MAX_WRITE_SIZE = 1_000_000;
 /**
  * Validate path is within working directory (prevent path traversal)
  */
-function validatePath(workingDir: string, filePath: string): { valid: boolean; resolved: string; error?: string } {
-  // Normalize and resolve the path
-  const resolved = path.resolve(workingDir, filePath);
-
-  // Check if resolved path is within working directory
-  if (!resolved.startsWith(workingDir)) {
-    return {
-      valid: false,
-      resolved,
-      error: `PATH_TRAVERSAL_ERROR: Cannot access "${filePath}" - path is outside working directory.
-
-HOW TO FIX: Use paths relative to the working directory. Do not use ".." to navigate above it.
-WORKING_DIR: ${workingDir}
-ATTEMPTED_PATH: ${resolved}`,
-    };
-  }
-
-  return { valid: true, resolved };
-}
-
 /**
  * Format file size for display
  */
@@ -62,6 +41,17 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) {return `${bytes} bytes`;}
   if (bytes < 1024 * 1024) {return `${(bytes / 1024).toFixed(1)} KB`;}
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Compute SHA-256 hash of content
+ */
+function computeHash(content: string): string {
+  return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
+}
+
+function normalizeListWindow(input: Record<string, unknown>): { offset: number; limit: number } {
+  return normalizeOffsetLimit(input, { defaultLimit: DEFAULT_LIST_LIMIT, maxLimit: MAX_LIST_LIMIT });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -77,16 +67,7 @@ export function createFsReadTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_read',
-        description: `Read file contents. For large files, use offset and limit to read specific line ranges.
-
-LIMITS:
-- Max ${MAX_LINES_PER_READ} lines per read (default: ${DEFAULT_LINES})
-- Max file size: ${formatSize(MAX_FILE_SIZE)}
-
-TIPS:
-- For large files: first read with limit=50 to see structure, then read specific sections
-- Use offset to skip to specific line numbers
-- Line numbers are 1-indexed (first line is 1)`,
+        description: `Read file contents. Supports offset/limit for large files. Default: ${DEFAULT_LINES} lines, max: ${MAX_LINES_PER_READ} lines per read.`,
         parameters: {
           type: 'object',
           properties: {
@@ -116,48 +97,49 @@ TIPS:
       // Validate path
       const pathValidation = validatePath(context.workingDir, filePath);
       if (!pathValidation.valid) {
-        return { success: false, error: pathValidation.error };
+        return toolError({
+          code: 'PATH_VALIDATION_FAILED',
+          message: pathValidation.error || 'Invalid path',
+          retryable: false,
+          hint: 'Use a path inside working directory.',
+          details: { filePath, workingDir: context.workingDir },
+        });
       }
 
       const fullPath = pathValidation.resolved;
 
       // Check file exists
       if (!fs.existsSync(fullPath)) {
-        return {
-          success: false,
-          error: `FILE_NOT_FOUND: "${filePath}" does not exist.
-
-HOW TO FIX:
-1. Use fs_list to see available files in the directory
-2. Check for typos in the file name
-3. Verify the path is relative to working directory
-
-WORKING_DIR: ${context.workingDir}`,
-        };
+        return toolError({
+          code: 'FILE_NOT_FOUND',
+          message: `"${filePath}" does not exist.`,
+          retryable: true,
+          hint: `Use fs_list(path="${path.dirname(filePath) || '.'}") to inspect available files.`,
+          details: { filePath, workingDir: context.workingDir },
+        });
       }
 
       // Check if it's a file
       const stats = fs.statSync(fullPath);
       if (stats.isDirectory()) {
-        return {
-          success: false,
-          error: `NOT_A_FILE: "${filePath}" is a directory, not a file.
-
-HOW TO FIX: Use fs_list to explore directory contents, or specify a file path.`,
-        };
+        return toolError({
+          code: 'NOT_A_FILE',
+          message: `"${filePath}" is a directory, not a file.`,
+          retryable: false,
+          hint: 'Use fs_list for directories or provide a file path.',
+          details: { filePath },
+        });
       }
 
       // Check file size
       if (stats.size > MAX_FILE_SIZE) {
-        return {
-          success: false,
-          error: `FILE_TOO_LARGE: "${filePath}" is ${formatSize(stats.size)}, exceeds limit of ${formatSize(MAX_FILE_SIZE)}.
-
-HOW TO FIX: This file is too large to read entirely. Use offset and limit to read sections:
-- Read first 100 lines: fs_read(path="${filePath}", limit=100)
-- Read lines 500-600: fs_read(path="${filePath}", offset=500, limit=100)
-- Read last section: first check total lines, then read from there`,
-        };
+        return toolError({
+          code: 'FILE_TOO_LARGE',
+          message: `"${filePath}" is ${formatSize(stats.size)}, exceeds limit ${formatSize(MAX_FILE_SIZE)}.`,
+          retryable: true,
+          hint: `Use fs_read(path="${filePath}", offset=<line>, limit=<small number>).`,
+          details: { filePath, size: stats.size, maxSize: MAX_FILE_SIZE },
+        });
       }
 
       // Read file
@@ -167,12 +149,13 @@ HOW TO FIX: This file is too large to read entirely. Use offset and limit to rea
 
       // Validate offset
       if (offset > totalLines) {
-        return {
-          success: false,
-          error: `OFFSET_OUT_OF_RANGE: Requested offset ${offset} but file only has ${totalLines} lines.
-
-HOW TO FIX: Use offset between 1 and ${totalLines}.`,
-        };
+        return toolError({
+          code: 'OFFSET_OUT_OF_RANGE',
+          message: `Requested offset ${offset} but file has ${totalLines} lines.`,
+          retryable: true,
+          hint: `Use offset between 1 and ${totalLines}.`,
+          details: { filePath, offset, totalLines },
+        });
       }
 
       // Extract requested lines (convert to 0-indexed)
@@ -188,11 +171,23 @@ HOW TO FIX: Use offset between 1 and ${totalLines}.`,
 
       // Build metadata header
       const hasMore = endIndex < totalLines;
+      const linesRemaining = totalLines - endIndex;
+
+      const warnings = [];
+      if (requestedLimit > MAX_LINES_PER_READ) {
+        warnings.push(`⚠️ Limit capped at ${MAX_LINES_PER_READ} (you requested ${requestedLimit})`);
+      }
+      if (hasMore && linesRemaining > 100) {
+        warnings.push(`⚠️ File has ${linesRemaining} more lines after this section`);
+        warnings.push(`💡 To read more: fs_read(path="${filePath}", offset=${endIndex + 1}, limit=1000)`);
+        warnings.push(`💡 Or request specific sections based on what you need`);
+      }
+
       const header = [
         `File: ${filePath}`,
         `Lines: ${offset}-${endIndex} of ${totalLines}`,
-        hasMore ? `(${totalLines - endIndex} more lines after this)` : '(end of file)',
-        requestedLimit > MAX_LINES_PER_READ ? `Note: limit capped at ${MAX_LINES_PER_READ}` : '',
+        hasMore ? `(${linesRemaining} more lines after this)` : '(end of file)',
+        ...warnings,
         '─'.repeat(60),
       ].filter(Boolean).join('\n');
 
@@ -206,6 +201,8 @@ HOW TO FIX: Use offset between 1 and ${totalLines}.`,
           readTo: endIndex,
           hasMore,
           fileSize: stats.size,
+          // Add content hash for edit protection
+          contentHash: computeHash(content),
         },
       };
     },
@@ -225,15 +222,7 @@ export function createFsWriteTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_write',
-        description: `Write content to a file. Creates parent directories if needed.
-
-LIMITS:
-- Max content size: ${formatSize(MAX_WRITE_SIZE)}
-
-TIPS:
-- Use for creating new files or completely replacing file contents
-- For partial edits, use fs_edit instead
-- Parent directories are created automatically`,
+        description: `Write content to a file. Creates parent directories if needed. For partial edits, use fs_patch instead.`,
         parameters: {
           type: 'object',
           properties: {
@@ -257,7 +246,13 @@ TIPS:
       // Validate path
       const pathValidation = validatePath(context.workingDir, filePath);
       if (!pathValidation.valid) {
-        return { success: false, error: pathValidation.error };
+        return toolError({
+          code: 'PATH_VALIDATION_FAILED',
+          message: pathValidation.error || 'Invalid path',
+          retryable: false,
+          hint: 'Use a path inside working directory.',
+          details: { filePath, workingDir: context.workingDir },
+        });
       }
 
       const fullPath = pathValidation.resolved;
@@ -275,6 +270,21 @@ HOW TO FIX: Split the content into smaller files, or write in chunks.`,
 
       // Check if overwriting existing file
       const isOverwrite = fs.existsSync(fullPath);
+
+      // CAPTURE SNAPSHOT BEFORE WRITE
+      if (context.fileChangeTracker) {
+        const beforeContent = isOverwrite
+          ? fs.readFileSync(fullPath, 'utf-8')
+          : null;
+
+        await context.fileChangeTracker.captureChange(
+          filePath,
+          'write',
+          beforeContent,
+          content,
+          { isOverwrite }
+        );
+      }
 
       // Create parent directories if needed
       const dir = path.dirname(fullPath);
@@ -306,29 +316,19 @@ Lines: ${lineCount}`,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// fs_edit - Edit file with search/replace
+// fs_patch - Edit file by line numbers (like Claude Code)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Edit file using search and replace
+ * Edit file by replacing a range of lines
  */
-export function createFsEditTool(context: ToolContext): Tool {
+export function createFsPatchTool(context: ToolContext): Tool {
   return {
     definition: {
       type: 'function',
       function: {
-        name: 'fs_edit',
-        description: `Edit a file by replacing exact text.
-
-REQUIREMENTS:
-- Search text must match EXACTLY (including whitespace and indentation)
-- By default replaces only FIRST occurrence
-- Use replace_all=true to replace ALL occurrences
-
-TIPS:
-- First use fs_read to see the exact content and indentation
-- Include enough context in search to make it unique
-- If search fails, the text doesn't exist exactly as specified`,
+        name: 'fs_patch',
+        description: `Replace a range of lines in a file. You must fs_read the file first. Line numbers are 1-indexed and inclusive.`,
         parameters: {
           type: 'object',
           properties: {
@@ -336,28 +336,28 @@ TIPS:
               type: 'string',
               description: 'File path relative to working directory',
             },
-            search: {
-              type: 'string',
-              description: 'Exact text to search for (must match exactly including whitespace)',
+            startLine: {
+              type: 'number',
+              description: 'First line to replace (1-indexed, inclusive)',
             },
-            replace: {
-              type: 'string',
-              description: 'Text to replace with',
+            endLine: {
+              type: 'number',
+              description: 'Last line to replace (1-indexed, inclusive)',
             },
-            replace_all: {
-              type: 'boolean',
-              description: 'Replace all occurrences instead of just the first (default: false)',
+            newContent: {
+              type: 'string',
+              description: 'New content to replace the line range with',
             },
           },
-          required: ['path', 'search', 'replace'],
+          required: ['path', 'startLine', 'endLine', 'newContent'],
         },
       },
     },
     executor: async (input: Record<string, unknown>) => {
       const filePath = input.path as string;
-      const search = input.search as string;
-      const replace = input.replace as string;
-      const replaceAll = (input.replace_all as boolean) || false;
+      const startLine = input.startLine as number;
+      const endLine = input.endLine as number;
+      const newContent = input.newContent as string;
 
       // Validate path
       const pathValidation = validatePath(context.workingDir, filePath);
@@ -367,93 +367,131 @@ TIPS:
 
       const fullPath = pathValidation.resolved;
 
+      // ═══════════════════════════════════════════════════════════════════════
+      // PROTECTION 1: File must have been read in this session
+      // ═══════════════════════════════════════════════════════════════════════
+      if (context.filesRead && !context.filesRead.has(filePath)) {
+        return toolError({
+          code: 'CANNOT_EDIT_UNREAD_FILE',
+          message: `You must read "${filePath}" before editing it.`,
+          retryable: true,
+          hint: `Run fs_read(path="${filePath}") first, then patch specific lines.`,
+          details: { filePath, startLine, endLine },
+        });
+      }
+
       // Check file exists
       if (!fs.existsSync(fullPath)) {
-        return {
-          success: false,
-          error: `FILE_NOT_FOUND: "${filePath}" does not exist.
-
-HOW TO FIX:
-1. Use fs_list to see available files
-2. Check path spelling
-3. Use fs_write to create a new file instead`,
-        };
+        return toolError({
+          code: 'FILE_NOT_FOUND',
+          message: `"${filePath}" does not exist.`,
+          retryable: true,
+          hint: 'Use fs_list to find files or fs_write to create a new file.',
+          details: { filePath },
+        });
       }
 
       // Read current content
-      const content = fs.readFileSync(fullPath, 'utf-8');
+      const currentContent = fs.readFileSync(fullPath, 'utf-8');
 
-      // Check if search text exists
-      if (!content.includes(search)) {
-        // Provide helpful debugging info
-        const searchPreview = search.length > 100 ? search.slice(0, 100) + '...' : search;
-        const searchLines = search.split('\n').length;
+      // ═══════════════════════════════════════════════════════════════════════
+      // PROTECTION 2: File must not have changed since read
+      // ═══════════════════════════════════════════════════════════════════════
+      if (context.filesReadHash) {
+        const savedHash = context.filesReadHash.get(filePath);
+        const currentHash = computeHash(currentContent);
 
-        // Try to find similar text
-        const searchFirstLine = search.split('\n')[0]?.trim() || '';
-        const possibleMatches = content.split('\n')
-          .map((line, i) => ({ line: line.trim(), lineNum: i + 1 }))
-          .filter(({ line }) => line.includes(searchFirstLine.slice(0, 20)))
-          .slice(0, 3);
-
-        let hint = '';
-        if (possibleMatches.length > 0) {
-          hint = `\n\nPOSSIBLE MATCHES (first line similar):
-${possibleMatches.map(m => `  Line ${m.lineNum}: "${m.line.slice(0, 60)}..."`).join('\n')}
-
-TIP: Use fs_read with offset=${possibleMatches[0]?.lineNum} to see the exact content.`;
+        if (savedHash && savedHash !== currentHash) {
+          return toolError({
+            code: 'FILE_CHANGED_SINCE_READ',
+            message: `"${filePath}" was modified since last read.`,
+            retryable: true,
+            hint: `Re-read: fs_read(path="${filePath}", offset=${Math.max(1, startLine - 10)}, limit=${endLine - startLine + 20})`,
+            details: { filePath, startLine, endLine },
+          });
         }
-
-        return {
-          success: false,
-          error: `SEARCH_TEXT_NOT_FOUND: The exact search text was not found in "${filePath}".
-
-SEARCH TEXT (${searchLines} line(s)):
-"${searchPreview}"
-
-COMMON CAUSES:
-1. Whitespace mismatch (spaces vs tabs, trailing spaces)
-2. Line ending differences
-3. The text was already changed
-4. Typo in search text
-
-HOW TO FIX:
-1. Use fs_read to see the exact current content
-2. Copy the exact text including whitespace
-3. Make sure indentation matches exactly${hint}`,
-        };
       }
 
-      // Count occurrences
-      const occurrences = content.split(search).length - 1;
+      const allLines = currentContent.split('\n');
+      const totalLines = allLines.length;
 
-      // Perform replacement
-      let newContent: string;
-      let replacedCount: number;
+      // Validate line numbers
+      if (startLine < 1 || startLine > totalLines) {
+        return toolError({
+          code: 'INVALID_START_LINE',
+          message: `startLine ${startLine} is out of range (file has ${totalLines} lines).`,
+          retryable: true,
+          hint: `Use startLine between 1 and ${totalLines}.`,
+          details: { filePath, startLine, totalLines },
+        });
+      }
 
-      if (replaceAll) {
-        newContent = content.split(search).join(replace);
-        replacedCount = occurrences;
-      } else {
-        newContent = content.replace(search, replace);
-        replacedCount = 1;
+      if (endLine < startLine || endLine > totalLines) {
+        return toolError({
+          code: 'INVALID_END_LINE',
+          message: `endLine ${endLine} is invalid (startLine=${startLine}, file has ${totalLines} lines).`,
+          retryable: true,
+          hint: `Use endLine between ${startLine} and ${totalLines}.`,
+          details: { filePath, startLine, endLine, totalLines },
+        });
+      }
+
+      // Apply patch (convert to 0-indexed)
+      const beforeLines = allLines.slice(0, startLine - 1);
+      const afterLines = allLines.slice(endLine);
+      const newLines = newContent ? newContent.split('\n') : [];
+
+      const patchedContent = [...beforeLines, ...newLines, ...afterLines].join('\n');
+
+      // Calculate line changes
+      const removedCount = endLine - startLine + 1;
+      const addedCount = newLines.length;
+      const netChange = addedCount - removedCount;
+
+      // CAPTURE SNAPSHOT BEFORE PATCH
+      if (context.fileChangeTracker) {
+        await context.fileChangeTracker.captureChange(
+          filePath,
+          'patch',
+          currentContent,
+          patchedContent,
+          {
+            startLine,
+            endLine,
+            linesAdded: addedCount,
+            linesRemoved: removedCount,
+          }
+        );
       }
 
       // Write updated content
-      fs.writeFileSync(fullPath, newContent, 'utf-8');
+      fs.writeFileSync(fullPath, patchedContent, 'utf-8');
 
-      const message = replaceAll
-        ? `Replaced all ${replacedCount} occurrence(s) in ${filePath}`
-        : `Replaced 1 occurrence in ${filePath}${occurrences > 1 ? ` (${occurrences - 1} more occurrences remain)` : ''}`;
+      let action: string;
+      if (addedCount === 0) {
+        action = `Deleted ${removedCount} line(s)`;
+      } else if (removedCount === addedCount) {
+        action = `Replaced ${removedCount} line(s)`;
+      } else if (netChange > 0) {
+        action = `Replaced ${removedCount} line(s) with ${addedCount} line(s) (+${netChange})`;
+      } else {
+        action = `Replaced ${removedCount} line(s) with ${addedCount} line(s) (${netChange})`;
+      }
 
       return {
         success: true,
-        output: message,
+        output: `${action} in ${filePath}
+Lines ${startLine}-${endLine} → ${addedCount} new line(s)
+File now has ${beforeLines.length + newLines.length + afterLines.length} lines (was ${totalLines})`,
         metadata: {
           filePath,
-          replacedCount,
-          totalOccurrences: occurrences,
-          replaceAll,
+          startLine,
+          endLine,
+          linesRemoved: removedCount,
+          linesAdded: addedCount,
+          netChange,
+          totalLinesBefore: totalLines,
+          totalLinesAfter: beforeLines.length + newLines.length + afterLines.length,
         },
       };
     },
@@ -473,16 +511,7 @@ export function createFsListTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_list',
-        description: `List files and directories at a path.
-
-FEATURES:
-- Shows files and directories separately
-- Non-recursive by default
-- Use recursive=true to see nested structure (limited depth)
-
-TIPS:
-- Start with root directory to understand project structure
-- Navigate into subdirectories for more detail`,
+        description: `List files and directories at a path. Non-recursive by default.`,
         parameters: {
           type: 'object',
           properties: {
@@ -494,6 +523,14 @@ TIPS:
               type: 'boolean',
               description: 'Include subdirectories recursively (default: false, max depth: 3)',
             },
+            offset: {
+              type: 'number',
+              description: 'Result offset for pagination (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Result limit per page (default: ${DEFAULT_LIST_LIMIT}, max: ${MAX_LIST_LIMIT})`,
+            },
           },
         },
       },
@@ -501,37 +538,43 @@ TIPS:
     executor: async (input: Record<string, unknown>) => {
       const dirPath = (input.path as string) || '.';
       const recursive = (input.recursive as boolean) || false;
+      const { offset, limit } = normalizeListWindow(input);
 
       // Validate path
       const pathValidation = validatePath(context.workingDir, dirPath);
       if (!pathValidation.valid) {
-        return { success: false, error: pathValidation.error };
+        return toolError({
+          code: 'PATH_VALIDATION_FAILED',
+          message: pathValidation.error || 'Invalid path',
+          retryable: false,
+          hint: 'Use a path inside working directory.',
+          details: { path: dirPath, workingDir: context.workingDir },
+        });
       }
 
       const fullPath = pathValidation.resolved;
 
       // Check exists
       if (!fs.existsSync(fullPath)) {
-        return {
-          success: false,
-          error: `DIRECTORY_NOT_FOUND: "${dirPath}" does not exist.
-
-HOW TO FIX:
-1. Check the path spelling
-2. Use fs_list with parent directory to see available directories
-3. Working directory is: ${context.workingDir}`,
-        };
+        return toolError({
+          code: 'DIRECTORY_NOT_FOUND',
+          message: `"${dirPath}" does not exist.`,
+          retryable: true,
+          hint: 'Use fs_list on parent directory to discover valid paths.',
+          details: { path: dirPath, workingDir: context.workingDir },
+        });
       }
 
       // Check is directory
       const stats = fs.statSync(fullPath);
       if (!stats.isDirectory()) {
-        return {
-          success: false,
-          error: `NOT_A_DIRECTORY: "${dirPath}" is a file, not a directory.
-
-HOW TO FIX: Use fs_read to read file contents, or specify a directory path.`,
-        };
+        return toolError({
+          code: 'NOT_A_DIRECTORY',
+          message: `"${dirPath}" is a file, not a directory.`,
+          retryable: false,
+          hint: 'Use fs_read for files or provide a directory path.',
+          details: { path: dirPath },
+        });
       }
 
       // List contents
@@ -550,31 +593,41 @@ HOW TO FIX: Use fs_read to read file contents, or specify a directory path.`,
         .filter(name => !name.startsWith('.') && name !== 'node_modules')
         .sort();
 
+      const combinedEntries = [
+        ...dirs.map((name) => ({ type: 'dir' as const, name })),
+        ...files.map((name) => ({ type: 'file' as const, name })),
+      ];
+      const pageEntries = combinedEntries.slice(offset, offset + limit);
+      const hasMore = offset + limit < combinedEntries.length;
+      const nextOffset = hasMore ? offset + limit : null;
+      const pageDirs = pageEntries.filter((entry) => entry.type === 'dir');
+      const pageFiles = pageEntries.filter((entry) => entry.type === 'file');
+
       // Format output
       const outputParts = [
-        `📁 ${dirPath === '.' ? 'Working Directory' : dirPath}`,
+        `📁 ${dirPath === '.' ? 'Working Directory' : dirPath} (showing ${pageEntries.length}/${combinedEntries.length}, offset=${offset}, limit=${limit})`,
         '',
       ];
 
-      if (dirs.length > 0) {
+      if (pageDirs.length > 0) {
         outputParts.push(`Directories (${dirs.length}):`);
-        for (const d of dirs) {
-          outputParts.push(`  📁 ${d}/`);
+        for (const d of pageDirs) {
+          outputParts.push(`  📁 ${d.name}/`);
         }
         outputParts.push('');
       }
 
-      if (files.length > 0) {
+      if (pageFiles.length > 0) {
         outputParts.push(`Files (${files.length}):`);
-        for (const f of files) {
+        for (const f of pageFiles) {
           // Get file size
-          const filePath = path.join(fullPath, f);
+          const filePath = path.join(fullPath, f.name);
           const fileStats = fs.statSync(filePath);
-          outputParts.push(`  📄 ${f} (${formatSize(fileStats.size)})`);
+          outputParts.push(`  📄 ${f.name} (${formatSize(fileStats.size)})`);
         }
       }
 
-      if (dirs.length === 0 && files.length === 0) {
+      if (combinedEntries.length === 0) {
         outputParts.push('(empty directory)');
       }
 
@@ -615,6 +668,11 @@ HOW TO FIX: Use fs_read to read file contents, or specify a directory path.`,
         }
       }
 
+      if (hasMore) {
+        outputParts.push('');
+        outputParts.push(`Next page: fs_list(path="${dirPath}", recursive=${recursive ? 'true' : 'false'}, offset=${nextOffset}, limit=${limit})`);
+      }
+
       return {
         success: true,
         output: outputParts.join('\n'),
@@ -624,6 +682,11 @@ HOW TO FIX: Use fs_read to read file contents, or specify a directory path.`,
           fileCount: files.length,
           directories: dirs,
           files,
+          totalEntries: combinedEntries.length,
+          offset,
+          limit,
+          hasMore,
+          nextOffset,
         },
       };
     },

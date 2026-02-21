@@ -1,0 +1,34 @@
+{
+  "version": "1.0.0",
+  "taskId": "test-task-123",
+  "createdAt": "2026-02-14T16:59:13.600Z",
+  "finalizedAt": "2026-02-14T16:59:13.601Z",
+  "summary": {
+    "totalEvents": 3,
+    "iterations": 1,
+    "status": "success",
+    "eventCounts": {
+      "iteration:detail": 1,
+      "llm:call": 1,
+      "tool:execution": 1
+    }
+  },
+  "timing": {
+    "startedAt": "2026-02-14T16:59:13.600Z",
+    "completedAt": "2026-02-14T16:59:13.601Z",
+    "totalDurationMs": 1
+  },
+  "cost": {
+    "totalCost": 0,
+    "currency": "USD"
+  },
+  "errors": 0,
+  "iterations": [
+    {
+      "iteration": 1,
+      "eventCount": 3,
+      "llmCalls": 1,
+      "toolCalls": 1
+    }
+  ]
+}

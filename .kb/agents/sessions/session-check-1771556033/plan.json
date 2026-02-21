@@ -1,0 +1,87 @@
+{
+  "id": "plan-1771556045925-pppydq9",
+  "sessionId": "session-check-1771556033",
+  "task": "Коротко: как устроены агенты в KB Labs?",
+  "mode": "plan",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Gather context about KB Labs agents",
+      "description": "Retrieve internal docs or notes about how agents are structured in KB Labs",
+      "dependencies": [],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-1-1",
+          "action": "Search existing knowledge base for docs on KB Labs agents",
+          "tool": "mind:rag-query",
+          "args": {},
+          "expectedOutcome": "List of relevant documents or snippets describing agents in KB Labs",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Review and extract key points",
+      "description": "Open and read the most relevant materials to understand agent architecture and workflows",
+      "dependencies": [
+        "phase-1"
+      ],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-2-1",
+          "action": "Open top relevant files/snippets from the search results for detailed review",
+          "tool": "fs:read",
+          "args": {},
+          "expectedOutcome": "Collected notes on agent structure, components, and flow in KB Labs",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-3",
+      "name": "Draft concise explanation",
+      "description": "Summarize findings into a short, clear description of how agents are organized in KB Labs",
+      "dependencies": [
+        "phase-2"
+      ],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-3-1",
+          "action": "Write the concise summary in a new file or buffer",
+          "tool": "fs:write",
+          "args": {},
+          "expectedOutcome": "Draft summary explaining how agents are structured in KB Labs",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "name": "Review and finalize",
+      "description": "Sanity-check and polish the short explanation for clarity and accuracy",
+      "dependencies": [
+        "phase-3"
+      ],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-4-1",
+          "action": "Edit draft for clarity and completeness",
+          "tool": "fs:edit",
+          "args": {},
+          "expectedOutcome": "Final concise explanation ready to share",
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+  "estimatedDuration": "1-2 hours",
+  "complexity": "medium",
+  "createdAt": "2026-02-20T02:54:05.925Z",
+  "updatedAt": "2026-02-20T02:54:05.925Z",
+  "status": "draft"
+}

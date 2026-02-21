@@ -2,6 +2,9 @@
  * Core types and interfaces for agents
  */
 
+/* eslint-disable @typescript-eslint/consistent-type-imports */
+// Using import() in type signatures to avoid circular dependencies
+
 // ═══════════════════════════════════════════════════════════════════════
 // Agent Modes (Extensible System)
 // ═══════════════════════════════════════════════════════════════════════
@@ -10,6 +13,7 @@
  * Agent execution modes - extensible for future modes
  */
 export type AgentMode = 'execute' | 'plan' | 'edit' | 'debug';
+export const AGENT_MODES = ['execute', 'plan', 'edit', 'debug'] as const satisfies AgentMode[];
 
 /**
  * Mode-specific configuration
@@ -71,19 +75,94 @@ export interface DebugContext {
  */
 export type LLMTier = 'small' | 'medium' | 'large';
 
+export interface AgentSmartTieringConfig {
+  enabled?: boolean;
+  nodes?: {
+    intentInference?: boolean;
+    searchAssessment?: boolean;
+    taskValidation?: boolean;
+  };
+  auditTasksPreferMedium?: boolean;
+  minEvidenceDensityForSmallValidation?: number;
+  maxIterationsWithoutProgressForMediumSearch?: number;
+  intentInferenceMinTaskCharsForMedium?: number;
+}
+
 /**
- * Task complexity classification
- *
- * - simple: Single lookup, one action (e.g., "What is X?")
- * - research: Information gathering + synthesis (e.g., "Explain architecture")
- * - complex: Multi-step task with actions (e.g., "Implement feature X")
+ * Response verbosity/rigor mode for final answers.
+ * - auto: adapt format by question complexity (default)
+ * - brief: concise output for simple questions
+ * - deep: thorough structured output for complex questions
  */
-export type TaskComplexity = 'simple' | 'research' | 'complex';
+export type AgentResponseMode = 'auto' | 'brief' | 'deep';
+
+/**
+ * Task type for decomposition decision (Phase 0: Smart Decomposition)
+ *
+ * - research: Parallel exploration of different aspects (easy to parallelize)
+ * - implementation-single-domain: Implementation in one domain (prefer single agent - high coupling)
+ * - implementation-cross-domain: Implementation across domains (parallelize by domain - backend/frontend/CLI)
+ * - simple: Trivial task (single agent - overhead dominates)
+ */
+export type DecompositionTaskType =
+  | 'research'
+  | 'implementation-single-domain'
+  | 'implementation-cross-domain'
+  | 'simple'
+  | 'single-agent'; // Added: no classification, direct agent execution
+
+/**
+ * Decomposition decision result
+ */
+export interface DecompositionDecision {
+  taskType: DecompositionTaskType;
+  shouldDecompose: boolean;
+  reason: string;
+  estimatedIterations?: number; // LLM estimate: 10-15 for research, 30-80 for implementation, 100+ for large projects
+  subtasks?: Array<{
+    description: string;
+    domain?: string; // backend, frontend, cli, db, etc.
+    estimatedMinutes?: number;
+  }>;
+}
+
+/**
+ * Execution mode for plan
+ */
+export type ExecutionMode = 'single-agent' | 'sequential' | 'parallel' | 'mixed';
 
 /**
  * Task execution status
  */
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped';
+export const TASK_STATUSES = ['pending', 'in_progress', 'completed', 'failed', 'skipped'] as const satisfies TaskStatus[];
+
+/**
+ * Plan update action (Phase 3: Orchestrator Observation)
+ */
+export type PlanUpdateAction = 'add' | 'remove' | 'reorder' | 'modify';
+
+/**
+ * Plan update event (Phase 3: Orchestrator Observation)
+ */
+export interface PlanUpdate {
+  /** Type of update */
+  action: PlanUpdateAction;
+  /** Reason for the update */
+  reason: string;
+  /** Subtask being modified (for add/remove/modify) */
+  subtaskId?: string;
+  /** New subtask to add */
+  newSubtask?: {
+    id: string;
+    description: string;
+    status: TaskStatus;
+  };
+  /** New order of subtask IDs (for reorder) */
+  newOrder?: string[];
+  /** Timestamp when update was made */
+  timestamp: string;
+}
 
 /**
  * Agent event callback type (imported from events.ts)
@@ -100,7 +179,9 @@ export interface AgentConfig {
   verbose: boolean;
   sessionId?: string;
   tier?: LLMTier;
+  responseMode?: AgentResponseMode;
   enableEscalation?: boolean;
+  smartTiering?: AgentSmartTieringConfig;
   /** Mode configuration (execute/plan/edit/debug) */
   mode?: ModeConfig;
   /** Tracer for recording execution (optional) */
@@ -120,6 +201,29 @@ export interface AgentConfig {
   agentId?: string;
   /** Parent agent ID (for child agents spawned by orchestrator) */
   parentAgentId?: string;
+  /** Abort signal from parent — when aborted, this agent stops between iterations */
+  abortSignal?: AbortSignal;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Phase 1: Agent → Orchestrator Communication
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Callback for ask_parent tool calls.
+   * When sub-agent calls ask_parent, this callback is invoked.
+   * The parent agent can provide guidance, hints, or alter execution.
+   */
+  onAskParent?: (request: {
+    question: string;
+    reason: 'stuck' | 'uncertain' | 'blocker' | 'clarification';
+    context?: Record<string, unknown>;
+    iteration: number;
+    subtask?: string;
+  }) => Promise<{
+    answer: string;
+    action?: 'continue' | 'skip' | 'retry_with_hint';
+    hint?: string;
+  }>;
 }
 
 /**
@@ -164,7 +268,7 @@ export interface TaskResult {
 export interface TraceEntry {
   iteration: number;
   timestamp: string;
-  type: 'llm_call' | 'llm_response' | 'tool_call' | 'tool_result' | 'task_start' | 'task_end' | 'subtask_start' | 'subtask_end' | 'plan_generated' | 'phase_start' | 'phase_end' | 'step_start' | 'step_end';
+  type: 'llm_call' | 'llm_response' | 'tool_call' | 'tool_result' | 'tool_cache_hit' | 'task_start' | 'task_end' | 'subtask_start' | 'subtask_end' | 'plan_generated' | 'phase_start' | 'phase_end' | 'step_start' | 'step_end';
   data: Record<string, unknown>;
   durationMs?: number;
 }
@@ -175,8 +279,9 @@ export interface TraceEntry {
 export interface Tracer {
   /**
    * Record a trace entry
+   * Accepts both old TraceEntry format and new DetailedTraceEntry format
    */
-  trace(entry: TraceEntry): void;
+  trace(entry: TraceEntry | Partial<import('./detailed-trace-types.js').DetailedTraceEntry>): void;
 
   /**
    * Get all trace entries
@@ -184,7 +289,7 @@ export interface Tracer {
   getEntries(): TraceEntry[];
 
   /**
-   * Save trace to file
+   * Save trace to file (backward compat - alias for flush)
    */
   save(filePath: string): Promise<void>;
 
@@ -192,6 +297,22 @@ export interface Tracer {
    * Clear all entries
    */
   clear(): void;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Incremental Tracing (NEW - for IncrementalTraceWriter)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Finalize trace (flush, generate index, cleanup old traces)
+   * Call this when agent execution completes
+   */
+  finalize?(): Promise<void>;
+
+  /**
+   * Create index file for fast CLI queries
+   * Called automatically by finalize()
+   */
+  createIndex?(): Promise<void>;
 }
 
 /**
@@ -226,6 +347,14 @@ export interface ToolResult {
   success: boolean;
   output?: string;
   error?: string;
+  errorDetails?: {
+    code: string;
+    message: string;
+    retryable?: boolean;
+    hint?: string;
+    details?: Record<string, unknown>;
+  };
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -242,6 +371,22 @@ export type MemoryCategory =
   | 'user_input' // Everything from user (corrections, preferences)
   | 'project_rules' // Project constraints and rules
   | 'agent_state'; // Agent state (blockers, progress)
+
+/**
+ * Reflection result from agent self-analysis
+ */
+export interface ReflectionResult {
+  /** What the agent has found so far */
+  findingsSummary: string;
+  /** Confidence in current answer (0.0-1.0) */
+  confidence: number;
+  /** Questions that remain unanswered */
+  questionsRemaining: string[];
+  /** Whether agent should continue searching */
+  shouldContinue: boolean;
+  /** Reason for continue/stop decision */
+  reason: string;
+}
 
 /**
  * Memory entry (extended for agent memory system)
@@ -293,6 +438,17 @@ export interface MemoryEntry {
     scope?: 'session' | 'project' | 'global';
     /** When this memory expires */
     expiresAt?: string;
+    /** Flag indicating this is the original user task (from orchestrator) */
+    isOriginalUserTask?: boolean;
+    /** Global context extracted by orchestrator from original task */
+    globalContext?: {
+      /** Target directory where files should be created */
+      targetDirectory?: string;
+      /** Constraints extracted from task (NEVER, MUST NOT, etc.) */
+      constraints: string[];
+      /** Requirements extracted from task (numbered lists, bullets) */
+      requirements: string[];
+    };
   };
 }
 
@@ -339,11 +495,13 @@ export interface SessionMemory {
  * TODO item status
  */
 export type TodoStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
+export const TODO_STATUSES = ['pending', 'in-progress', 'completed', 'blocked'] as const satisfies TodoStatus[];
 
 /**
  * TODO item priority
  */
 export type TodoPriority = 'low' | 'medium' | 'high';
+export const TODO_PRIORITIES = ['low', 'medium', 'high'] as const satisfies TodoPriority[];
 
 /**
  * TODO item
@@ -388,6 +546,14 @@ export interface ExecutionPlan {
   originalTask: string;
   subtasks: Subtask[];
   createdAt: string;
+  /** Execution mode (Phase 0: Smart Decomposition) */
+  executionMode?: ExecutionMode;
+  /** Reason for decomposition decision (Phase 0) */
+  decompositionReason?: string;
+  /** Task type classification (Phase 0) */
+  taskType?: DecompositionTaskType;
+  /** LLM-estimated max iterations needed (Phase 0) */
+  estimatedIterations?: number;
 }
 
 /**
@@ -398,39 +564,6 @@ export interface ResultProcessor {
    * Process task result (e.g., add summary, collect metrics, save artifacts)
    */
   process(result: TaskResult): Promise<TaskResult>;
-}
-
-/**
- * Orchestrator configuration
- */
-export interface OrchestratorConfig {
-  workingDir: string;
-  maxIterations: number;
-  temperature: number;
-  verbose: boolean;
-  sessionId?: string;
-  /** LLM tier passed from run-handler (used for analytics, not for child agents) */
-  tier?: LLMTier;
-  /** LLM tier for child agents (default: 'small') - use smaller models for efficiency */
-  childAgentTier?: LLMTier;
-  /** Enable tier escalation for child agents (default: false) */
-  enableEscalation?: boolean;
-  /** LLM tier for orchestrator (classify + plan, default: 'large') */
-  planningTier?: LLMTier;
-  /** Continue execution if subtask fails (default: true) */
-  continueOnFailure?: boolean;
-  /** Mode configuration (execute/plan/edit/debug) */
-  mode?: ModeConfig;
-  /** Tracer for recording execution (optional) */
-  tracer?: Tracer;
-  /** Result processors (optional) */
-  resultProcessors?: ResultProcessor[];
-  /** Memory system for context management (optional) */
-  memory?: AgentMemory;
-  /** Event callback for streaming orchestrator events to UI (optional) */
-  onEvent?: import('./events.js').AgentEventCallback;
-  /** Enable cross-tier verification of agent responses (default: true) */
-  enableVerification?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -837,30 +970,6 @@ export interface GetSessionRequest {
 export interface GetSessionResponse {
   /** Session details */
   session: AgentSessionInfo;
-}
-
-/**
- * Request to get session events (chat history)
- */
-export interface GetSessionEventsRequest {
-  /** Session ID */
-  sessionId: string;
-  /** Maximum number of events to return */
-  limit?: number;
-  /** Offset for pagination */
-  offset?: number;
-  /** Filter by event types */
-  types?: string[];
-}
-
-/**
- * Response with session events
- */
-export interface GetSessionEventsResponse {
-  /** List of events */
-  events: import('./events.js').AgentEvent[];
-  /** Total count for pagination */
-  total: number;
 }
 
 /**

@@ -46,6 +46,13 @@ export class ToolRegistry {
   }
 
   /**
+   * Get sorted list of registered tool names
+   */
+  getToolNames(): string[] {
+    return Array.from(this.tools.keys()).sort();
+  }
+
+  /**
    * Get context
    */
   getContext(): ToolContext {

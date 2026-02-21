@@ -17,7 +17,7 @@ export class PlanModeHandler implements ModeHandler {
   async execute(
     task: string,
     config: AgentConfig,
-    toolRegistry: ToolRegistry
+    _toolRegistry: ToolRegistry
   ): Promise<TaskResult> {
     const planContext = config.mode?.context as PlanContext | undefined;
     const complexity = planContext?.complexity;

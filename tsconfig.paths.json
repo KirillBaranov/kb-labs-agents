@@ -15,11 +15,23 @@
       "@kb-labs/agent-core/*": [
         "packages/agent-core/src/*"
       ],
+      "@kb-labs/agent-history": [
+        "packages/agent-history/src/index.ts"
+      ],
+      "@kb-labs/agent-history/*": [
+        "packages/agent-history/src/*"
+      ],
       "@kb-labs/agent-tools": [
         "packages/agent-tools/src/index.ts"
       ],
       "@kb-labs/agent-tools/*": [
         "packages/agent-tools/src/*"
+      ],
+      "@kb-labs/agent-tracing": [
+        "packages/agent-tracing/src/index.ts"
+      ],
+      "@kb-labs/agent-tracing/*": [
+        "packages/agent-tracing/src/*"
       ],
       "@kb-labs/core-platform": [
         "../kb-labs-core/packages/core-platform/src/index.ts"
@@ -38,6 +50,12 @@
       ],
       "@kb-labs/sdk/*": [
         "../kb-labs-sdk/packages/sdk/src/*"
+      ],
+      "@kb-labs/shared-testing": [
+        "../kb-labs-shared/packages/shared-testing/src/index.ts"
+      ],
+      "@kb-labs/shared-testing/*": [
+        "../kb-labs-shared/packages/shared-testing/src/*"
       ]
     }
   }

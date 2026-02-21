@@ -4,14 +4,68 @@
 
 import type { Tool, ToolContext } from '../types.js';
 import type { TodoList, TodoItem } from '@kb-labs/agent-contracts';
+import { toolError } from './tool-error.js';
+import { TODO_CONFIG } from '../config.js';
 
 // In-memory TODO storage (session-scoped)
 const todoLists = new Map<string, TodoList>();
+const TODO_CACHE_PREFIX = TODO_CONFIG.cachePrefix;
+const TODO_CACHE_TTL_MS = TODO_CONFIG.cacheTtlMs;
+
+function getTodoCacheKey(sessionId: string): string {
+  return `${TODO_CACHE_PREFIX}${sessionId}`;
+}
+
+async function loadTodoList(context: ToolContext, sessionId: string): Promise<TodoList | null> {
+  if (context.cache) {
+    const cached = await context.cache.get<TodoList>(getTodoCacheKey(sessionId));
+    if (cached) {
+      todoLists.set(sessionId, cached);
+      return cached;
+    }
+  }
+  return todoLists.get(sessionId) ?? null;
+}
+
+async function persistTodoList(context: ToolContext, todoList: TodoList): Promise<void> {
+  todoLists.set(todoList.sessionId, todoList);
+  if (context.cache) {
+    await context.cache.set(getTodoCacheKey(todoList.sessionId), todoList, TODO_CACHE_TTL_MS);
+  }
+}
+
+function resolveTodoItem(todoList: TodoList, sessionId: string, itemId: string): TodoItem | null {
+  const direct = todoList.items.find((i) => i.id === itemId);
+  if (direct) {
+    return direct;
+  }
+
+  const asIndex = Number(itemId);
+  if (Number.isFinite(asIndex) && asIndex >= 1) {
+    const indexed = todoList.items.find((i) => i.id === `${sessionId}-${Math.floor(asIndex)}`);
+    if (indexed) {
+      return indexed;
+    }
+  }
+
+  const normalized = itemId.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  const descriptionMatches = todoList.items.filter(
+    (i) => i.description.toLowerCase().includes(normalized)
+  );
+  if (descriptionMatches.length === 1) {
+    return descriptionMatches[0]!;
+  }
+
+  return null;
+}
 
 /**
  * Create TODO list with tasks
  */
-export function createTodoCreateTool(_context: ToolContext): Tool {
+export function createTodoCreateTool(context: ToolContext): Tool {
   return {
     definition: {
       type: 'function',
@@ -71,7 +125,7 @@ export function createTodoCreateTool(_context: ToolContext): Tool {
         updatedAt: new Date().toISOString(),
       };
 
-      todoLists.set(sessionId, todoList);
+      await persistTodoList(context, todoList);
 
       const output = [
         `TODO list created for session: ${sessionId}`,
@@ -84,6 +138,10 @@ export function createTodoCreateTool(_context: ToolContext): Tool {
       return {
         success: true,
         output,
+        metadata: {
+          uiHint: 'todo',
+          structured: { todoList },
+        },
       };
     },
   };
@@ -92,7 +150,7 @@ export function createTodoCreateTool(_context: ToolContext): Tool {
 /**
  * Update TODO item status
  */
-export function createTodoUpdateTool(_context: ToolContext): Tool {
+export function createTodoUpdateTool(context: ToolContext): Tool {
   return {
     definition: {
       type: 'function',
@@ -130,22 +188,32 @@ export function createTodoUpdateTool(_context: ToolContext): Tool {
       const status = input.status as TodoItem['status'];
       const notes = input.notes as string | undefined;
 
-      const todoList = todoLists.get(sessionId);
+      const todoList = await loadTodoList(context, sessionId);
 
       if (!todoList) {
-        return {
-          success: false,
-          error: `No TODO list found for session: ${sessionId}`,
-        };
+        return toolError({
+          code: 'TODO_LIST_NOT_FOUND',
+          message: `No TODO list found for session: ${sessionId}`,
+          retryable: true,
+          hint: 'Call todo_create first, then todo_update.',
+          details: { sessionId },
+        });
       }
 
-      const item = todoList.items.find(i => i.id === itemId);
+      const item = resolveTodoItem(todoList, sessionId, itemId);
 
       if (!item) {
-        return {
-          success: false,
-          error: `TODO item not found: ${itemId}`,
-        };
+        return toolError({
+          code: 'TODO_ITEM_NOT_FOUND',
+          message: `TODO item not found: ${itemId}`,
+          retryable: true,
+          hint: 'Use todo_get to list valid item IDs, then retry with exact itemId.',
+          details: {
+            sessionId,
+            itemId,
+            knownIds: todoList.items.map((i) => i.id),
+          },
+        });
       }
 
       item.status = status;
@@ -156,6 +224,7 @@ export function createTodoUpdateTool(_context: ToolContext): Tool {
       }
 
       todoList.updatedAt = new Date().toISOString();
+      await persistTodoList(context, todoList);
 
       const statusIcon =
         status === 'completed'
@@ -166,9 +235,14 @@ export function createTodoUpdateTool(_context: ToolContext): Tool {
               ? '🚫'
               : ' ';
 
+      const updatedList = await loadTodoList(context, sessionId);
       return {
         success: true,
         output: `[${statusIcon}] ${item.description} → ${status}${notes ? `\n  Note: ${notes}` : ''}`,
+        metadata: {
+          uiHint: 'todo',
+          structured: { todoList: updatedList },
+        },
       };
     },
   };
@@ -177,7 +251,7 @@ export function createTodoUpdateTool(_context: ToolContext): Tool {
 /**
  * Get TODO list status
  */
-export function createTodoGetTool(_context: ToolContext): Tool {
+export function createTodoGetTool(context: ToolContext): Tool {
   return {
     definition: {
       type: 'function',
@@ -199,13 +273,16 @@ export function createTodoGetTool(_context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const sessionId = input.sessionId as string;
 
-      const todoList = todoLists.get(sessionId);
+      const todoList = await loadTodoList(context, sessionId);
 
       if (!todoList) {
-        return {
-          success: false,
-          error: `No TODO list found for session: ${sessionId}`,
-        };
+        return toolError({
+          code: 'TODO_LIST_NOT_FOUND',
+          message: `No TODO list found for session: ${sessionId}`,
+          retryable: true,
+          hint: 'Create a TODO list with todo_create before calling todo_get.',
+          details: { sessionId },
+        });
       }
 
       const completed = todoList.items.filter(i => i.status === 'completed')
@@ -231,6 +308,10 @@ export function createTodoGetTool(_context: ToolContext): Tool {
       return {
         success: true,
         output,
+        metadata: {
+          uiHint: 'todo',
+          structured: { todoList },
+        },
       };
     },
   };

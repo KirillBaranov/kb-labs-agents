@@ -1,0 +1,76 @@
+{
+  "id": "plan-1771555434355-6xyoohi",
+  "sessionId": "session-1771555425687-7pvamto",
+  "task": "Коротко опиши, как устроены агенты в KB Labs и почему это полезно",
+  "mode": "plan",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Understand context",
+      "description": "Gather existing documentation or notes about KB Labs agents to ensure accuracy.",
+      "dependencies": [],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-1-1",
+          "action": "Search repository for agent documentation or KB Labs references.",
+          "tool": "fs:search",
+          "args": {},
+          "expectedOutcome": "List of files containing relevant information.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Draft summary",
+      "description": "Write a concise description of how agents work in KB Labs and their usefulness.",
+      "dependencies": [
+        "phase-1"
+      ],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-2-1",
+          "action": "Read identified documentation files for key points.",
+          "tool": "fs:read",
+          "args": {},
+          "expectedOutcome": "Key details about agent architecture and benefits.",
+          "status": "pending"
+        },
+        {
+          "id": "step-2-2",
+          "action": "Draft short explanation in target language (Russian).",
+          "tool": "fs:write",
+          "args": {},
+          "expectedOutcome": "Draft summary file describing agents and value.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-3",
+      "name": "Review and finalize",
+      "description": "Verify accuracy and clarity of summary.",
+      "dependencies": [
+        "phase-2"
+      ],
+      "status": "pending",
+      "steps": [
+        {
+          "id": "step-3-1",
+          "action": "Edit draft for brevity and clarity if needed.",
+          "tool": "fs:edit",
+          "args": {},
+          "expectedOutcome": "Polished final summary ready for use.",
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+  "estimatedDuration": "15 minutes",
+  "complexity": "simple",
+  "createdAt": "2026-02-20T02:43:54.355Z",
+  "updatedAt": "2026-02-20T02:43:54.355Z",
+  "status": "draft"
+}

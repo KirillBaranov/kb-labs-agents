@@ -5,7 +5,7 @@
  */
 
 export { Agent } from './agent.js';
-export { OrchestratorAgent } from './orchestrator.js';
+export * from './constants.js';
 
 // Tracer
 export * from './tracer/index.js';
@@ -24,3 +24,39 @@ export * from './modes/index.js';
 
 // Events - event streaming for UI
 export * from './events/index.js';
+
+// File history - change tracking and rollback
+export * from './history/index.js';
+
+// Execution primitives - state machine and ledger
+export * from './execution/index.js';
+
+// Budget management - iteration budget, quality gate, tier selection
+export * from './budget/index.js';
+
+// Prompt construction
+export * from './prompt/index.js';
+
+// Tool input normalization
+export * from './tool-input/index.js';
+
+// Progress tracking
+export * from './progress/index.js';
+
+// Search signal tracking
+export * from './search-signal/index.js';
+
+// Analytics and run metrics
+export * from './analytics/index.js';
+
+// Reflection engine
+export * from './reflection/index.js';
+
+// Todo sync coordination
+export * from './todo-sync/index.js';
+
+// Task classification
+export * from './task-classifier/index.js';
+
+// Task completion evaluation
+export * from './task-completion/index.js';

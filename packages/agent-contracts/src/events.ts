@@ -24,12 +24,13 @@ export type AgentEventType =
   | 'tool:start'
   | 'tool:end'
   | 'tool:error'
-  // Orchestrator
-  | 'orchestrator:start'
-  | 'orchestrator:answer'  // Synthesized answer for user
-  | 'orchestrator:end'
+  // Sub-agent lifecycle
   | 'subtask:start'
   | 'subtask:end'
+  // Synthesis (forced on last iteration)
+  | 'synthesis:forced'
+  | 'synthesis:start'
+  | 'synthesis:complete'
   // Memory
   | 'memory:read'
   | 'memory:write'
@@ -62,7 +63,7 @@ export interface AgentEventBase {
   /** Unique ID for this agent instance (e.g., "agent-abc123") */
   agentId?: string;
 
-  /** Parent agent ID for child agents spawned by orchestrator */
+  /** Parent agent ID for sub-agents spawned by main agent */
   parentAgentId?: string;
 
   /** For tool events: correlates tool:start → tool:end/tool:error */
@@ -71,8 +72,18 @@ export interface AgentEventBase {
   /** For *:end events: when the operation started (ISO string) */
   startedAt?: string;
 
-  /** Monotonic sequence number for event ordering (assigned by RunManager) */
+  /** Monotonic sequence number within a single run (assigned by RunManager) */
   seq?: number;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Session-level Ordering
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Run ID that produced this event (assigned before persistence) */
+  runId?: string;
+
+  /** Global monotonic sequence across all runs in a session (assigned by SessionManager on persist) */
+  sessionSeq?: number;
 }
 
 /**
@@ -127,6 +138,8 @@ export interface IterationEndEvent extends AgentEventBase {
     iteration: number;
     hadToolCalls: boolean;
     toolCallCount: number;
+    /** Cumulative tokens used across all iterations so far */
+    cumulativeTokens?: number;
   };
 }
 
@@ -290,46 +303,6 @@ export interface ToolEventMetadata {
   uiHint?: 'code' | 'diff' | 'table' | 'json' | 'markdown' | 'plain';
 }
 
-/**
- * Orchestrator events
- */
-export interface OrchestratorStartEvent extends AgentEventBase {
-  type: 'orchestrator:start';
-  data: {
-    task: string;
-    complexity: 'simple' | 'complex';
-  };
-}
-
-export interface OrchestratorAnswerEvent extends AgentEventBase {
-  type: 'orchestrator:answer';
-  data: {
-    /** The synthesized answer/response for the user */
-    answer: string;
-    /** Confidence level (0-1) from verification */
-    confidence?: number;
-    /** Completeness level (0-1) from verification */
-    completeness?: number;
-    /** Gaps in the answer (from verification) */
-    gaps?: string[];
-    /** Unverified mentions (potential hallucinations) */
-    unverifiedMentions?: string[];
-    /** Sources used to generate the answer */
-    sources?: string[];
-  };
-}
-
-export interface OrchestratorEndEvent extends AgentEventBase {
-  type: 'orchestrator:end';
-  data: {
-    success: boolean;
-    subtaskCount: number;
-    completedCount: number;
-    /** Duration in milliseconds */
-    durationMs?: number;
-  };
-}
-
 export interface SubtaskStartEvent extends AgentEventBase {
   type: 'subtask:start';
   data: {
@@ -346,6 +319,37 @@ export interface SubtaskEndEvent extends AgentEventBase {
     subtaskId: string;
     success: boolean;
     summary?: string;
+  };
+}
+
+/**
+ * Synthesis events (forced answer synthesis on last iteration)
+ */
+export interface SynthesisForcedEvent extends AgentEventBase {
+  type: 'synthesis:forced';
+  data: {
+    iteration: number;
+    reason: string;
+    messagesCount: number;
+  };
+}
+
+export interface SynthesisStartEvent extends AgentEventBase {
+  type: 'synthesis:start';
+  data: {
+    iteration: number;
+    promptLength: number;
+  };
+}
+
+export interface SynthesisCompleteEvent extends AgentEventBase {
+  type: 'synthesis:complete';
+  data: {
+    iteration: number;
+    contentLength: number;
+    hasContent: boolean;
+    tokensUsed: number;
+    previewFirst200: string;
   };
 }
 
@@ -427,8 +431,9 @@ export interface ProgressUpdateEvent extends AgentEventBase {
 export interface StatusChangeEvent extends AgentEventBase {
   type: 'status:change';
   data: {
-    status: 'idle' | 'thinking' | 'executing' | 'waiting' | 'done' | 'error';
+    status: 'idle' | 'thinking' | 'executing' | 'waiting' | 'done' | 'error' | 'analyzing' | 'planning' | 'researching' | 'finalizing';
     message?: string;
+    toolName?: string; // For 'executing' status with specific tool
   };
 }
 
@@ -447,11 +452,11 @@ export type AgentEvent =
   | ToolStartEvent
   | ToolEndEvent
   | ToolErrorEvent
-  | OrchestratorStartEvent
-  | OrchestratorAnswerEvent
-  | OrchestratorEndEvent
   | SubtaskStartEvent
   | SubtaskEndEvent
+  | SynthesisForcedEvent
+  | SynthesisStartEvent
+  | SynthesisCompleteEvent
   | MemoryReadEvent
   | MemoryWriteEvent
   | VerificationStartEvent

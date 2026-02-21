@@ -1,0 +1,32 @@
+{
+  "version": "1.0.0",
+  "taskId": "task-8",
+  "createdAt": "2026-02-14T16:59:13.612Z",
+  "finalizedAt": "2026-02-14T16:59:13.612Z",
+  "summary": {
+    "totalEvents": 1,
+    "iterations": 1,
+    "status": "success",
+    "eventCounts": {
+      "iteration:detail": 1
+    }
+  },
+  "timing": {
+    "startedAt": "2026-02-14T16:59:13.612Z",
+    "completedAt": "2026-02-14T16:59:13.612Z",
+    "totalDurationMs": 0
+  },
+  "cost": {
+    "totalCost": 0,
+    "currency": "USD"
+  },
+  "errors": 0,
+  "iterations": [
+    {
+      "iteration": 1,
+      "eventCount": 1,
+      "llmCalls": 0,
+      "toolCalls": 0
+    }
+  ]
+}

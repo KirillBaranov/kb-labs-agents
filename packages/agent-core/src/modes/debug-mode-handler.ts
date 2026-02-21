@@ -35,7 +35,7 @@ export class DebugModeHandler implements ModeHandler {
         enhancedTask += '```json\n';
         enhancedTask += JSON.stringify(trace, null, 2);
         enhancedTask += '\n```\n\n';
-      } catch (error) {
+      } catch {
         enhancedTask += `⚠️ Failed to load trace file: ${traceFile}\n\n`;
       }
     }

@@ -64,7 +64,6 @@ const symbols = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 interface RenderState {
-  orchestratorActive: boolean;
   currentSubtask: { id: string; index: number; total: number } | null;
   agentActive: boolean;
   indentLevel: number;
@@ -120,93 +119,17 @@ export function createEventRenderer(options: {
   const { verbose = true, showToolOutput = true, showLLMContent = false } = options;
 
   const state: RenderState = {
-    orchestratorActive: false,
     currentSubtask: null,
     agentActive: false,
     indentLevel: 0,
   };
 
   return (event: AgentEvent) => {
-    const prefix = indent(state.indentLevel);
+    const _prefix = indent(state.indentLevel);
 
     switch (event.type) {
       // ═══════════════════════════════════════════════════════════════════
-      // ORCHESTRATOR LEVEL (top-level container)
-      // ═══════════════════════════════════════════════════════════════════
-      case 'orchestrator:start': {
-        state.orchestratorActive = true;
-        state.indentLevel = 0;
-
-        console.log();
-        console.log(renderBoxTop('ORCHESTRATOR', color.accent));
-        console.log(renderBoxLine(
-          `Task: ${color.bold(event.data.task.slice(0, 50))}${event.data.task.length > 50 ? '...' : ''}`,
-          color.accent
-        ));
-        console.log(renderBoxLine(
-          `Complexity: ${color.dim(event.data.complexity)}`,
-          color.accent
-        ));
-        console.log(color.accent(box.vertical));
-        break;
-      }
-
-      case 'orchestrator:end': {
-        console.log(color.accent(box.vertical));
-
-        const statusLine = event.data.success
-          ? `${symbols.success} Completed: ${event.data.completedCount}/${event.data.subtaskCount} subtasks`
-          : `${symbols.error} Failed: ${event.data.completedCount}/${event.data.subtaskCount} subtasks`;
-
-        const duration = event.data.durationMs ? ` ${color.dim(`(${formatDuration(event.data.durationMs)})`)}` : '';
-        console.log(renderBoxLine(statusLine + duration, color.accent));
-
-        // Show final result/answer from orchestrator
-        if (event.data.summary) {
-          console.log(color.accent(box.vertical));
-          console.log(renderBoxLine(color.bold('📋 Final Answer:'), color.accent));
-
-          // Word-wrap and display the summary
-          const maxChars = showLLMContent ? 2000 : 1000;
-          const summaryText = event.data.summary.slice(0, maxChars);
-          const summaryLines = summaryText.split('\n').slice(0, 30);
-
-          for (const line of summaryLines) {
-            if (line.trim()) {
-              // Word wrap long lines
-              const words = line.split(' ');
-              let currentLine = '';
-              for (const word of words) {
-                if (currentLine.length + word.length > 70) {
-                  if (currentLine) {
-                    console.log(renderBoxLine(`   ${currentLine}`, color.accent));
-                  }
-                  currentLine = word;
-                } else {
-                  currentLine = currentLine ? `${currentLine} ${word}` : word;
-                }
-              }
-              if (currentLine) {
-                console.log(renderBoxLine(`   ${currentLine}`, color.accent));
-              }
-            }
-          }
-
-          if (event.data.summary.length > maxChars) {
-            console.log(renderBoxLine(color.dim('   ... (truncated)'), color.accent));
-          }
-        }
-
-        console.log(renderBoxBottom(color.accent));
-        console.log();
-
-        state.orchestratorActive = false;
-        state.indentLevel = 0;
-        break;
-      }
-
-      // ═══════════════════════════════════════════════════════════════════
-      // SUBTASK LEVEL (nested under orchestrator)
+      // SUBTASK LEVEL
       // ═══════════════════════════════════════════════════════════════════
       case 'subtask:start': {
         state.currentSubtask = {

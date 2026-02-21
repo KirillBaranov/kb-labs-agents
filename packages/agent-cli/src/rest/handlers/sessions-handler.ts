@@ -9,8 +9,6 @@ import type {
   ListSessionsResponse,
   GetSessionRequest,
   GetSessionResponse,
-  GetSessionEventsRequest,
-  GetSessionEventsResponse,
   CreateSessionRequest,
   CreateSessionResponse,
 } from '@kb-labs/agent-contracts';
@@ -63,42 +61,6 @@ export const getSessionHandler = defineHandler({
     }
 
     return { session };
-  },
-});
-
-/**
- * GET /sessions/:sessionId/events - Get session events
- */
-export const getSessionEventsHandler = defineHandler({
-  async execute(
-    ctx: PluginContextV3,
-    input: RestInput<GetSessionEventsRequest>
-  ): Promise<GetSessionEventsResponse> {
-    const params = input.params as Record<string, string> | undefined;
-    const sessionId = params?.sessionId;
-    const query = input.query as Partial<GetSessionEventsRequest> | undefined;
-
-    if (!sessionId) {
-      throw new Error('Session ID is required');
-    }
-
-    const sessionManager = new SessionManager(ctx.cwd);
-
-    // Verify session exists
-    const session = await sessionManager.loadSession(sessionId);
-    if (!session) {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
-
-    const events = await sessionManager.getSessionEvents(sessionId, {
-      limit: query?.limit ?? 100,
-      offset: query?.offset ?? 0,
-      types: query?.types,
-    });
-
-    const total = await sessionManager.countEvents(sessionId, query?.types);
-
-    return { events, total };
   },
 });
 

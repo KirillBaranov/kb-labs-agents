@@ -1,0 +1,33 @@
+{
+  "name": "@kb-labs/agent-task-runner",
+  "version": "0.1.0",
+  "description": "Universal task runner for end-to-end task execution",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@kb-labs/agent-core": "workspace:*",
+    "@kb-labs/agent-contracts": "workspace:*",
+    "@kb-labs/agent-tools": "workspace:*",
+    "@kb-labs/sdk": "link:../../../kb-labs-sdk/packages/sdk"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.2",
+    "rimraf": "^6.0.1"
+  }
+}

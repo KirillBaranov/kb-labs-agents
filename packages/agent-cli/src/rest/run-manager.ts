@@ -1,12 +1,13 @@
 /**
  * Run Manager - tracks active agent runs for REST/WS API
  *
- * Uses platform cache for persistence and in-memory Map for active orchestrators.
- * Cache stores serializable run state, Map stores live orchestrator references.
+ * Uses platform cache for persistence and in-memory Map for active agents.
+ * Cache stores serializable run state, Map stores live agent references.
  * Uses platform eventBus for cross-process event broadcasting.
  */
 
-import type { OrchestratorAgent } from '@kb-labs/agent-core';
+import type { Agent } from '@kb-labs/agent-core';
+import type { SessionManager } from '@kb-labs/agent-core';
 import type { AgentEvent, AgentEventCallback } from '@kb-labs/agent-contracts';
 import { useCache, usePlatform } from '@kb-labs/sdk';
 
@@ -34,21 +35,30 @@ export interface RunState {
 }
 
 /**
- * Active run with live orchestrator (in-memory only)
+ * Active run with live agent (in-memory only)
  */
 export interface ActiveRun extends RunState {
-  orchestrator: OrchestratorAgent;
+  agent: Agent;
+  sessionManager: SessionManager;
   listeners: Set<AgentEventCallback>;
   /** Monotonic sequence counter for event ordering */
   lastSeq: number;
+  /** Replay buffer: all events emitted since run start (for late WS connections) */
+  eventBuffer: AgentEvent[];
 }
 
 /**
  * Run Manager implementation
  */
 class RunManagerImpl {
-  /** Live orchestrators and listeners (not cacheable) */
+  /** Live agents and listeners (not cacheable) */
   private activeRuns: Map<string, ActiveRun> = new Map();
+
+  /** Session-level listeners: sessionId → Set<callback> — receive events from ALL runs in session */
+  private sessionListeners: Map<string, Set<AgentEventCallback>> = new Map();
+
+  /** sessionId per runId — set when run is registered */
+  private runSessionMap: Map<string, string> = new Map();
 
   /**
    * Generate unique run ID
@@ -63,7 +73,9 @@ class RunManagerImpl {
   async register(
     runId: string,
     task: string,
-    orchestrator: OrchestratorAgent
+    agent: Agent,
+    sessionManager: SessionManager,
+    sessionId?: string
   ): Promise<ActiveRun> {
     const now = new Date().toISOString();
 
@@ -71,14 +83,21 @@ class RunManagerImpl {
       runId,
       task,
       status: 'pending',
-      orchestrator,
+      agent,
+      sessionManager,
       startedAt: now,
       listeners: new Set(),
       lastSeq: 0,
+      eventBuffer: [],
     };
 
-    // Store in memory (for live orchestrator)
+    // Store in memory (for live agent)
     this.activeRuns.set(runId, run);
+
+    // Track sessionId → runId mapping for session-level listeners
+    if (sessionId) {
+      this.runSessionMap.set(runId, sessionId);
+    }
 
     // Store serializable state in cache
     await this.saveToCache(run);
@@ -231,7 +250,10 @@ class RunManagerImpl {
     let seqEvent = event;
     if (run) {
       run.lastSeq++;
-      seqEvent = { ...event, seq: run.lastSeq };
+      seqEvent = { ...event, seq: run.lastSeq, runId };
+
+      // Store in replay buffer (for late WS connections)
+      run.eventBuffer.push(seqEvent);
     }
 
     // Publish to eventBus for cross-process delivery
@@ -253,7 +275,60 @@ class RunManagerImpl {
       }
     }
 
+    // Notify session-level listeners (persistent connections)
+    const sessionId = this.runSessionMap.get(runId);
+    if (sessionId) {
+      const sListeners = this.sessionListeners.get(sessionId);
+      if (sListeners) {
+        for (const listener of sListeners) {
+          try {
+            listener(seqEvent);
+          } catch {
+            // Ignore listener errors
+          }
+        }
+      }
+    }
+
     return seqEvent;
+  }
+
+  /**
+   * Add a session-level listener — receives events from ALL runs in this session.
+   */
+  addSessionListener(sessionId: string, callback: AgentEventCallback): void {
+    if (!this.sessionListeners.has(sessionId)) {
+      this.sessionListeners.set(sessionId, new Set());
+    }
+    this.sessionListeners.get(sessionId)!.add(callback);
+  }
+
+  /**
+   * Remove a session-level listener.
+   */
+  removeSessionListener(sessionId: string, callback: AgentEventCallback): void {
+    const listeners = this.sessionListeners.get(sessionId);
+    if (listeners) {
+      listeners.delete(callback);
+      if (listeners.size === 0) {
+        this.sessionListeners.delete(sessionId);
+      }
+    }
+  }
+
+  /**
+   * Get replay buffer for a run (all events emitted since start).
+   * Used by WS handler to send missed events on late connection.
+   * Optionally filter by afterSeq to only get events the client hasn't seen.
+   */
+  getEventBuffer(runId: string, afterSeq?: number): AgentEvent[] {
+    const run = this.activeRuns.get(runId);
+    if (!run) {return [];}
+
+    if (afterSeq != null) {
+      return run.eventBuffer.filter((e) => e.seq != null && e.seq > afterSeq);
+    }
+    return [...run.eventBuffer];
   }
 
   /**
@@ -266,6 +341,19 @@ class RunManagerImpl {
       status: r.status,
       startedAt: r.startedAt,
     }));
+  }
+
+  /**
+   * Request graceful stop of a running agent (and its child agents via propagated AbortSignal).
+   * Agent finishes its current tool call then exits at the next iteration boundary.
+   */
+  requestStop(runId: string): boolean {
+    const run = this.activeRuns.get(runId);
+    if (!run || run.status !== 'running') {
+      return false;
+    }
+    run.agent.requestStop();
+    return true;
   }
 
   /**
@@ -282,6 +370,13 @@ class RunManagerImpl {
 }
 
 /**
- * Singleton instance
+ * Singleton instance — stored on globalThis so all bundled modules share one instance.
+ * When tsup compiles multiple entry points, each gets its own module scope,
+ * so a plain `export const RunManager = new RunManagerImpl()` creates separate instances.
+ * Using globalThis ensures run-handler.js and session-stream-handler.js share one RunManager.
  */
-export const RunManager = new RunManagerImpl();
+const GLOBAL_KEY = '__kb_agent_run_manager__';
+if (!(globalThis as Record<string, unknown>)[GLOBAL_KEY]) {
+  (globalThis as Record<string, unknown>)[GLOBAL_KEY] = new RunManagerImpl();
+}
+export const RunManager = (globalThis as Record<string, unknown>)[GLOBAL_KEY] as RunManagerImpl;

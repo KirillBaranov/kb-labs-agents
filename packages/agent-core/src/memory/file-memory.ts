@@ -113,23 +113,40 @@ export class FileMemory implements AgentMemory {
 
     const indexKey = this.getIndexKey();
     const now = Date.now();
-    const oneHourAgo = now - 3600000; // 1 hour
 
-    // Get recent memory IDs from sorted set
-    const memoryIds = await cache.zrangebyscore(indexKey, oneHourAgo, now);
+    // Get all indexed IDs up to now. Hard 1-hour window caused context loss on follow-ups.
+    const memoryIds = await cache.zrangebyscore(indexKey, 0, now);
 
-    // Get actual memories
+    // Resolve actual memories from cache (most recent first)
     const memories: MemoryEntry[] = [];
-    for (const id of memoryIds.slice(-limit)) {
+    for (const id of [...memoryIds].reverse()) {
       const key = this.getMemoryKey(id);
-      // eslint-disable-next-line no-await-in-loop -- Sequential cache retrieval: must load memories in order
       const memory = await cache.get<MemoryEntry>(key);
       if (memory) {
         memories.push(memory);
       }
+      if (memories.length >= limit) {
+        break;
+      }
     }
 
-    return memories.reverse(); // Most recent first
+    // Backfill from file storage if cache misses happened (e.g., summarized/evicted entries)
+    if (memories.length < limit) {
+      const fromFiles = await this.loadFromFile(limit * 3);
+      const seen = new Set(memories.map((m) => m.id));
+      for (const memory of fromFiles) {
+        if (!memory.id || seen.has(memory.id)) {
+          continue;
+        }
+        memories.push(memory);
+        seen.add(memory.id);
+        if (memories.length >= limit) {
+          break;
+        }
+      }
+    }
+
+    return memories.slice(0, limit);
   }
 
   /**
@@ -257,7 +274,7 @@ Keep the summary under 500 words.`;
     if (cache) {
       for (const memory of toSummarize) {
         if (memory.id) {
-          // eslint-disable-next-line no-await-in-loop -- Sequential cache deletion required: must remove each memory in order
+           
           await cache.delete(this.getMemoryKey(memory.id));
         }
       }
@@ -586,7 +603,7 @@ ${lastAnswer.answer}
   } | null = null;
 
   /**
-   * Save the orchestrator's last answer (NEVER summarized)
+   * Save the agent's last answer (NEVER summarized)
    * Stored separately in last-answer.json - always available in full
    */
   async saveLastAnswer(
@@ -624,7 +641,7 @@ ${lastAnswer.answer}
   }
 
   /**
-   * Get the last orchestrator answer (full, unsummarized)
+   * Get the last agent answer (full, unsummarized)
    */
   async getLastAnswer(): Promise<{
     answer: string;
@@ -727,7 +744,7 @@ ${lastAnswer.answer}
       const filePath = path.join(memoryDir, fileName);
 
       await fs.writeFile(filePath, JSON.stringify(memory, null, 2), 'utf-8');
-    } catch (error) {
+    } catch {
       // Don't throw - allow agent to continue even if memory persistence fails
     }
   }
@@ -755,7 +772,7 @@ ${lastAnswer.answer}
 
       const memories: MemoryEntry[] = [];
       for (const file of memoryFiles) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential file reads: must read each memory file in order
+         
         const content = await fs.readFile(path.join(memoryDir, file), 'utf-8');
         memories.push(JSON.parse(content));
       }
@@ -778,7 +795,7 @@ ${lastAnswer.answer}
 
       const summaries: MemorySummary[] = [];
       for (const file of summaryFiles) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential file reads: must read each summary file in order
+         
         const content = await fs.readFile(path.join(memoryDir, file), 'utf-8');
         summaries.push(JSON.parse(content));
       }
@@ -807,7 +824,7 @@ ${lastAnswer.answer}
       // Read all session directories
       const entries = await fs.readdir(memoryRoot, { withFileTypes: true });
       const sessionDirs = entries
-        .filter((e) => e.isDirectory())
+        .filter((e) => e.isDirectory() && e.name.startsWith('session-'))
         .map((e) => path.join(memoryRoot, e.name));
 
       // If we're under the limit, nothing to do
@@ -828,9 +845,10 @@ ${lastAnswer.answer}
       // Delete old directories (keep only maxSessionDirs newest)
       const dirsToDelete = dirsWithStats.slice(this.maxSessionDirs);
 
-      for (const dir of dirsToDelete) {
-        await fs.rm(dir.path, { recursive: true, force: true });
-      }
+      // Delete directories in parallel for better performance
+      await Promise.allSettled(
+        dirsToDelete.map((dir) => fs.rm(dir.path, { recursive: true, force: true }))
+      );
 
       if (dirsToDelete.length > 0) {
         console.log(

@@ -143,14 +143,20 @@ export async function requestVerification(
   const prompt = buildVerificationPrompt(input);
 
   try {
-    const response = await llm.chatWithTools(
-      [{ role: 'user', content: prompt }],
-      {
-        tools: [VERIFICATION_TOOL],
-        toolChoice: { type: 'function', function: { name: 'submit_verification' } },
-        temperature: 0.1, // Low temperature for consistent verification
-      },
-    );
+    // Add 60s timeout to prevent verification from hanging indefinitely
+    const response = await Promise.race([
+      llm.chatWithTools(
+        [{ role: 'user', content: prompt }],
+        {
+          tools: [VERIFICATION_TOOL],
+          toolChoice: { type: 'function', function: { name: 'submit_verification' } },
+          temperature: 0.1, // Low temperature for consistent verification
+        },
+      ),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Verification timeout after 60s')), 60000);
+      }),
+    ]) as Awaited<ReturnType<typeof llm.chatWithTools>>;
 
     const toolCall = response.toolCalls?.[0];
     if (toolCall && toolCall.name === 'submit_verification') {
@@ -196,7 +202,7 @@ export function toVerificationResult(output: VerificationOutput): VerificationRe
       code = 'UNVERIFIED_FILE';
     } else if (mention.startsWith('@') || mention.includes('-')) {
       code = 'UNVERIFIED_PACKAGE';
-    } else if (mention[0] === mention[0].toUpperCase()) {
+    } else if (mention[0] && mention[0] === mention[0].toUpperCase()) {
       code = 'UNVERIFIED_CLASS';
     } else {
       code = 'UNVERIFIED_FUNCTION';

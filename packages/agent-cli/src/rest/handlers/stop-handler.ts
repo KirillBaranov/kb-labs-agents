@@ -38,10 +38,10 @@ export default defineHandler({
       };
     }
 
-    // Request stop via orchestrator
-    run.orchestrator.requestStop();
+    // Signal the agent to stop after its current tool call finishes
+    RunManager.requestStop(runId);
 
-    // Update status
+    // Update status optimistically — agent:end event will also update it async
     await RunManager.updateStatus(runId, 'stopped', {
       completedAt: new Date().toISOString(),
       durationMs: Date.now() - new Date(run.startedAt).getTime(),

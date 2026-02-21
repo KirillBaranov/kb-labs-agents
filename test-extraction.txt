@@ -1,0 +1,8 @@
+Создай минимальную структуру для kb-labs-demo:
+
+1. Создать в kb-labs-demo/
+2. Требования: создать packages/demo-core/package.json
+3. NEVER modify existing monorepos
+4. DO NOT touch kb-labs-* directories
+
+Создай директорию и один package.json.

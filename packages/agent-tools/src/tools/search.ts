@@ -3,8 +3,78 @@
  */
 
 import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
+import { toolError } from './tool-error.js';
+import { SEARCH_CONFIG, ALL_SOURCE_EXTENSIONS, toRgIncludes, toFindNames } from '../config.js';
+import { normalizeOffsetLimit as _normalizeOffsetLimit } from '../utils.js';
+
+/** Default directories to exclude from search (sourced from centralized config) */
+const DEFAULT_EXCLUDES = SEARCH_CONFIG.defaultExcludes;
+
+/**
+ * Build find exclude flags from exclude list
+ */
+function buildFindExcludes(excludes: readonly string[]): string {
+  return excludes.map(d => `! -path "*/${d}/*"`).join(' ');
+}
+
+/**
+ * Build grep exclude-dir flags from exclude list
+ */
+function buildGrepExcludes(excludes: readonly string[]): string {
+  return excludes.map(d => `--exclude-dir=${d}`).join(' ');
+}
+
+function toSingleQuoted(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+const SEARCH_TIMEOUT_MS = SEARCH_CONFIG.timeoutMs;
+const SEARCH_MAX_BUFFER = SEARCH_CONFIG.maxBuffer;
+const DEFAULT_RESULT_LIMIT = SEARCH_CONFIG.defaultResultLimit;
+const MAX_RESULT_LIMIT = SEARCH_CONFIG.maxResultLimit;
+
+/**
+ * Check if directory exists and return error message if not.
+ * Lists available top-level directories as a hint.
+ */
+function validateDirectory(workingDir: string, directory: string): string | null {
+  const fullPath = path.resolve(workingDir, directory);
+  if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
+    return null;
+  }
+
+  // List available directories as hint
+  let hint = '';
+  try {
+    const entries = fs.readdirSync(workingDir, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules')
+      .map(e => e.name)
+      .sort();
+    if (dirs.length > 0) {
+      hint = `\nAvailable directories: ${dirs.slice(0, 15).join(', ')}${dirs.length > 15 ? ` ... (${dirs.length} total)` : ''}`;
+    }
+  } catch { /* ignore */ }
+
+  return `Directory "${directory}" not found (resolved to ${fullPath}). Use "." to search from project root.${hint}`;
+}
+
+function normalizeOffsetLimit(input: Record<string, unknown>): { offset: number; limit: number } {
+  return _normalizeOffsetLimit(input, { defaultLimit: DEFAULT_RESULT_LIMIT, maxLimit: MAX_RESULT_LIMIT });
+}
+
+function paginate<T>(items: T[], offset: number, limit: number): { page: T[]; hasMore: boolean; nextOffset: number | null } {
+  const page = items.slice(offset, offset + limit);
+  const hasMore = offset + limit < items.length;
+  return {
+    page,
+    hasMore,
+    nextOffset: hasMore ? offset + limit : null,
+  };
+}
 
 /**
  * Search for files by pattern (glob)
@@ -15,17 +85,30 @@ export function createGlobSearchTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'glob_search',
-        description: 'Search for files matching a pattern using glob syntax. Use to find files by name or extension. Returns up to 50 results. IMPORTANT: Pattern matches filename only - use exact filename like "user.ts" not just "user".',
+        description: 'Find files by name pattern (glob). Pattern matches filename only — use "*.ts" or "user.ts", not bare words. Returns up to 50 results.',
         parameters: {
           type: 'object',
           properties: {
             pattern: {
               type: 'string',
-              description: 'Glob pattern to search for. MUST include file extension for exact match (e.g., "user.ts", "*.ts", "*.tsx"). Pattern "user" will NOT find "user.ts" - use "user.ts" or "*user*.ts" instead.',
+              description: 'Glob pattern (e.g., "*.ts", "user.ts", "*user*.ts")',
             },
             directory: {
               type: 'string',
               description: 'Directory to search in (default: ".")',
+            },
+            exclude: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Directories to exclude (default: node_modules, dist, .git, build, .next, .kb, .pnpm, coverage). Override to search in excluded dirs.',
+            },
+            offset: {
+              type: 'number',
+              description: 'Result offset for pagination (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Max results per page (default: ${DEFAULT_RESULT_LIMIT}, max: ${MAX_RESULT_LIMIT})`,
             },
           },
           required: ['pattern'],
@@ -35,24 +118,25 @@ export function createGlobSearchTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const pattern = input.pattern as string;
       const directory = (input.directory as string) || '.';
+      const excludes = (input.exclude as string[] | undefined) || DEFAULT_EXCLUDES;
+      const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
 
-        // Build find command to search for pattern
-        // Exclude common directories
-        const cmd = `find "${fullPath}" -type f -name "${pattern}" \
-          ! -path "*/node_modules/*" \
-          ! -path "*/.git/*" \
-          ! -path "*/dist/*" \
-          ! -path "*/build/*" \
-          ! -path "*/.next/*" \
-          | head -50`;
+        const dirError = validateDirectory(context.workingDir, directory);
+        if (dirError) {
+          return { success: true, output: dirError };
+        }
+
+        const windowSize = Math.min(2000, Math.max(500, offset + limit));
+        const cmd = `find "${fullPath}" -type f -iname "${pattern}" ${buildFindExcludes(excludes)} | head -${windowSize}`;
 
         const output = execSync(cmd, {
           cwd: context.workingDir,
           encoding: 'utf-8',
-          maxBuffer: 1024 * 1024, // 1MB
+          maxBuffer: SEARCH_MAX_BUFFER,
+          timeout: SEARCH_TIMEOUT_MS,
         });
 
         const files = output
@@ -64,25 +148,56 @@ export function createGlobSearchTool(context: ToolContext): Tool {
         if (files.length === 0) {
           return {
             success: true,
-            output: `No files found matching pattern: ${pattern}`,
+            output: `No files found matching pattern: ${pattern} in ${directory === '.' ? 'project root' : directory}. Note: glob_search matches filenames only. To search file contents, use grep_search. To find class/function definitions, use find_definition.`,
           };
         }
 
+        const page = paginate(files, offset, limit);
         const result = [
-          `Found ${files.length} file(s) matching "${pattern}":`,
+          `Found ${files.length} file(s) matching "${pattern}" (showing ${page.page.length}, offset=${offset}, limit=${limit}):`,
           '',
-          ...files.map(f => `  ${f}`),
+          ...page.page.map(f => `  ${f}`),
+          page.hasMore ? '' : '',
+          page.hasMore ? `Next page: glob_search(pattern="${pattern}", directory="${directory}", offset=${page.nextOffset}, limit=${limit})` : '',
         ].join('\n');
 
         return {
           success: true,
           output: result,
+          metadata: {
+            totalMatches: files.length,
+            offset,
+            limit,
+            hasMore: page.hasMore,
+            nextOffset: page.nextOffset,
+          },
         };
       } catch (error) {
-        return {
-          success: false,
-          error: `Glob search failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        if (error instanceof Error && 'killed' in error && error.killed) {
+          return toolError({
+            code: 'SEARCH_TIMEOUT',
+            message: `Glob search timed out after ${SEARCH_TIMEOUT_MS / 1000}s.`,
+            retryable: true,
+            hint: 'Narrow directory/pattern or lower limit.',
+            details: { directory, pattern, timeoutMs: SEARCH_TIMEOUT_MS },
+          });
+        }
+        if ((error as { code?: string }).code === 'ENOBUFS') {
+          return toolError({
+            code: 'SEARCH_BUFFER_OVERFLOW',
+            message: 'Search output exceeded buffer.',
+            retryable: true,
+            hint: 'Narrow directory/pattern or reduce limit.',
+            details: { directory, pattern, offset, limit },
+          });
+        }
+        return toolError({
+          code: 'SEARCH_FAILED',
+          message: `Glob search failed: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          hint: 'Check pattern syntax and directory.',
+          details: { directory, pattern },
+        });
       }
     },
   };
@@ -97,7 +212,7 @@ export function createGrepSearchTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'grep_search',
-        description: 'Search for text patterns in files using grep. Returns file paths and line numbers. Use to find where specific code or text appears. Returns up to 100 matches.',
+        description: 'Search for exact text/regex in files. Returns file paths, line numbers, and matching lines. Up to 100 matches.',
         parameters: {
           type: 'object',
           properties: {
@@ -113,6 +228,24 @@ export function createGrepSearchTool(context: ToolContext): Tool {
               type: 'string',
               description: 'Filter by file pattern (e.g., "*.ts")',
             },
+            exclude: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Directories to exclude (default: node_modules, dist, .git, build, .next, .kb, .pnpm, coverage). Override to search in excluded dirs.',
+            },
+            mode: {
+              type: 'string',
+              enum: ['auto', 'regex', 'literal'],
+              description: 'Search mode: auto (default), regex, or literal',
+            },
+            offset: {
+              type: 'number',
+              description: 'Result offset for pagination (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Max matches per page (default: ${DEFAULT_RESULT_LIMIT}, max: ${MAX_RESULT_LIMIT})`,
+            },
           },
           required: ['pattern'],
         },
@@ -122,44 +255,75 @@ export function createGrepSearchTool(context: ToolContext): Tool {
       const pattern = input.pattern as string;
       const directory = (input.directory as string) || '.';
       const filePattern = input.filePattern as string | undefined;
+      const excludes = (input.exclude as string[] | undefined) || DEFAULT_EXCLUDES;
+      const mode = ((input.mode as string) || 'auto').toLowerCase();
+      const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
 
-        // Build grep command
-        let cmd = `grep -rn "${pattern}" "${fullPath}" \
-          --exclude-dir=node_modules \
-          --exclude-dir=.git \
-          --exclude-dir=dist \
-          --exclude-dir=build \
-          --exclude-dir=.next`;
-
-        if (filePattern) {
-          cmd += ` --include="${filePattern}"`;
+        const dirError = validateDirectory(context.workingDir, directory);
+        if (dirError) {
+          return { success: true, output: dirError };
         }
 
-        cmd += ' | head -100';
+        const windowSize = Math.min(2000, Math.max(500, offset + limit));
+        const regexCmd = `grep -rIn ${toSingleQuoted(pattern)} "${fullPath}" ${buildGrepExcludes(excludes)}${filePattern ? ` --include="${filePattern}"` : ''}`;
+        const literalCmd = `grep -rIFn ${toSingleQuoted(pattern)} "${fullPath}" ${buildGrepExcludes(excludes)}${filePattern ? ` --include="${filePattern}"` : ''}`;
+        let cmd = mode === 'literal' ? literalCmd : regexCmd;
+        cmd += ` | head -${windowSize}`;
 
-        const output = execSync(cmd, {
-          cwd: context.workingDir,
-          encoding: 'utf-8',
-          maxBuffer: 1024 * 1024, // 1MB
-        });
+        let output = '';
+        let usedLiteralFallback = false;
+
+        try {
+          output = execSync(cmd, {
+            cwd: context.workingDir,
+            encoding: 'utf-8',
+            maxBuffer: SEARCH_MAX_BUFFER,
+            timeout: SEARCH_TIMEOUT_MS,
+          });
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          const stderrRaw = (error as { stderr?: string | Buffer }).stderr;
+          const stderr = typeof stderrRaw === 'string'
+            ? stderrRaw
+            : stderrRaw instanceof Buffer
+              ? stderrRaw.toString('utf-8')
+              : '';
+          const looksLikeInvalidRegex = status === 2
+            && /(unbalanced|parentheses|invalid regular expression|regular expression)/i.test(stderr);
+
+          if (!looksLikeInvalidRegex) {
+            throw error;
+          }
+
+          usedLiteralFallback = true;
+          if (mode === 'regex') {
+            throw error;
+          }
+          output = execSync(`${literalCmd} | head -${windowSize}`, {
+            cwd: context.workingDir,
+            encoding: 'utf-8',
+            maxBuffer: SEARCH_MAX_BUFFER,
+            timeout: SEARCH_TIMEOUT_MS,
+          });
+        }
 
         const lines = output.trim().split('\n').filter(Boolean);
 
         if (lines.length === 0) {
           return {
             success: true,
-            output: `No matches found for pattern: ${pattern}`,
+            output: `No matches found for "${pattern}" in ${directory === '.' ? 'project root' : directory}.${filePattern ? '' : ' Try adding filePattern (e.g. "*.ts") to narrow the search.'}`,
           };
         }
 
+        const page = paginate(lines, offset, limit);
         const result = [
-          `Found ${lines.length} match(es) for "${pattern}":`,
+          `Found ${lines.length} match(es) for "${pattern}"${usedLiteralFallback ? ' (literal fallback)' : ''} (showing ${page.page.length}, offset=${offset}, limit=${limit}):`,
           '',
-          ...lines.map(line => {
-            // Parse grep output: /path/to/file:linenum:content
+          ...page.page.map(line => {
             const match = line.match(/^(.+?):(\d+):(.+)$/);
             if (match) {
               const [, filePath, lineNum, content] = match;
@@ -168,25 +332,57 @@ export function createGrepSearchTool(context: ToolContext): Tool {
             }
             return `  ${line}`;
           }),
+          page.hasMore ? '' : '',
+          page.hasMore ? `Next page: grep_search(pattern="${pattern}", directory="${directory}", offset=${page.nextOffset}, limit=${limit})` : '',
         ].join('\n');
 
         return {
           success: true,
           output: result,
+          metadata: {
+            totalMatches: lines.length,
+            offset,
+            limit,
+            hasMore: page.hasMore,
+            nextOffset: page.nextOffset,
+            modeUsed: usedLiteralFallback ? 'literal' : mode === 'auto' ? 'regex' : mode,
+          },
         };
       } catch (error) {
         // grep returns exit code 1 when no matches found
-        if (error instanceof Error && 'status' in error && error.status === 1) {
+        if (error instanceof Error && 'status' in error && (error as any).status === 1) {
           return {
             success: true,
-            output: `No matches found for pattern: ${pattern}`,
+            output: `No matches found for "${pattern}" in ${directory === '.' ? 'project root' : directory}.${filePattern ? '' : ' Try adding filePattern (e.g. "*.ts") to narrow the search.'}`,
           };
         }
 
-        return {
-          success: false,
-          error: `Grep search failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        if (error instanceof Error && 'killed' in error && (error as any).killed) {
+          return toolError({
+            code: 'SEARCH_TIMEOUT',
+            message: `Grep search timed out after ${SEARCH_TIMEOUT_MS / 1000}s.`,
+            retryable: true,
+            hint: 'Narrow directory, add filePattern, or lower limit.',
+            details: { directory, pattern, timeoutMs: SEARCH_TIMEOUT_MS },
+          });
+        }
+        if ((error as { code?: string }).code === 'ENOBUFS') {
+          return toolError({
+            code: 'SEARCH_BUFFER_OVERFLOW',
+            message: 'Search output exceeded buffer.',
+            retryable: true,
+            hint: 'Narrow directory, add filePattern, or reduce limit.',
+            details: { directory, pattern, filePattern, offset, limit, mode },
+          });
+        }
+
+        return toolError({
+          code: 'SEARCH_FAILED',
+          message: `Grep search failed: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          hint: 'Try mode="literal" for special characters, or narrow directory.',
+          details: { directory, pattern, filePattern, mode },
+        });
       }
     },
   };
@@ -201,7 +397,7 @@ export function createListFilesTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'list_files',
-        description: 'List all files in a directory. Use this FIRST when you need to find files - it shows exactly what files exist. More reliable than glob_search for discovering available files.',
+        description: 'List files and directories at a path. Good for exploring what exists.',
         parameters: {
           type: 'object',
           properties: {
@@ -213,6 +409,14 @@ export function createListFilesTool(context: ToolContext): Tool {
               type: 'boolean',
               description: 'Include subdirectories (default: false)',
             },
+            offset: {
+              type: 'number',
+              description: 'Result offset for pagination (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Max results per page (default: ${DEFAULT_RESULT_LIMIT}, max: ${MAX_RESULT_LIMIT})`,
+            },
           },
         },
       },
@@ -220,6 +424,7 @@ export function createListFilesTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const directory = (input.directory as string) || '.';
       const recursive = (input.recursive as boolean) || false;
+      const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
@@ -250,11 +455,19 @@ export function createListFilesTool(context: ToolContext): Tool {
             .filter(Boolean)
             .map(f => path.relative(context.workingDir, f));
 
+          const page = paginate(files, offset, limit);
           return {
             success: true,
             output: files.length > 0
-              ? `Files in ${directory} (recursive):\n\n${files.map(f => `  ${f}`).join('\n')}`
+              ? `Files in ${directory} (recursive, showing ${page.page.length}/${files.length}, offset=${offset}, limit=${limit}):\n\n${page.page.map(f => `  ${f}`).join('\n')}${page.hasMore ? `\n\nNext page: list_files(directory="${directory}", recursive=true, offset=${page.nextOffset}, limit=${limit})` : ''}`
               : `No files found in ${directory}`,
+            metadata: {
+              totalMatches: files.length,
+              offset,
+              limit,
+              hasMore: page.hasMore,
+              nextOffset: page.nextOffset,
+            },
           };
         }
 
@@ -282,7 +495,7 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'find_definition',
-        description: 'Find where a class, function, interface, type, struct, enum, or variable is defined. Works with any language (TypeScript, Python, C#, Go, Rust, Java, etc.). Searches for common definition patterns.',
+        description: 'Find where a symbol (class, function, interface, type, etc.) is defined. Works with any language. Uses project root as default directory, which works well for monorepos with nested packages.',
         parameters: {
           type: 'object',
           properties: {
@@ -310,6 +523,11 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
+
+        const dirError = validateDirectory(context.workingDir, directory);
+        if (dirError) {
+          return { success: true, output: dirError };
+        }
 
         // Language-agnostic definition patterns
         const patterns = [
@@ -348,28 +566,22 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
           includeFlags = `--include="${filePattern}"`;
         } else {
           // Default: search common source file extensions
-          includeFlags = '--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" ' +
-            '--include="*.py" --include="*.cs" --include="*.java" --include="*.go" ' +
-            '--include="*.rs" --include="*.rb" --include="*.php" --include="*.swift" ' +
-            '--include="*.kt" --include="*.scala" --include="*.cpp" --include="*.c" --include="*.h"';
+          includeFlags = toRgIncludes(ALL_SOURCE_EXTENSIONS);
         }
 
         const cmd = `grep -rn -E "(${patterns.join('|')})" "${fullPath}" \
           ${includeFlags} \
-          --exclude-dir=node_modules \
-          --exclude-dir=dist \
-          --exclude-dir=.git \
+          ${buildGrepExcludes(DEFAULT_EXCLUDES)} \
           --exclude-dir=bin \
           --exclude-dir=obj \
           --exclude-dir=target \
-          --exclude-dir=__pycache__ \
-          --exclude-dir=.venv \
           | head -30`;
 
         const output = execSync(cmd, {
           cwd: context.workingDir,
           encoding: 'utf-8',
           maxBuffer: 1024 * 1024,
+          timeout: SEARCH_TIMEOUT_MS,
         });
 
         const lines = output.trim().split('\n').filter(Boolean);
@@ -377,7 +589,7 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
         if (lines.length === 0) {
           return {
             success: true,
-            output: `No definition found for "${name}"`,
+            output: `No definition found for "${name}" in ${directory === '.' ? 'project root' : directory}. Try: grep_search for text matching, or glob_search with "*${name.toLowerCase()}*" for filename matching.`,
           };
         }
 
@@ -396,10 +608,16 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
           output: `Found definition(s) for "${name}":\n\n${result.join('\n\n')}`,
         };
       } catch (error) {
-        if (error instanceof Error && 'status' in error && error.status === 1) {
+        if (error instanceof Error && 'status' in error && (error as any).status === 1) {
           return {
             success: true,
-            output: `No definition found for "${name}"`,
+            output: `No definition found for "${name}" in ${directory === '.' ? 'project root' : directory}. Try: grep_search for text matching, or glob_search with "*${name.toLowerCase()}*" for filename matching.`,
+          };
+        }
+        if (error instanceof Error && 'killed' in error && (error as any).killed) {
+          return {
+            success: false,
+            error: `Find definition timed out after ${SEARCH_TIMEOUT_MS / 1000}s. Try specifying a narrower directory.`,
           };
         }
         return {
@@ -412,7 +630,7 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
 }
 
 /**
- * Get project structure overview
+ * Get project structure overview — level-by-level exploration
  */
 export function createProjectStructureTool(context: ToolContext): Tool {
   return {
@@ -420,46 +638,94 @@ export function createProjectStructureTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'project_structure',
-        description: 'Get an overview of the project structure - shows directories and key files. Use this to understand the codebase layout before diving into specific files.',
+        description: 'Show directory contents at a given path. Defaults to project root, depth 1. Use to explore the codebase incrementally — first see top-level, then drill into specific directories.',
         parameters: {
           type: 'object',
           properties: {
+            targetPath: {
+              type: 'string',
+              description: 'Directory to explore (default: project root). Use to drill deeper into a specific folder.',
+            },
             depth: {
               type: 'number',
-              description: 'How many levels deep to show (default: 3)',
+              description: 'How many levels deep (default: 1, max: 3)',
             },
           },
         },
       },
     },
     executor: async (input: Record<string, unknown>) => {
-      const depth = (input.depth as number) || 3;
+      const depth = Math.min((input.depth as number) || 1, 3);
+      const targetPath = (input.targetPath as string) || '.';
+
+      // Resolve and validate target path
+      const resolvedPath = path.resolve(context.workingDir, targetPath);
+      if (!resolvedPath.startsWith(context.workingDir)) {
+        return {
+          success: false,
+          error: 'Cannot access paths outside project directory.',
+        };
+      }
+
+      if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) {
+        return {
+          success: false,
+          error: `"${targetPath}" is not a directory or does not exist.`,
+        };
+      }
 
       try {
-        // Use tree command if available, otherwise fallback to find
-        let output: string;
-        try {
-          output = execSync(`tree -L ${depth} -I "node_modules|dist|.git|.next|build" --dirsfirst`, {
-            cwd: context.workingDir,
-            encoding: 'utf-8',
-            maxBuffer: 1024 * 1024,
-          });
-        } catch {
-          // Fallback to find + awk for systems without tree
-          output = execSync(`find . -maxdepth ${depth} -type d \
-            ! -path "*/node_modules/*" \
-            ! -path "*/.git/*" \
-            ! -path "*/dist/*" \
-            | sort | head -100`, {
-            cwd: context.workingDir,
-            encoding: 'utf-8',
-            maxBuffer: 1024 * 1024,
-          });
+        const skipNames = new Set(['node_modules', '.git', 'dist', '.next', 'build']);
+        const lines: string[] = [];
+
+        function listLevel(dir: string, prefix: string, currentDepth: number): void {
+          let entries: fs.Dirent[];
+          try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+          } catch {
+            return;
+          }
+
+          // Separate dirs and files, sort each group
+          const dirs = entries.filter(e => e.isDirectory() && !skipNames.has(e.name)).sort((a, b) => a.name.localeCompare(b.name));
+          const files = entries.filter(e => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
+
+          // Show directories with child counts
+          for (const d of dirs) {
+            const fullPath = path.join(dir, d.name);
+            let childDirs = 0;
+            let childFiles = 0;
+            try {
+              const children = fs.readdirSync(fullPath, { withFileTypes: true });
+              childDirs = children.filter(c => c.isDirectory() && !skipNames.has(c.name)).length;
+              childFiles = children.filter(c => c.isFile()).length;
+            } catch {
+              // inaccessible
+            }
+            const info = `${childDirs} dirs, ${childFiles} files`;
+            lines.push(`${prefix}${d.name}/  (${info})`);
+
+            if (currentDepth < depth) {
+              listLevel(fullPath, prefix + '  ', currentDepth + 1);
+            }
+          }
+
+          // Show files (only at requested depth, not intermediate levels for brevity)
+          if (currentDepth === 1 || depth === 1) {
+            for (const f of files) {
+              lines.push(`${prefix}${f.name}`);
+            }
+          }
         }
+
+        listLevel(resolvedPath, '', 1);
+
+        const relPath = path.relative(context.workingDir, resolvedPath) || '.';
+        const header = `${relPath}/ (depth ${depth})`;
 
         return {
           success: true,
-          output: `Project structure:\n\n${output}`,
+          output: `${header}\n\n${lines.join('\n')}`,
         };
       } catch (error) {
         return {
@@ -480,17 +746,25 @@ export function createCodeStatsTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'code_stats',
-        description: 'Get code statistics - line counts by file type. Works with any language. Shows breakdown by extension.',
+        description: 'Get line counts and file counts by extension for a directory scope (not single-file line counts).',
         parameters: {
           type: 'object',
           properties: {
             directory: {
               type: 'string',
-              description: 'Directory to analyze (default: ".")',
+              description: 'Directory to analyze (default: "."). If a file path is provided by mistake, use its parent directory.',
             },
             extensions: {
               type: 'string',
               description: 'Comma-separated list of extensions to count (e.g., "ts,tsx,js" or "cs,csproj" or "py"). If not specified, counts all source files.',
+            },
+            offset: {
+              type: 'number',
+              description: 'Offset for extension summary rows (default: 0)',
+            },
+            limit: {
+              type: 'number',
+              description: `Rows per page for extension summary (default: ${DEFAULT_RESULT_LIMIT}, max: ${MAX_RESULT_LIMIT})`,
             },
           },
         },
@@ -499,21 +773,24 @@ export function createCodeStatsTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const directory = (input.directory as string) || '.';
       const extensionsInput = input.extensions as string | undefined;
+      const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
         const fullPath = path.resolve(context.workingDir, directory);
+
+        const dirError = validateDirectory(context.workingDir, directory);
+        if (dirError) {
+          return { success: true, output: dirError };
+        }
 
         // Build extension filter
         let extFilter: string;
         if (extensionsInput) {
           const exts = extensionsInput.split(',').map(e => e.trim());
-          extFilter = exts.map(e => `-name "*.${e}"`).join(' -o ');
+          extFilter = toFindNames(exts);
         } else {
           // Default: common source file extensions
-          extFilter = '-name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" ' +
-            '-o -name "*.py" -o -name "*.cs" -o -name "*.java" -o -name "*.go" ' +
-            '-o -name "*.rs" -o -name "*.rb" -o -name "*.php" -o -name "*.swift" ' +
-            '-o -name "*.kt" -o -name "*.scala" -o -name "*.cpp" -o -name "*.c" -o -name "*.h"';
+          extFilter = toFindNames(ALL_SOURCE_EXTENSIONS);
         }
 
         // Count lines total
@@ -531,12 +808,12 @@ export function createCodeStatsTool(context: ToolContext): Tool {
         const countByExtCmd = `find "${fullPath}" -type f \\( ${extFilter} \\) \
           ! -path "*/node_modules/*" ! -path "*/dist/*" ! -path "*/.git/*" \
           ! -path "*/bin/*" ! -path "*/obj/*" ! -path "*/target/*" ! -path "*/__pycache__/*" \
-          | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -15`;
+          | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -200`;
 
         const countByExt = execSync(countByExtCmd, {
           cwd: context.workingDir,
           encoding: 'utf-8',
-        }).trim();
+        }).trim().split('\n').filter(Boolean);
 
         // Total file count
         const fileCountCmd = `find "${fullPath}" -type f \\( ${extFilter} \\) \
@@ -548,15 +825,26 @@ export function createCodeStatsTool(context: ToolContext): Tool {
           encoding: 'utf-8',
         }).trim();
 
+        const page = paginate(countByExt, offset, limit);
         return {
           success: true,
-          output: `Code statistics for ${directory}:\n\nTotal lines: ${totalOutput}\nTotal files: ${fileCount}\n\nFiles by extension:\n${countByExt}`,
+          output: `Code statistics for directory ${directory}:\n\nTotal lines: ${totalOutput}\nTotal files: ${fileCount}\n\nFiles by extension (showing ${page.page.length}/${countByExt.length}, offset=${offset}, limit=${limit}):\n${page.page.join('\n')}${page.hasMore ? `\n\nNext page: code_stats(directory="${directory}", offset=${page.nextOffset}, limit=${limit})` : ''}\n\nNote: This is directory-level aggregate. For a single file line count, use fs_read on that file and rely on metadata.totalLines.`,
+          metadata: {
+            totalExtensionRows: countByExt.length,
+            offset,
+            limit,
+            hasMore: page.hasMore,
+            nextOffset: page.nextOffset,
+          },
         };
       } catch (error) {
-        return {
-          success: false,
-          error: `Code stats failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        return toolError({
+          code: 'CODE_STATS_FAILED',
+          message: `Code stats failed: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          hint: 'Narrow directory or provide extensions.',
+          details: { directory, extensions: extensionsInput },
+        });
       }
     },
   };

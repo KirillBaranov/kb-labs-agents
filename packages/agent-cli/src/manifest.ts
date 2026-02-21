@@ -86,6 +86,9 @@ export const manifest = {
     tags: ['agent', 'autonomous', 'llm', 'orchestration'],
   },
 
+  // Configuration lives under kb.config.json -> agents
+  configSection: 'agents',
+
   platform: {
     requires: ['llm'],
     optional: ['cache', 'analytics', 'logger'],
@@ -111,10 +114,230 @@ export const manifest = {
         flags: defineCommandFlags(runFlags),
 
         examples: [
-          'kb agent:run --task="Create analytics system"',
-          'kb agent:run --mode=plan --task="Add auth" --complexity=complex',
-          'kb agent:run --mode=edit --task="Fix bug" --files src/auth.ts',
-          'kb agent:run --mode=debug --task="Why crash?" --trace .kb/traces/trace-123.json',
+          'kb agent run --task="Create analytics system"',
+          'kb agent run --mode=plan --task="Add auth" --complexity=complex',
+          'kb agent run --mode=edit --task="Fix bug" --files src/auth.ts',
+          'kb agent run --mode=debug --task="Why crash?" --trace .kb/traces/trace-123.json',
+        ],
+      },
+      // Trace debugging commands (AI-friendly)
+      {
+        id: 'agent:trace:stats',
+        group: 'agent',
+        describe: 'Show trace statistics with cost and performance metrics',
+        longDescription:
+          'Analyze trace file to show comprehensive statistics: ' +
+          'iterations, LLM calls, token usage, tool usage, timing, and cost. ' +
+          'Supports --json flag for AI agent consumption.',
+
+        handler: './cli/commands/trace-stats.js#default',
+        handlerPath: './cli/commands/trace-stats.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace stats --task-id=task-2026-01-29',
+          'kb agent trace stats --task-id=task-123 --json',
+        ],
+      },
+      {
+        id: 'agent:trace:filter',
+        group: 'agent',
+        describe: 'Filter trace events by type for debugging',
+        longDescription:
+          'Filter trace events by type (llm:call, tool:execution, error:captured, etc.). ' +
+          'Use this to debug specific aspects of agent execution. ' +
+          'Supports --json flag for programmatic access.',
+
+        handler: './cli/commands/trace-filter.js#default',
+        handlerPath: './cli/commands/trace-filter.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          type: { type: 'string', description: 'Event type to filter (llm:call, tool:execution, etc.)' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace filter --task-id=task-123 --type=llm:call',
+          'kb agent trace filter --task-id=task-123 --type=error:captured --json',
+        ],
+      },
+      {
+        id: 'agent:trace:iteration',
+        group: 'agent',
+        describe: 'View all events for a specific iteration',
+        longDescription:
+          'Show all trace events for a specific iteration number. ' +
+          'Useful for debugging what happened in a particular loop iteration. ' +
+          'Includes summary statistics and event timeline.',
+
+        handler: './cli/commands/trace-iteration.js#default',
+        handlerPath: './cli/commands/trace-iteration.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          iteration: { type: 'number', description: 'Iteration number (1-based)' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace iteration --task-id=task-123 --iteration=3',
+          'kb agent trace iteration --task-id=task-123 --iteration=5 --json',
+        ],
+      },
+      {
+        id: 'agent:trace:context',
+        group: 'agent',
+        describe: 'View what the LLM sees at each iteration — context window, truncations, responses',
+        longDescription:
+          'Shows the full context timeline for debugging agent behavior. ' +
+          'For each LLM call: what messages are in the sliding window, ' +
+          'what was truncated/dropped, and what the LLM responded with.',
+
+        handler: './cli/commands/trace-context.js#default',
+        handlerPath: './cli/commands/trace-context.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          iteration: { type: 'number', description: 'Filter to specific iteration' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace context --task-id=task-123',
+          'kb agent trace context --task-id=task-123 --iteration=3',
+          'kb agent trace context --task-id=task-123 --json',
+        ],
+      },
+      {
+        id: 'agent:trace:diagnose',
+        group: 'agent',
+        describe: 'Quick diagnostic analysis — answers "what went wrong?" in one command',
+        longDescription:
+          'Comprehensive diagnostic report for agent execution. ' +
+          'Analyzes errors, context window health (drops, truncations), ' +
+          'tool failures, LLM reasoning text, loop detection, and quality indicators. ' +
+          'One command to understand any agent issue.',
+
+        handler: './cli/commands/trace-diagnose.js#default',
+        handlerPath: './cli/commands/trace-diagnose.js',
+
+        flags: defineCommandFlags({
+          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent trace diagnose --task-id=task-123',
+          'kb agent trace diagnose --task-id=task-123 --json',
+        ],
+      },
+      {
+        id: 'agent:quality:report',
+        group: 'agent',
+        describe: 'Show quality control report for recent agent runs',
+        longDescription:
+          'Aggregates agent KPI telemetry from analytics buffer and shows ' +
+          'quality, token usage, tool efficiency, drift, and regression alerts. ' +
+          'Useful for continuous quality control and cost/performance monitoring.',
+
+        handler: './cli/commands/quality-report.js#default',
+        handlerPath: './cli/commands/quality-report.js',
+
+        flags: defineCommandFlags({
+          days: { type: 'number', description: 'Lookback period in days', default: 1 },
+          limit: { type: 'number', description: 'Max KPI runs to analyze', default: 200 },
+          sessionId: { type: 'string', description: 'Filter by session ID' },
+          json: { type: 'boolean', description: 'Output JSON for automation', default: false },
+        }),
+
+        examples: [
+          'kb agent quality report',
+          'kb agent quality report --days=7',
+          'kb agent quality report --session-id=session-123',
+          'kb agent quality report --days=3 --json',
+        ],
+      },
+      // File change history commands
+      {
+        id: 'agent:history',
+        group: 'agent',
+        describe: 'Show file change history for agent sessions',
+        longDescription:
+          'View file changes made by agents during execution. ' +
+          'Filter by session, file, or agent. Shows timestamps, operations, and change metadata.',
+
+        handler: './cli/commands/history.js#default',
+        handlerPath: './cli/commands/history.js',
+
+        flags: defineCommandFlags({
+          sessionId: { type: 'string', description: 'Session ID to filter by' },
+          file: { type: 'string', description: 'File path to filter by' },
+          agentId: { type: 'string', description: 'Agent ID to filter by' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent history',
+          'kb agent history --session-id=session-123',
+          'kb agent history --file=src/index.ts',
+          'kb agent history --agent-id=agent-abc --json',
+        ],
+      },
+      {
+        id: 'agent:diff',
+        group: 'agent',
+        describe: 'Show diff for specific file change',
+        longDescription:
+          'Display line-by-line diff for a specific file change. ' +
+          'Shows additions, deletions, and modifications with context.',
+
+        handler: './cli/commands/diff.js#default',
+        handlerPath: './cli/commands/diff.js',
+
+        flags: defineCommandFlags({
+          changeId: { type: 'string', description: 'Change ID to show diff for' },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent diff --change-id=change-abc123',
+          'kb agent diff --change-id=change-abc123 --json',
+        ],
+      },
+      {
+        id: 'agent:rollback',
+        group: 'agent',
+        describe: 'Rollback file changes made by agents',
+        longDescription:
+          'Rollback file changes made by agents. ' +
+          'Supports rollback by change ID, file path, agent ID, session, or timestamp. ' +
+          'Use --dry-run to preview changes before applying.',
+
+        handler: './cli/commands/rollback.js#default',
+        handlerPath: './cli/commands/rollback.js',
+
+        flags: defineCommandFlags({
+          changeId: { type: 'string', description: 'Change ID to rollback' },
+          file: { type: 'string', description: 'File path to rollback all changes for' },
+          agentId: { type: 'string', description: 'Agent ID to rollback all changes by' },
+          sessionId: { type: 'string', description: 'Session ID to rollback all changes in' },
+          after: { type: 'string', description: 'Rollback all changes after timestamp (ISO 8601)' },
+          force: { type: 'boolean', description: 'Force rollback even with conflicts', default: false },
+          dryRun: { type: 'boolean', description: 'Preview rollback without applying', default: false },
+          json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
+        }),
+
+        examples: [
+          'kb agent rollback --change-id=change-abc123',
+          'kb agent rollback --file=src/index.ts --dry-run',
+          'kb agent rollback --agent-id=agent-abc',
+          'kb agent rollback --session-id=session-123',
+          'kb agent rollback --after="2026-02-16T10:00:00Z" --json',
         ],
       },
     ],
@@ -183,9 +406,9 @@ export const manifest = {
       },
       {
         method: 'GET',
-        path: AGENTS_ROUTES.SESSION_EVENTS,
-        description: 'Get session events (chat history)',
-        handler: './rest/handlers/get-session-events-handler.js',
+        path: AGENTS_ROUTES.SESSION_TURNS,
+        description: 'Get session turns (turn-based UI)',
+        handler: './rest/handlers/get-session-turns-handler.js',
         security: ['none'],
       },
     ],
@@ -200,9 +423,9 @@ export const manifest = {
     },
     channels: [
       {
-        path: AGENTS_WS_CHANNELS.EVENTS,
-        description: 'Real-time agent event streaming',
-        handler: './ws/events-handler.js',
+        path: AGENTS_WS_CHANNELS.SESSION_STREAM,
+        description: 'Persistent session stream (all runs in session)',
+        handler: './ws/session-stream-handler.js',
         auth: 'none',
       },
     ],
