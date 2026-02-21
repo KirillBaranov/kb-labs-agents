@@ -7,21 +7,23 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
 import { toolError } from './tool-error.js';
+import { SEARCH_CONFIG, ALL_SOURCE_EXTENSIONS, toRgIncludes, toFindNames } from '../config.js';
+import { normalizeOffsetLimit as _normalizeOffsetLimit } from '../utils.js';
 
-/** Default directories to exclude from search */
-const DEFAULT_EXCLUDES = ['node_modules', '.git', 'dist', 'build', '.next', '.kb', '.pnpm', 'coverage', '__pycache__', '.venv', '.cache'];
+/** Default directories to exclude from search (sourced from centralized config) */
+const DEFAULT_EXCLUDES = SEARCH_CONFIG.defaultExcludes;
 
 /**
  * Build find exclude flags from exclude list
  */
-function buildFindExcludes(excludes: string[]): string {
+function buildFindExcludes(excludes: readonly string[]): string {
   return excludes.map(d => `! -path "*/${d}/*"`).join(' ');
 }
 
 /**
  * Build grep exclude-dir flags from exclude list
  */
-function buildGrepExcludes(excludes: string[]): string {
+function buildGrepExcludes(excludes: readonly string[]): string {
   return excludes.map(d => `--exclude-dir=${d}`).join(' ');
 }
 
@@ -29,11 +31,10 @@ function toSingleQuoted(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-/** Exec timeout for search commands (30s) */
-const SEARCH_TIMEOUT_MS = 30_000;
-const SEARCH_MAX_BUFFER = 16 * 1024 * 1024;
-const DEFAULT_RESULT_LIMIT = 100;
-const MAX_RESULT_LIMIT = 200;
+const SEARCH_TIMEOUT_MS = SEARCH_CONFIG.timeoutMs;
+const SEARCH_MAX_BUFFER = SEARCH_CONFIG.maxBuffer;
+const DEFAULT_RESULT_LIMIT = SEARCH_CONFIG.defaultResultLimit;
+const MAX_RESULT_LIMIT = SEARCH_CONFIG.maxResultLimit;
 
 /**
  * Check if directory exists and return error message if not.
@@ -62,13 +63,7 @@ function validateDirectory(workingDir: string, directory: string): string | null
 }
 
 function normalizeOffsetLimit(input: Record<string, unknown>): { offset: number; limit: number } {
-  const rawOffset = Number(input.offset);
-  const rawLimit = Number(input.limit);
-  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0
-    ? Math.min(MAX_RESULT_LIMIT, Math.floor(rawLimit))
-    : DEFAULT_RESULT_LIMIT;
-  return { offset, limit };
+  return _normalizeOffsetLimit(input, { defaultLimit: DEFAULT_RESULT_LIMIT, maxLimit: MAX_RESULT_LIMIT });
 }
 
 function paginate<T>(items: T[], offset: number, limit: number): { page: T[]; hasMore: boolean; nextOffset: number | null } {
@@ -571,10 +566,7 @@ export function createFindDefinitionTool(context: ToolContext): Tool {
           includeFlags = `--include="${filePattern}"`;
         } else {
           // Default: search common source file extensions
-          includeFlags = '--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" ' +
-            '--include="*.py" --include="*.cs" --include="*.java" --include="*.go" ' +
-            '--include="*.rs" --include="*.rb" --include="*.php" --include="*.swift" ' +
-            '--include="*.kt" --include="*.scala" --include="*.cpp" --include="*.c" --include="*.h"';
+          includeFlags = toRgIncludes(ALL_SOURCE_EXTENSIONS);
         }
 
         const cmd = `grep -rn -E "(${patterns.join('|')})" "${fullPath}" \
@@ -795,13 +787,10 @@ export function createCodeStatsTool(context: ToolContext): Tool {
         let extFilter: string;
         if (extensionsInput) {
           const exts = extensionsInput.split(',').map(e => e.trim());
-          extFilter = exts.map(e => `-name "*.${e}"`).join(' -o ');
+          extFilter = toFindNames(exts);
         } else {
           // Default: common source file extensions
-          extFilter = '-name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" ' +
-            '-o -name "*.py" -o -name "*.cs" -o -name "*.java" -o -name "*.go" ' +
-            '-o -name "*.rs" -o -name "*.rb" -o -name "*.php" -o -name "*.swift" ' +
-            '-o -name "*.kt" -o -name "*.scala" -o -name "*.cpp" -o -name "*.c" -o -name "*.h"';
+          extFilter = toFindNames(ALL_SOURCE_EXTENSIONS);
         }
 
         // Count lines total
