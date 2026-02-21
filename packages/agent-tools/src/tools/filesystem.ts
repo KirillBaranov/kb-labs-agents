@@ -13,24 +13,19 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { Tool, ToolContext } from '../types.js';
 import { toolError } from './tool-error.js';
+import { FILESYSTEM_CONFIG } from '../config.js';
+import { normalizeOffsetLimit, validatePath } from '../utils.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Constants
+// Constants (sourced from centralized config)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Maximum file size to read in bytes (500KB) */
-const MAX_FILE_SIZE = 500_000;
-
-/** Maximum lines to return per read (prevents context overflow) */
-const MAX_LINES_PER_READ = 1000;
-
-/** Default lines to return if not specified */
-const DEFAULT_LINES = 100;
-
-/** Maximum content size for write operations (1MB) */
-const MAX_WRITE_SIZE = 1_000_000;
-const DEFAULT_LIST_LIMIT = 100;
-const MAX_LIST_LIMIT = 200;
+const MAX_FILE_SIZE = FILESYSTEM_CONFIG.maxFileSize;
+const MAX_LINES_PER_READ = FILESYSTEM_CONFIG.maxLinesPerRead;
+const DEFAULT_LINES = FILESYSTEM_CONFIG.defaultLines;
+const MAX_WRITE_SIZE = FILESYSTEM_CONFIG.maxWriteSize;
+const DEFAULT_LIST_LIMIT = FILESYSTEM_CONFIG.defaultListLimit;
+const MAX_LIST_LIMIT = FILESYSTEM_CONFIG.maxListLimit;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -39,40 +34,6 @@ const MAX_LIST_LIMIT = 200;
 /**
  * Validate path is within working directory (prevent path traversal)
  */
-function validatePath(workingDir: string, filePath: string): { valid: boolean; resolved: string; error?: string } {
-  // Normalize and resolve the path
-  let resolved = path.resolve(workingDir, filePath);
-
-  // Resolve symlinks to prevent symlink-based bypasses
-  try {
-    if (fs.existsSync(resolved)) {
-      resolved = fs.realpathSync(resolved);
-    }
-  } catch (error) {
-    // If realpath fails, continue with resolved path (might be a non-existent file)
-  }
-
-  // Check if resolved path is within working directory using path.relative()
-  // This is more secure than startsWith() which can be bypassed with symlinks
-  const relative = path.relative(workingDir, resolved);
-
-  // Path traversal attempt if relative path starts with '..'
-  // Note: path.isAbsolute(relative) is always false since relative() returns a relative path
-  if (relative.startsWith('..')) {
-    return {
-      valid: false,
-      resolved,
-      error: `PATH_TRAVERSAL_ERROR: Cannot access "${filePath}" - path is outside working directory.
-
-HOW TO FIX: Use paths relative to the working directory. Do not use ".." to navigate above it.
-WORKING_DIR: ${workingDir}
-ATTEMPTED_PATH: ${resolved}`,
-    };
-  }
-
-  return { valid: true, resolved };
-}
-
 /**
  * Format file size for display
  */
@@ -90,13 +51,7 @@ function computeHash(content: string): string {
 }
 
 function normalizeListWindow(input: Record<string, unknown>): { offset: number; limit: number } {
-  const rawOffset = Number(input.offset);
-  const rawLimit = Number(input.limit);
-  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0
-    ? Math.min(MAX_LIST_LIMIT, Math.floor(rawLimit))
-    : DEFAULT_LIST_LIMIT;
-  return { offset, limit };
+  return normalizeOffsetLimit(input, { defaultLimit: DEFAULT_LIST_LIMIT, maxLimit: MAX_LIST_LIMIT });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
