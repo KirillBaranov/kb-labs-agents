@@ -411,6 +411,35 @@ export const manifest = {
         handler: './rest/handlers/get-session-turns-handler.js',
         security: ['none'],
       },
+      // File change history routes (rollback & approve)
+      {
+        method: 'GET',
+        path: AGENTS_ROUTES.SESSION_CHANGES,
+        description: 'List file changes for session (optionally filtered by runId)',
+        handler: './rest/handlers/list-file-changes-handler.js',
+        security: ['none'],
+      },
+      {
+        method: 'GET',
+        path: AGENTS_ROUTES.SESSION_CHANGE_DIFF,
+        description: 'Get unified diff for a specific file change',
+        handler: './rest/handlers/get-file-diff-handler.js',
+        security: ['none'],
+      },
+      {
+        method: 'POST',
+        path: AGENTS_ROUTES.SESSION_ROLLBACK,
+        description: 'Rollback file changes for a session/run',
+        handler: './rest/handlers/rollback-handler.js',
+        security: ['none'],
+      },
+      {
+        method: 'POST',
+        path: AGENTS_ROUTES.SESSION_APPROVE,
+        description: 'Approve file changes for a session/run',
+        handler: './rest/handlers/approve-handler.js',
+        security: ['none'],
+      },
     ],
   },
 
