@@ -6,7 +6,6 @@
 import type {
   AgentEvent,
   Turn,
-  TurnStep,
   ThinkingStep,
   ToolUseStep,
   TextStep,
@@ -55,7 +54,7 @@ export class TurnAssembler {
   processEvent(event: AgentEvent): Turn | null {
     // Determine turn ID from event
     const turnId = this.getTurnId(event);
-    if (!turnId) return null; // Event doesn't belong to a turn
+    if (!turnId) {return null;} // Event doesn't belong to a turn
 
     // Get or create turn
     let turn = this.activeTurns.get(turnId);
@@ -96,7 +95,7 @@ export class TurnAssembler {
   ): Promise<Turn | null> {
     // Determine turn ID from event
     const turnId = this.getTurnId(event);
-    if (!turnId) return null;
+    if (!turnId) {return null;}
 
     // Get or create turn
     let turn = this.activeTurns.get(turnId);

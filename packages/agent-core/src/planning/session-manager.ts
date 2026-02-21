@@ -697,7 +697,7 @@ export class SessionManager {
       // Deduplicate by id (guard against race-condition duplicates in existing files)
       const seen = new Set<string>();
       return raw.filter((t) => {
-        if (seen.has(t.id)) return false;
+        if (seen.has(t.id)) {return false;}
         seen.add(t.id);
         return true;
       });

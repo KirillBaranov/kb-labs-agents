@@ -5,6 +5,7 @@
  */
 
 export { Agent } from './agent.js';
+export * from './constants.js';
 
 // Tracer
 export * from './tracer/index.js';
@@ -29,3 +30,15 @@ export * from './history/index.js';
 
 // Execution primitives - state machine and ledger
 export * from './execution/index.js';
+
+// Budget management - iteration budget, quality gate, tier selection
+export * from './budget/index.js';
+
+// Prompt construction
+export * from './prompt/index.js';
+
+// Tool input normalization
+export * from './tool-input/index.js';
+
+// Progress tracking
+export * from './progress/index.js';

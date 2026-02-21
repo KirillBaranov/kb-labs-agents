@@ -1,16 +1,22 @@
 /**
- * File change history system
+ * File change history system — re-exported from @kb-labs/agent-history
+ *
+ * This module is kept for backward compatibility.
+ * Import directly from @kb-labs/agent-history in new code.
  */
 
-export { FileChangeTracker } from './file-change-tracker.js';
-export { SnapshotStorage } from './snapshot-storage.js';
-export { ConflictDetector } from './conflict-detector.js';
-export { ConflictResolver } from './conflict-resolver.js';
+export {
+  FileChangeTracker,
+  SnapshotStorage,
+  ConflictDetector,
+  ConflictResolver,
+} from '@kb-labs/agent-history';
 export type {
   FileChange,
   RollbackResult,
   ConflictInfo,
   StorageConfig,
-} from './types.js';
-export type { DetectedConflict, ConflictType } from './conflict-detector.js';
-export type { ResolutionResult } from './conflict-resolver.js';
+  DetectedConflict,
+  ConflictType,
+  ResolutionResult,
+} from '@kb-labs/agent-history';

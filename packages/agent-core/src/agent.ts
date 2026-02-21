@@ -6,7 +6,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type {
   AgentConfig,
-  AgentSmartTieringConfig,
   TaskResult,
   TraceEntry,
   LLMTier,
@@ -27,24 +26,29 @@ import {
   type LLMToolCall,
   type LLMToolCallResponse,
 } from '@kb-labs/sdk';
+import { AGENT_CONTEXT, AGENT_SUMMARIZER } from './constants.js';
+import {
+  IterationBudget,
+  QualityGate,
+  TierSelector,
+  isLikelyActionTask,
+} from './budget/index.js';
+import { SystemPromptBuilder } from './prompt/index.js';
+import {
+  ToolInputNormalizer,
+  isGuardRejectedToolCallError,
+  isRiskyShellCommand,
+} from './tool-input/index.js';
+import {
+  ProgressTracker as ProgressTrackerModule,
+  countFailedToolResults,
+} from './progress/index.js';
 
 /**
  * Event type constants
  */
 const EVENT_TYPE_STATUS_CHANGE = 'status:change';
 const DEFAULT_EXECUTION_TIER: LLMTier = 'medium';
-const DEFAULT_SMART_TIERING_CONFIG: Required<AgentSmartTieringConfig> = {
-  enabled: true,
-  nodes: {
-    intentInference: false,
-    searchAssessment: true,
-    taskValidation: true,
-  },
-  auditTasksPreferMedium: true,
-  minEvidenceDensityForSmallValidation: 0.9,
-  maxIterationsWithoutProgressForMediumSearch: 2,
-  intentInferenceMinTaskCharsForMedium: 180,
-};
 
 class TierEscalationSignal extends Error {
   public readonly reason: string;
@@ -91,26 +95,19 @@ import {
   createToolFilterEvent,
   createLLMValidationEvent,
   createStoppingAnalysisEvent,
-  createPromptDiffEvent,
   createContextTrimEvent,
-} from './tracer/trace-helpers.js';
+} from '@kb-labs/agent-tracing';
 import { ContextFilter } from './context/context-filter.js';
 import { SmartSummarizer } from './context/smart-summarizer.js';
 // context_retrieve tool removed — agents should re-read files instead
-import { FileChangeTracker } from './history/file-change-tracker.js';
-import { SnapshotStorage } from './history/snapshot-storage.js';
-import { ConflictDetector } from './history/conflict-detector.js';
-import { ConflictResolver } from './history/conflict-resolver.js';
+import { FileChangeTracker, SnapshotStorage, ConflictDetector, ConflictResolver } from '@kb-labs/agent-history';
 import { AGENT_ANALYTICS_EVENTS, DEFAULT_FILE_HISTORY_CONFIG } from '@kb-labs/agent-contracts';
 import { ExecutionStateMachine } from './execution/state-machine.js';
 import { TaskLedger, mapToolToCapability } from './execution/task-ledger.js';
 import { createDefaultAgentBehaviorPolicy, type AgentBehaviorPolicy } from './execution/policy.js';
 import { discoverWorkspace, type WorkspaceDiscoveryResult } from './execution/workspace-discovery.js';
+import { ToolResultCache } from './execution/tool-result-cache.js';
 
-/**
- * Default instruction file names to scan (in order of priority)
- */
-const INSTRUCTION_FILE_NAMES = ['AGENT.md', 'KB_AGENT.md', '.agent.md', 'CLAUDE.md'];
 
 /**
  * Generate unique agent ID
@@ -142,23 +139,16 @@ export class Agent {
   private totalTokens = 0;
   private tracer?: Tracer;
 
-  /**
-   * Tool result cache to prevent duplicate calls within same execution
-   * Key: JSON.stringify({ name: toolName, input: normalizedInput })
-   * Value: { result: ToolResult, timestamp: number }
-   */
-  private toolResultCache: Map<string, { result: ToolResult; timestamp: number }> = new Map();
-
-  /**
-   * Cache TTL in milliseconds (60 seconds - within single execution)
-   */
-  private static readonly CACHE_TTL_MS = 60_000;
+  private readonly toolResultCache = new ToolResultCache();
+  private readonly iterationBudget = new IterationBudget();
+  private readonly qualityGate = new QualityGate();
+  private readonly tierSelector = new TierSelector();
+  private readonly systemPromptBuilder = new SystemPromptBuilder();
+  private readonly toolInputNormalizer = new ToolInputNormalizer(fs);
   private memory?: AgentMemory;
   private currentTask?: string;
   private eventEmitter = createEventEmitter();
   private startTime = 0;
-  /** Recent tool call signatures for loop detection */
-  private recentToolCalls: string[] = [];
   private startTimestamp = ''; // ISO string for startedAt in agent:end events
 
   /** Unique ID for this agent instance (for event correlation) */
@@ -242,19 +232,8 @@ export class Agent {
     reporting: 'pending',
   };
 
-  /**
-   * Phase 2: Progress tracking to detect when agent is stuck
-   * Automatically triggers ask_parent when stuck patterns are detected
-   */
-  private progressTracker = {
-    lastToolCalls: [] as string[], // Last 3 tool calls
-    lastOutputSizes: [] as number[], // Output sizes to detect if gaining information
-    iterationsSinceProgress: 0,
-    stuckThreshold: 3, // Iterations before considering stuck
-    lastFailureCount: 0,
-    lastProgressIteration: 0,
-    lastSearchSignalHits: 0,
-  };
+  /** Progress tracking to detect when agent is stuck */
+  private progressTracker = new ProgressTrackerModule();
 
   /**
    * Context optimization components (Phase 4: Integration)
@@ -444,15 +423,15 @@ export class Agent {
 
     // Initialize context optimization (Phase 4)
     this.contextFilter = new ContextFilter({
-      maxOutputLength: 8000,   // 8K chars — enough for most file reads without exploding context
-      slidingWindowSize: 20,
+      maxOutputLength: AGENT_CONTEXT.maxToolOutputChars,
+      slidingWindowSize: AGENT_CONTEXT.slidingWindowSize,
       enableDeduplication: true,
     });
 
     this.smartSummarizer = new SmartSummarizer({
-      summarizationInterval: 10,
+      summarizationInterval: AGENT_SUMMARIZER.summarizationInterval,
       llmTier: 'small',
-      maxSummaryTokens: 500,
+      maxSummaryTokens: AGENT_SUMMARIZER.maxSummaryTokens,
     });
 
     // Subscribe external callback if provided
@@ -631,46 +610,6 @@ Call select_scope with your choice.`;
     }
   }
 
-  private buildWorkspaceDiscoveryPrompt(): string | null {
-    if (!this.workspaceDiscovery || this.workspaceDiscovery.repos.length === 0) {
-      return null;
-    }
-
-    const root = this.workspaceDiscovery.rootDir;
-    const lines = this.workspaceDiscovery.repos
-      .slice(0, 16)
-      .map((repo) => {
-        const rel = path.relative(root, repo.path) || '.';
-        return `- ${rel} (${repo.reasons.join(', ')})`;
-      });
-
-    return `# Workspace topology (auto-discovered)\nUse this map to pick initial scope quickly and avoid cross-repo drift.\n${lines.join('\n')}`;
-  }
-
-  private getSmartTieringConfig(): Required<AgentSmartTieringConfig> {
-    const raw = this.config.smartTiering ?? {};
-    return {
-      enabled: raw.enabled ?? DEFAULT_SMART_TIERING_CONFIG.enabled,
-      nodes: {
-        intentInference: raw.nodes?.intentInference ?? DEFAULT_SMART_TIERING_CONFIG.nodes.intentInference,
-        searchAssessment: raw.nodes?.searchAssessment ?? DEFAULT_SMART_TIERING_CONFIG.nodes.searchAssessment,
-        taskValidation: raw.nodes?.taskValidation ?? DEFAULT_SMART_TIERING_CONFIG.nodes.taskValidation,
-      },
-      auditTasksPreferMedium: raw.auditTasksPreferMedium ?? DEFAULT_SMART_TIERING_CONFIG.auditTasksPreferMedium,
-      minEvidenceDensityForSmallValidation:
-        raw.minEvidenceDensityForSmallValidation ?? DEFAULT_SMART_TIERING_CONFIG.minEvidenceDensityForSmallValidation,
-      maxIterationsWithoutProgressForMediumSearch:
-        raw.maxIterationsWithoutProgressForMediumSearch
-          ?? DEFAULT_SMART_TIERING_CONFIG.maxIterationsWithoutProgressForMediumSearch,
-      intentInferenceMinTaskCharsForMedium:
-        raw.intentInferenceMinTaskCharsForMedium ?? DEFAULT_SMART_TIERING_CONFIG.intentInferenceMinTaskCharsForMedium,
-    };
-  }
-
-  private isAuditOrAnalysisTask(task: string): boolean {
-    return /(audit|architecture|error handling|failure|reliability|resilience|retry|rate.?limit|timeout|anthropic|openai|llm|анализ|аудит|архитектур|ошибк|надежн|ретра|таймаут|лимит)/i.test(task);
-  }
-
   private chooseSmartTier(
     node: 'intentInference' | 'searchAssessment' | 'taskValidation',
     context?: {
@@ -683,46 +622,13 @@ Call select_scope with your choice.`;
       isInformationalTask?: boolean;
     }
   ): LLMTier {
-    const config = this.getSmartTieringConfig();
-    if (!config.enabled || !config.nodes[node]) {
-      return 'small';
-    }
-
-    const task = context?.task ?? this.currentTask ?? '';
-    if (config.auditTasksPreferMedium && this.isAuditOrAnalysisTask(task)) {
-      return 'medium';
-    }
-
-    if (node === 'intentInference') {
-      const taskLength = task.trim().length;
-      const mixedIntent = Boolean(context?.hasDiscoveryCue && context?.hasActionCue);
-      if (mixedIntent && taskLength >= config.intentInferenceMinTaskCharsForMedium) {
-        return 'medium';
-      }
-      return 'small';
-    }
-
-    if (node === 'searchAssessment') {
-      const noProgressIterations = this.progressTracker.iterationsSinceProgress;
-      if (noProgressIterations >= config.maxIterationsWithoutProgressForMediumSearch) {
-        return 'medium';
-      }
-      if ((context?.artifactCount ?? 0) >= 3) {
-        return 'medium';
-      }
-      return 'small';
-    }
-
-    const evidenceDensity = context?.evidenceDensity ?? 0;
-    const iterationsUsed = context?.iterationsUsed ?? 0;
-    const isInformationalTask = context?.isInformationalTask ?? false;
-    if (isInformationalTask && evidenceDensity < config.minEvidenceDensityForSmallValidation) {
-      return 'medium';
-    }
-    if (iterationsUsed >= Math.max(6, Math.floor((this.currentIterationBudget || this.config.maxIterations || 8) * 0.7))) {
-      return 'medium';
-    }
-    return 'small';
+    return this.tierSelector.chooseSmartTier(node, {
+      smartTiering: this.config.smartTiering,
+      currentIterationBudget: this.currentIterationBudget,
+      maxIterations: this.config.maxIterations || 25,
+      progressIterationsSinceProgress: this.progressTracker.state.iterationsSinceProgress,
+      currentTask: this.currentTask,
+    }, context);
   }
 
   private async inferTaskIntent(task: string): Promise<'action' | 'discovery' | 'analysis'> {
@@ -1346,7 +1252,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
           name: tc.name,
           arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input || {}),
         }));
-        if (this.detectLoop(toolCallSigs)) {
+        if (this.toolResultCache.detectLoop(toolCallSigs)) {
           this.transitionPhase('reporting', 'loop detected');
           this.log(`\n🔄 Loop detected — same tool calls repeated 3 times. Stopping.\n`);
           return this.createFailureResult(
@@ -1557,18 +1463,18 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
         if (this.detectStuck() && this.config.onAskParent) {
           this.log(`\n🔄 Detected stuck pattern - asking parent for guidance...\n`);
 
-          const stuckReason = this.progressTracker.lastToolCalls.length >= 3 &&
-                             new Set(this.progressTracker.lastToolCalls.slice(-3)).size === 1
-            ? `Using same tool (${this.progressTracker.lastToolCalls[0]}) repeatedly`
-            : `No progress for ${this.progressTracker.iterationsSinceProgress} iterations`;
+          const stuckReason = this.progressTracker.state.lastToolCalls.length >= 3 &&
+                             new Set(this.progressTracker.state.lastToolCalls.slice(-3)).size === 1
+            ? `Using same tool (${this.progressTracker.state.lastToolCalls[0]}) repeatedly`
+            : `No progress for ${this.progressTracker.state.iterationsSinceProgress} iterations`;
 
            
           const parentResponse = await this.config.onAskParent({
             question: `I appear to be stuck. ${stuckReason}. What should I do?`,
             reason: 'stuck',
             context: {
-              lastToolCalls: this.progressTracker.lastToolCalls,
-              iterationsSinceProgress: this.progressTracker.iterationsSinceProgress,
+              lastToolCalls: this.progressTracker.state.lastToolCalls,
+              iterationsSinceProgress: this.progressTracker.state.iterationsSinceProgress,
             },
             iteration,
             subtask: this.currentTask,
@@ -1581,12 +1487,12 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
           });
 
           // Reset progress tracker after getting help
-          this.progressTracker.iterationsSinceProgress = 0;
-          this.progressTracker.lastToolCalls = [];
-          this.progressTracker.lastOutputSizes = [];
-          this.progressTracker.lastFailureCount = 0;
-          this.progressTracker.lastSearchSignalHits = this.searchSignalHits;
-          this.progressTracker.lastProgressIteration = iteration;
+          this.progressTracker.state.iterationsSinceProgress = 0;
+          this.progressTracker.state.lastToolCalls = [];
+          this.progressTracker.state.lastOutputSizes = [];
+          this.progressTracker.state.lastFailureCount = 0;
+          this.progressTracker.state.lastSearchSignalHits = this.searchSignalHits;
+          this.progressTracker.state.lastProgressIteration = iteration;
 
           // Handle parent action
           if (parentResponse.action === 'skip') {
@@ -1708,9 +1614,8 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     this.filesReadHash.clear();
     this.trace = [];
     this.totalTokens = 0;
-    this.toolResultCache.clear(); // Clear cache on new execution (Phase 1, Step 1.4)
+    this.toolResultCache.clear();
     this.toolsUsedCount.clear();
-    this.recentToolCalls = [];
     this.completedIterations = [];
     this.todoNudgeSent = false;
     this.toolSuccessCount = 0;
@@ -1732,12 +1637,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     this.hypothesisSwitches = 0;
     this.lastReflectionHypothesis = '';
     this.iterationBudgetExtensions = 0;
-    this.progressTracker.lastToolCalls = [];
-    this.progressTracker.lastOutputSizes = [];
-    this.progressTracker.iterationsSinceProgress = 0;
-    this.progressTracker.lastFailureCount = 0;
-    this.progressTracker.lastProgressIteration = 0;
-    this.progressTracker.lastSearchSignalHits = 0;
+    this.progressTracker.reset();
     this.executionStateMachine = new ExecutionStateMachine();
     this.taskLedger = new TaskLedger();
     this.lastQualityGate = null;
@@ -1851,14 +1751,14 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
           role: msg.role,
           chars: content.length,
         };
-        if (truncated) entry.truncated = true;
+        if (truncated) {entry.truncated = true;}
         if (toolCallsArr.length > 0) {
           entry.toolCalls = toolCallsArr.map((tc: any) => tc.name || tc.function?.name);
         }
-        if ((msg as any).toolCallId) entry.toolCallId = (msg as any).toolCallId;
+        if ((msg as any).toolCallId) {entry.toolCallId = (msg as any).toolCallId;}
         // Preview: first 200 chars for system/user, first 100 for tool results
         const previewLen = msg.role === 'tool' ? 100 : 200;
-        if (content.length > 0) entry.preview = content.slice(0, previewLen);
+        if (content.length > 0) {entry.preview = content.slice(0, previewLen);}
         return entry;
       });
 
@@ -2131,14 +2031,14 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
 
       if (toolCall.name === 'shell_exec') {
         const command = typeof input.command === 'string' ? input.command : '';
-        const resolvedCwd = this.resolveShellCwd(input);
+        const resolvedCwd = this.toolInputNormalizer.resolveShellCwd(input, this.config.workingDir || process.cwd());
         this.emit({
           type: EVENT_TYPE_STATUS_CHANGE,
           timestamp: new Date().toISOString(),
           sessionId: this.config.sessionId,
           data: {
             status: 'executing',
-            message: this.isRiskyShellCommand(command)
+            message: isRiskyShellCommand(command)
               ? `Shell preflight: cwd=${resolvedCwd}. Verify scope before running broad test/build commands.`
               : `Shell preflight: cwd=${resolvedCwd}`,
             toolName: toolCall.name,
@@ -2250,7 +2150,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
         toolResults.push(this.createToolResultMessage(toolCall.id, toolCall.name, result, iteration));
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        const guardRejected = this.isGuardRejectedToolCallError(errorMsg);
+        const guardRejected = isGuardRejectedToolCallError(errorMsg);
         if (guardRejected) {
           this.taskLedger.completeStep(ledgerStepId, `Guard rejected tool call: ${errorMsg.slice(0, 200)}`);
         } else {
@@ -2316,249 +2216,32 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     toolName: string,
     input: Record<string, unknown>
   ): Record<string, unknown> {
-    const normalized = { ...input };
-    if (toolName === 'glob_search' || toolName === 'grep_search' || toolName === 'find_definition' || toolName === 'code_stats') {
-      this.normalizeDirectoryField(normalized);
-    }
-
-    if (toolName === 'glob_search') {
-      const pattern = typeof normalized.pattern === 'string'
-        ? normalized.pattern
-        : typeof normalized.query === 'string'
-          ? normalized.query
-          : '';
-      if (pattern && typeof normalized.pattern !== 'string') {
-        normalized.pattern = pattern;
-      }
-
-      if (typeof normalized.pattern === 'string') {
-        const trimmed = normalized.pattern.trim();
-        const hasGlobMeta = /[*?[\]{}]/.test(trimmed);
-        if (trimmed && !hasGlobMeta) {
-          normalized.pattern = `**/*${trimmed}*`;
-        }
-      }
-    }
-
-    if (toolName === 'fs_read' && typeof normalized.path === 'string') {
-      const trimmedPath = normalized.path.trim();
-      const fallbackPath = this.tryResolvePrimarySourcePath(trimmedPath);
-      if (fallbackPath) {
-        normalized.path = fallbackPath;
-      } else {
-        const tsPath = this.tryResolveTsSourcePath(trimmedPath);
-        if (tsPath) {
-          normalized.path = tsPath;
-        }
-      }
-
-      const resolvedPath = String(normalized.path);
-      const currentOffset = Number(normalized.offset);
-      const safeOffset = Number.isFinite(currentOffset) && currentOffset > 0 ? Math.floor(currentOffset) : 1;
-      normalized.offset = safeOffset;
-
-      const requestedLimit = Number(normalized.limit);
-      const adaptiveLimit = this.computeAdaptiveReadLimit(
-        resolvedPath,
-        Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : undefined,
-        safeOffset
-      );
-      if (adaptiveLimit > 0) {
-        normalized.limit = adaptiveLimit;
-      }
-    }
-
-    if (toolName === 'shell_exec') {
-      const rawCwd = typeof normalized.cwd === 'string' ? normalized.cwd.trim() : '';
-      if (!rawCwd) {
-        normalized.cwd = '.';
-      }
-    }
-    return normalized;
+    return this.toolInputNormalizer.normalizeToolInput(toolName, input, this.buildNormalizerContext());
   }
 
-  private normalizeDirectoryField(input: Record<string, unknown>): void {
-    if (typeof input.directory !== 'string') {
-      return;
-    }
-
-    const rawDirectory = input.directory.trim();
-    if (!rawDirectory || rawDirectory === '.') {
-      return;
-    }
-
-    const workingDir = this.config.workingDir || process.cwd();
-    const absolutePath = path.isAbsolute(rawDirectory)
-      ? rawDirectory
-      : path.resolve(workingDir, rawDirectory);
-
-    const setDirectoryFromAbs = (absDir: string): void => {
-      const relativeDir = path.relative(workingDir, absDir);
-      if (!relativeDir || relativeDir === '.') {
-        input.directory = '.';
-        return;
-      }
-      input.directory = relativeDir.startsWith('..') ? '.' : relativeDir;
+  private buildNormalizerContext() {
+    return {
+      workingDir: this.config.workingDir || process.cwd(),
+      currentTier: this.currentTier,
+      fileTotalLinesByPath: this.fileTotalLinesByPath,
+      fileReadAttemptsByPath: this.fileReadAttemptsByPath,
+      smallReadWindowByPath: this.smallReadWindowByPath,
+      behaviorPolicy: this.behaviorPolicy,
+      currentTask: this.currentTask,
+      toolDefinitions: this.toolRegistry.getDefinitions(),
     };
-
-    if (fs.existsSync(absolutePath)) {
-      try {
-        const stat = fs.statSync(absolutePath);
-        if (stat.isFile()) {
-          setDirectoryFromAbs(path.dirname(absolutePath));
-        }
-      } catch {
-        // Keep original value on stat error.
-      }
-      return;
-    }
-
-    // If the path looks like a file reference, try its parent directory.
-    if (/\.[a-z0-9]+$/i.test(rawDirectory)) {
-      const parentDir = path.dirname(absolutePath);
-      if (fs.existsSync(parentDir)) {
-        try {
-          if (fs.statSync(parentDir).isDirectory()) {
-            setDirectoryFromAbs(parentDir);
-          }
-        } catch {
-          // Keep original value on stat error.
-        }
-      }
-    }
   }
 
   private assertToolCallIsAllowed(
     toolName: string,
     input: Record<string, unknown>
   ): void {
-    const missingRequired = this.findMissingRequiredToolParams(toolName, input);
-    if (missingRequired.length > 0) {
-      throw new Error(
-        `${toolName} is missing required input field(s): ${missingRequired.join(', ')}.`
-      );
-    }
-
-    if (toolName === 'glob_search') {
-      const pattern = typeof input.pattern === 'string' ? input.pattern.trim() : '';
-      if (!pattern) {
-        throw new Error('glob_search requires a non-empty glob pattern (e.g. "*.ts", "src/**/*.ts").');
-      }
-    }
-
-    if (toolName === 'fs_read') {
-      const filePath = typeof input.path === 'string' ? input.path.trim() : '';
-      if (!filePath) {
-        throw new Error('fs_read requires a non-empty file path.');
-      }
-
-      const span = this.getRequestedReadSpan(input);
-      if (span !== null && span < this.behaviorPolicy.retrieval.minReadWindowLines) {
-        const smallReadCount = this.registerSmallReadWindow(filePath, span);
-        if (smallReadCount > this.behaviorPolicy.retrieval.maxConsecutiveSmallWindowReadsPerFile) {
-          throw new Error(
-            `fs_read window too narrow repeatedly for "${filePath}" (${span} lines). Broaden read window or read full file before further micro-slices.`
-          );
-        }
-      } else if (span === null || span >= this.behaviorPolicy.retrieval.minReadWindowLines) {
-        this.smallReadWindowByPath.set(filePath, 0);
-      }
-
-      if (this.isSecondaryArtifactPath(filePath) && !this.taskExplicitlyRequestsSecondaryArtifacts()) {
-        throw new Error(
-          `Blocked low-signal file "${filePath}". Read primary source files first (avoid backup/dist/build artifacts unless user explicitly asked).`
-        );
-      }
-    }
-  }
-
-  private isSecondaryArtifactPath(filePath: string): boolean {
-    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-    return (
-      normalized.includes('/dist/')
-      || normalized.includes('/build/')
-      || normalized.endsWith('.map')
-      || normalized.endsWith('.min.js')
-      || normalized.includes('.backup')
-      || normalized.endsWith('.bak')
-      || normalized.endsWith('.orig')
-      || normalized.endsWith('.tmp')
+    this.toolInputNormalizer.assertToolCallIsAllowed(
+      toolName,
+      input,
+      this.buildNormalizerContext(),
+      this.taskExplicitlyRequestsSecondaryArtifacts(),
     );
-  }
-
-  private isGuardRejectedToolCallError(errorMessage: string): boolean {
-    return (
-      errorMessage.startsWith('Blocked low-signal file')
-      || errorMessage.includes('missing required input field')
-      || errorMessage.includes('requires a non-empty glob pattern')
-      || errorMessage.includes('requires a non-empty file path')
-    );
-  }
-
-  private findMissingRequiredToolParams(
-    toolName: string,
-    input: Record<string, unknown>
-  ): string[] {
-    const definition = this.toolRegistry.getDefinitions().find((d) => d.function.name === toolName);
-    const params = definition?.function.parameters as { required?: unknown } | undefined;
-    const required = Array.isArray(params?.required)
-      ? params.required.filter((value): value is string => typeof value === 'string')
-      : [];
-
-    if (required.length === 0) {
-      return [];
-    }
-
-    return required.filter((field) => {
-      const value = input[field];
-      if (value === undefined || value === null) {
-        return true;
-      }
-      if (typeof value === 'string' && value.trim().length === 0) {
-        return true;
-      }
-      return false;
-    });
-  }
-
-  private tryResolvePrimarySourcePath(filePath: string): string | null {
-    const normalized = filePath.replace(/\\/g, '/');
-    const lower = normalized.toLowerCase();
-    const removableSuffixes = ['.backup', '.bak', '.orig', '.tmp'];
-    const matched = removableSuffixes.find((suffix) => lower.endsWith(suffix));
-    if (!matched) {
-      return null;
-    }
-
-    const candidate = normalized.slice(0, normalized.length - matched.length);
-    const absCandidate = path.isAbsolute(candidate)
-      ? candidate
-      : path.join(this.config.workingDir, candidate);
-
-    if (!fs.existsSync(absCandidate)) {
-      return null;
-    }
-
-    return path.isAbsolute(filePath) ? absCandidate : candidate;
-  }
-
-  private tryResolveTsSourcePath(filePath: string): string | null {
-    const normalized = filePath.replace(/\\/g, '/');
-    if (!normalized.endsWith('.js')) {
-      return null;
-    }
-
-    const base = normalized.slice(0, -3);
-    const candidates = [`${base}.ts`, `${base}.tsx`];
-    for (const candidate of candidates) {
-      const absCandidate = path.isAbsolute(candidate)
-        ? candidate
-        : path.join(this.config.workingDir, candidate);
-      if (fs.existsSync(absCandidate)) {
-        return path.isAbsolute(filePath) ? absCandidate : candidate;
-      }
-    }
-    return null;
   }
 
   private taskExplicitlyRequestsSecondaryArtifacts(): boolean {
@@ -2590,56 +2273,27 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
       return false;
     }
 
-    const likelyMultiStep = /(fix|refactor|implement|add|change|update|investigate|analyze|проанализ|исправ|добав|обнов|сделай|проверь)/i.test(task);
-    return likelyMultiStep;
+    return /(fix|refactor|implement|add|change|update|investigate|analyze|проанализ|исправ|добав|обнов|сделай|проверь)/i.test(task);
   }
 
   private computeIterationBudget(_task: string): number {
-    const configured = this.config.maxIterations || 25;
-    // Budget is set by LLM classification in inferTaskIntent (called before this).
-    if (this.taskBudget !== null) {
-      return Math.min(this.taskBudget, configured);
-    }
-    return Math.min(configured, 12);
+    return this.iterationBudget.computeIterationBudget({
+      maxIterations: this.config.maxIterations || 25,
+      taskBudget: this.taskBudget,
+      lastSignalIteration: this.lastSignalIteration,
+      progress: { ...this.progressTracker.state },
+    });
   }
 
   private async computeTokenBudget(_task: string): Promise<number> {
-    const sessionId = this.config.sessionId;
-    if (!sessionId || !this.sessionRootDir) {
-      return 0;
-    }
-
-    try {
-      const sessionManager = new SessionManager(this.sessionRootDir);
-      const baseline = await sessionManager.getKpiBaseline(sessionId);
-      if (!baseline || baseline.samples < 5 || baseline.tokenHistory.length < 5) {
-        return 0;
-      }
-
-      const tokenPool = baseline.tokenHistory.filter((value) => Number.isFinite(value) && value > 0);
-      if (tokenPool.length < 5) {
-        return 0;
-      }
-
-      const qualityAwarePool: number[] = [];
-      for (let i = 0; i < tokenPool.length; i++) {
-        const quality = baseline.qualityScoreHistory[i] ?? 0;
-        if (quality >= 0.75) {
-          qualityAwarePool.push(tokenPool[i]!);
-        }
-      }
-
-      const source = qualityAwarePool.length >= 5 ? qualityAwarePool : tokenPool;
-      const p75 = this.percentile(source, 0.75);
-      const p90 = this.percentile(source, 0.9);
-      if (p75 <= 0 || p90 <= 0) {
-        return 0;
-      }
-
-      return Math.max(Math.round(p75), Math.round(p90 * 0.8));
-    } catch {
-      return 0;
-    }
+    return this.iterationBudget.computeTokenBudget({
+      maxIterations: this.config.maxIterations || 25,
+      taskBudget: this.taskBudget,
+      sessionId: this.config.sessionId,
+      sessionRootDir: this.sessionRootDir,
+      lastSignalIteration: this.lastSignalIteration,
+      progress: { ...this.progressTracker.state },
+    });
   }
 
   private getCostAwareToolSet(
@@ -2697,34 +2351,19 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
   }
 
   private hasStrongEvidenceSignal(iterationsUsed: number): boolean {
-    const toolCallsTotal = Array.from(this.toolsUsedCount.values()).reduce((sum, count) => sum + count, 0);
-    const evidenceCount = this.filesRead.size + this.filesModified.size + this.filesCreated.size;
-    const evidenceDensity = iterationsUsed > 0 ? evidenceCount / iterationsUsed : 0;
-    const driftRate = toolCallsTotal > 0 ? Math.max(0, this.touchedDomains.size - 1) / toolCallsTotal : 0;
-    const toolErrorRate = toolCallsTotal > 0 ? this.toolErrorCount / toolCallsTotal : 0;
-
-    return (
-      evidenceCount >= 3
-      && evidenceDensity >= 0.55
-      && driftRate <= 0.08
-      && toolErrorRate <= 0.1
-    );
+    return this.qualityGate.hasStrongEvidenceSignal({
+      toolsUsedCount: this.toolsUsedCount,
+      filesRead: this.filesRead,
+      filesModified: this.filesModified,
+      filesCreated: this.filesCreated,
+      touchedDomains: this.touchedDomains,
+      toolErrorCount: this.toolErrorCount,
+      iterationsUsed,
+    });
   }
 
   private isLikelyActionTask(task: string): boolean {
-    if (this.taskIntent) {
-      return this.taskIntent === 'action';
-    }
-    return /(create|implement|fix|patch|write|edit|add|remove|rename|refactor|удали|создай|исправ|добав|переимен|рефактор)/i.test(task);
-  }
-
-  private percentile(values: number[], percentile: number): number {
-    if (values.length === 0) {
-      return 0;
-    }
-    const sorted = [...values].sort((a, b) => a - b);
-    const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * percentile) - 1));
-    return sorted[index] || 0;
+    return isLikelyActionTask(task, this.taskIntent);
   }
 
   private async forceSynthesisFromHistory(input: {
@@ -2835,132 +2474,43 @@ Do not continue exploration. Finalize with current evidence.`;
     } as AgentEvent);
 
     this.transitionPhase('reporting', 'forced synthesis result');
-    return await this.createSuccessResult({
+    return this.createSuccessResult({
       success: true,
       summary: synthesizedAnswer,
     }, iteration);
   }
 
   private shouldNudgeConvergence(iteration: number, maxIterations: number, task: string): boolean {
-    if (maxIterations <= 6 || iteration < 4) {
-      return false;
-    }
-    const taskLooksActionHeavy = /(create|implement|fix|patch|write|edit|add|удали|создай|исправ|добав)/i.test(task);
-    if (taskLooksActionHeavy && this.filesModified.size === 0 && this.filesCreated.size === 0) {
-      return false;
-    }
-    const totalToolCalls = Array.from(this.toolsUsedCount.values()).reduce((sum, count) => sum + count, 0);
-    return totalToolCalls >= 4;
+    return this.qualityGate.shouldNudgeConvergence({
+      iteration,
+      maxIterations,
+      task,
+      filesModified: this.filesModified,
+      filesCreated: this.filesCreated,
+      toolsUsedCount: this.toolsUsedCount,
+    });
   }
 
-  private evaluateQualityGate(iterationsUsed: number): {
-    status: 'pass' | 'partial';
-    score: number;
-    reasons: string[];
-    nextChecks?: string[];
-  } {
-    const reasons: string[] = [];
-    let score = 1;
-
-    const toolCallsTotal = Array.from(this.toolsUsedCount.values()).reduce((sum, count) => sum + count, 0);
-    const todoToolCalls = (this.toolsUsedCount.get('todo_create') ?? 0)
-      + (this.toolsUsedCount.get('todo_update') ?? 0)
-      + (this.toolsUsedCount.get('todo_get') ?? 0);
-    const driftDomainCount = this.touchedDomains.size;
-    const driftRate = toolCallsTotal > 0 ? Math.max(0, driftDomainCount - 1) / toolCallsTotal : 0;
-    const evidenceCount = this.filesRead.size + this.filesModified.size + this.filesCreated.size;
-    const evidenceDensity = iterationsUsed > 0 ? evidenceCount / iterationsUsed : 0;
-    const toolErrorRate = toolCallsTotal > 0 ? this.toolErrorCount / toolCallsTotal : 0;
-    const ledgerSummary = this.taskLedger.getSummary();
-
-    if (toolErrorRate >= 0.3) {
-      reasons.push(`high tool error rate (${(toolErrorRate * 100).toFixed(0)}%)`);
-      score -= 0.35;
-    }
-    if (driftRate >= 0.2 && driftDomainCount >= 2) {
-      reasons.push(`scope drift detected (${driftDomainCount} domains)`);
-      score -= 0.25;
-    }
-    if (evidenceDensity < 0.2 && toolCallsTotal >= 5) {
-      if (this.searchSignalHits === 0) {
-        reasons.push('low evidence density');
-        score -= 0.2;
-      } else {
-        reasons.push('evidence mostly from search matches; direct verification remains limited');
-        score -= 0.08;
-      }
-    }
-    if (this.currentTask && this.isLikelyMultiStepTask(this.currentTask) && iterationsUsed >= 5 && todoToolCalls === 0) {
-      reasons.push('missing progress tracking on multi-step task');
-      score -= 0.15;
-    }
-    if (ledgerSummary.failedSteps > 0) {
-      reasons.push(`${ledgerSummary.failedSteps} failed execution step(s)`);
-      score -= 0.2;
-    }
-    if (ledgerSummary.pendingSteps > 0) {
-      reasons.push(`${ledgerSummary.pendingSteps} pending step(s) at completion`);
-      score -= 0.1;
-    }
-
-    if (score < 0) {
-      score = 0;
-    }
-
-    const result: {
-      status: 'pass' | 'partial';
-      score: number;
-      reasons: string[];
-      nextChecks?: string[];
-    } = {
-      status: score >= 0.55 ? 'pass' : 'partial',
-      score,
-      reasons,
-    };
-    if (result.status === 'partial') {
-      result.nextChecks = this.suggestQualityNextChecks(reasons);
-    }
-    return result;
-  }
-
-  private isLikelyMultiStepTask(task: string): boolean {
-    return /(пошаг|step-by-step|steps|checklist|проверь|investigate|analyze|refactor|implement|migration|audit)/i.test(task);
-  }
-
-  private suggestQualityNextChecks(reasons: string[]): string[] {
-    const checks: string[] = [];
-    for (const reason of reasons) {
-      const normalized = reason.toLowerCase();
-      if (normalized.includes('drift')) {
-        checks.push('Restrict scope to the primary target and rerun focused discovery.');
-      } else if (normalized.includes('evidence')) {
-        checks.push('Collect concrete evidence from relevant resources before final response.');
-      } else if (normalized.includes('tool error')) {
-        checks.push('Retry failed tool steps or use alternate capabilities for the same goal.');
-      } else if (normalized.includes('progress tracking')) {
-        checks.push('Create/update progress checklist and confirm completion before reporting.');
-      } else if (normalized.includes('failed execution') || normalized.includes('pending step')) {
-        checks.push('Resolve failed or pending execution steps before finalizing.');
-      }
-    }
-    return Array.from(new Set(checks)).slice(0, 4);
+  private evaluateQualityGate(iterationsUsed: number) {
+    return this.qualityGate.evaluate({
+      toolsUsedCount: this.toolsUsedCount,
+      filesRead: this.filesRead,
+      filesModified: this.filesModified,
+      filesCreated: this.filesCreated,
+      toolErrorCount: this.toolErrorCount,
+      touchedDomains: this.touchedDomains,
+      searchSignalHits: this.searchSignalHits,
+      taskLedger: this.taskLedger,
+      currentTask: this.currentTask,
+      iterationsUsed,
+    });
   }
 
   private buildNeedsClarificationSummary(
     originalSummary: string,
     gate: { reasons: string[]; nextChecks?: string[] }
   ): string {
-    const nextChecks = gate.nextChecks && gate.nextChecks.length > 0
-      ? gate.nextChecks
-      : ['Run one focused verification pass and provide evidence-backed findings.'];
-    const reasons = gate.reasons.length > 0 ? gate.reasons : ['insufficient confidence'];
-    return `${originalSummary}
-
-[Needs Clarification]
-- Confidence: partial
-- Reasons: ${reasons.join('; ')}
-- Next checks:
-${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
+    return this.qualityGate.buildNeedsClarificationSummary(originalSummary, gate);
   }
 
   private transitionPhase(
@@ -3138,42 +2688,8 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
   }
 
   private trackDomainTouch(toolName: string, input: Record<string, unknown>): void {
-    if (!this.shouldTrackDomainForTool(toolName)) {
-      return;
-    }
-
-    const candidates = [input.path, input.directory, input.cwd]
-      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-
-    for (const value of candidates) {
-      const domain = this.extractTopLevelDomain(value);
-      if (domain) {
-        this.touchedDomains.add(domain);
-      }
-    }
-  }
-
-  private shouldTrackDomainForTool(toolName: string): boolean {
-    return toolName.startsWith('fs_') || toolName.includes('search') || toolName === 'shell_exec';
-  }
-
-  private extractTopLevelDomain(pathLike: string): string | null {
     const baseDir = this.sessionRootDir || this.config.workingDir || process.cwd();
-    const absolutePath = path.isAbsolute(pathLike)
-      ? path.normalize(pathLike)
-      : path.normalize(path.resolve(baseDir, pathLike));
-    const relative = path.relative(baseDir, absolutePath);
-
-    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-      return null;
-    }
-
-    const [topLevel] = relative.split(path.sep);
-    if (!topLevel || topLevel === '.') {
-      return null;
-    }
-
-    return topLevel;
+    this.progressTracker.trackDomainTouch(toolName, input, this.touchedDomains, baseDir);
   }
 
   /**
@@ -3201,7 +2717,7 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
 
     // Shell
     if (toolName === 'shell_exec') {
-      const resolvedCwd = this.resolveShellCwd(input);
+      const resolvedCwd = this.toolInputNormalizer.resolveShellCwd(input, this.config.workingDir || process.cwd());
       return {
         command: input.command as string,
         cwd: resolvedCwd,
@@ -3271,7 +2787,7 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
 
     // Shell execution
     else if (toolName === 'shell_exec') {
-      const resolvedCwd = this.resolveShellCwd(input);
+      const resolvedCwd = this.toolInputNormalizer.resolveShellCwd(input, this.config.workingDir || process.cwd());
       toolMetadata = {
         command: input.command as string,
         cwd: resolvedCwd,
@@ -3331,19 +2847,6 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
     });
   }
 
-  private resolveShellCwd(input: Record<string, unknown>): string {
-    const baseDir = this.config.workingDir || process.cwd();
-    const requested = typeof input.cwd === 'string' ? input.cwd.trim() : '.';
-    if (!requested || requested === '.') {
-      return baseDir;
-    }
-    return path.resolve(baseDir, requested);
-  }
-
-  private isRiskyShellCommand(command: string): boolean {
-    return /\b(pnpm|npm|yarn)\s+(test|lint|build|qa)\b/i.test(command);
-  }
-
   /**
    * Record tool execution in trace
    */
@@ -3387,18 +2890,16 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
    * - toolCallId: matches the id from the tool_call
    */
   private createToolResultMessage(toolCallId: string, _toolName: string, result: ToolResult, iteration?: number): LLMMessage {
-    const MAX_TOOL_OUTPUT_CHARS = 8000; // ~2000 tokens per tool result
-
     let output = result.success
       ? result.output || 'Success'
       : `Error${result.errorDetails?.code ? ` [${result.errorDetails.code}]` : ''}: ${result.error}`;
 
     const originalLength = output.length;
-    const wasTruncated = originalLength > MAX_TOOL_OUTPUT_CHARS;
+    const wasTruncated = originalLength > AGENT_CONTEXT.maxToolOutputChars;
 
     // Truncate if too long
     if (wasTruncated) {
-      output = output.slice(0, MAX_TOOL_OUTPUT_CHARS) + '\n\n[...output truncated, showing first 8000 chars...]';
+      output = output.slice(0, AGENT_CONTEXT.maxToolOutputChars) + `\n\n[...output truncated, showing first ${AGENT_CONTEXT.maxToolOutputChars} chars...]`;
 
       // Trace context:trim event to debug context window management
       if (this.tracer && iteration !== undefined) {
@@ -3981,27 +3482,13 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
    * Track file operations
    */
   private trackFileOperation(toolName: string, input: Record<string, unknown>, _result?: unknown): void {
-    const filePath = input.path as string | undefined;
-
-    if (!filePath) {
-      return;
-    }
-
-    if (toolName === 'fs_write') {
-      if (!this.filesModified.has(filePath)) {
-        this.filesCreated.add(filePath);
-      }
-    } else if (toolName === 'fs_patch' || toolName === 'fs_edit') {
-      this.filesModified.add(filePath);
-      this.filesCreated.delete(filePath);
-    } else if (toolName === 'fs_read') {
-      this.filesRead.add(filePath);
-    }
+    this.progressTracker.trackFileOperation(toolName, input, {
+      filesRead: this.filesRead,
+      filesModified: this.filesModified,
+      filesCreated: this.filesCreated,
+    });
   }
 
-  /**
-   * Phase 2: Update progress tracker after each iteration
-   */
   private updateProgressTracker(
     toolName: string,
     outputSize: number,
@@ -4012,75 +3499,25 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
       searchSignalHits: number;
     }
   ): void {
-    // Track last 3 tool calls
-    this.progressTracker.lastToolCalls.push(toolName);
-    if (this.progressTracker.lastToolCalls.length > 3) {
-      this.progressTracker.lastToolCalls.shift();
-    }
-
-    // Track output sizes
-    this.progressTracker.lastOutputSizes.push(outputSize);
-    if (this.progressTracker.lastOutputSizes.length > 3) {
-      this.progressTracker.lastOutputSizes.shift();
-    }
-
-    const previousOutputSize = this.progressTracker.lastOutputSizes.length >= 2
-      ? this.progressTracker.lastOutputSizes[this.progressTracker.lastOutputSizes.length - 2] ?? 0
-      : 0;
-    const outputGrowth = outputSize - previousOutputSize;
-    const outputGrowthRatio = previousOutputSize > 0 ? outputSize / previousOutputSize : (outputSize > 0 ? 1 : 0);
-    const searchSignalDelta = Math.max(0, input.searchSignalHits - this.progressTracker.lastSearchSignalHits);
-    const failedToolDelta = this.progressTracker.lastFailureCount - input.failedToolsThisIteration;
-    const repeatedSingleTool = this.progressTracker.lastToolCalls.length >= 3
-      && new Set(this.progressTracker.lastToolCalls.slice(-3)).size === 1;
-
-    let progressScore = 0;
-    if (input.evidenceDelta > 0) {
-      progressScore += 3;
-    }
-    if (searchSignalDelta > 0) {
-      progressScore += 2;
-    }
-    if (failedToolDelta > 0) {
-      progressScore += 2;
-    }
-    if (outputGrowth >= 300 || outputGrowthRatio >= 1.35) {
-      progressScore += 1;
-    }
-    if (!repeatedSingleTool && this.progressTracker.lastToolCalls.length >= 2) {
-      progressScore += 1;
-    }
-
-    if (progressScore >= 2) {
-      this.progressTracker.iterationsSinceProgress = 0;
-      this.progressTracker.lastProgressIteration = input.iteration;
-    } else if (progressScore === 1) {
-      // Weak but real signal: avoid false "hard stall" and keep momentum.
-      this.progressTracker.iterationsSinceProgress = Math.max(0, this.progressTracker.iterationsSinceProgress - 1);
-      this.progressTracker.lastProgressIteration = input.iteration;
-    } else {
-      this.progressTracker.iterationsSinceProgress += 1;
-    }
-
-    this.progressTracker.lastFailureCount = input.failedToolsThisIteration;
-    this.progressTracker.lastSearchSignalHits = input.searchSignalHits;
+    this.progressTracker.updateProgress({
+      toolName,
+      outputSize,
+      ...input,
+    });
   }
 
   private getEvidenceProgressScore(): number {
-    return (
-      this.filesRead.size
-      + this.filesModified.size * 2
-      + this.filesCreated.size * 2
-      + this.searchSignalHits
-      + this.recentSearchEvidence.length
-    );
+    return this.progressTracker.getEvidenceProgressScore({
+      filesRead: this.filesRead,
+      filesModified: this.filesModified,
+      filesCreated: this.filesCreated,
+      searchSignalHits: this.searchSignalHits,
+      recentSearchEvidenceCount: this.recentSearchEvidence.length,
+    });
   }
 
   private countFailedToolResults(toolResults: LLMMessage[]): number {
-    return toolResults.reduce((count, message) => {
-      const content = typeof message.content === 'string' ? message.content : '';
-      return content.startsWith('Error:') ? count + 1 : count;
-    }, 0);
+    return countFailedToolResults(toolResults);
   }
 
   private shouldTriggerReflection(input: {
@@ -4102,13 +3539,13 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
       return false;
     }
 
-    const repeatedSingleTool = this.progressTracker.lastToolCalls.length >= 3
-      && new Set(this.progressTracker.lastToolCalls.slice(-3)).size === 1;
+    const repeatedSingleTool = this.progressTracker.state.lastToolCalls.length >= 3
+      && new Set(this.progressTracker.state.lastToolCalls.slice(-3)).size === 1;
 
     return (
       input.failedToolsThisIteration > 0
       || repeatedSingleTool
-      || this.progressTracker.iterationsSinceProgress >= this.progressTracker.stuckThreshold - 1
+      || this.progressTracker.state.iterationsSinceProgress >= this.progressTracker.state.stuckThreshold - 1
     );
   }
 
@@ -4271,75 +3708,6 @@ ${toolRows.join('\n') || '(none)'}`;
     return null;
   }
 
-  private getRequestedReadSpan(input: Record<string, unknown>): number | null {
-    const offset = Number(input.offset);
-    const limit = Number(input.limit);
-    if (Number.isFinite(limit) && limit > 0) {
-      return Math.floor(limit);
-    }
-
-    const startLine = Number(input.startLine);
-    const endLine = Number(input.endLine);
-    if (Number.isFinite(startLine) && Number.isFinite(endLine) && endLine >= startLine) {
-      return endLine - startLine + 1;
-    }
-    if (Number.isFinite(offset) && offset > 0 && Number.isFinite(limit) && limit > 0) {
-      return Math.floor(limit);
-    }
-    return null;
-  }
-
-  private registerSmallReadWindow(filePath: string, _span: number): number {
-    const current = this.smallReadWindowByPath.get(filePath) ?? 0;
-    const updated = current + 1;
-    this.smallReadWindowByPath.set(filePath, updated);
-    return updated;
-  }
-
-  private computeAdaptiveReadLimit(
-    filePath: string,
-    requestedLimit: number | undefined,
-    offset: number
-  ): number {
-    const knownLines = this.fileTotalLinesByPath.get(filePath);
-    const currentAttempts = this.fileReadAttemptsByPath.get(filePath) ?? 0;
-    const nextAttempts = currentAttempts + 1;
-    this.fileReadAttemptsByPath.set(filePath, nextAttempts);
-
-    if (requestedLimit && requestedLimit >= 120) {
-      return Math.min(1000, requestedLimit);
-    }
-
-    let baseline = this.currentTier === 'small' ? 180 : this.currentTier === 'medium' ? 300 : 500;
-
-    if (knownLines && knownLines <= this.behaviorPolicy.retrieval.smallFileReadAllThresholdLines) {
-      baseline = Math.min(1000, knownLines);
-    } else if (knownLines && knownLines >= 3000) {
-      baseline = this.currentTier === 'small' ? 280 : this.currentTier === 'medium' ? 650 : 1000;
-    } else if (knownLines && knownLines >= 1500) {
-      baseline = this.currentTier === 'small' ? 240 : this.currentTier === 'medium' ? 500 : 900;
-    }
-
-    // If agent keeps reading same file in slices, widen window progressively.
-    if (nextAttempts >= 3) {
-      baseline = Math.min(1000, Math.round(baseline * 1.4));
-    }
-    if (nextAttempts >= 5) {
-      baseline = Math.min(1000, Math.round(baseline * 1.6));
-    }
-
-    // Near tail reads don't need massive windows.
-    if (knownLines && offset > Math.max(1, knownLines - 400)) {
-      baseline = Math.min(baseline, 400);
-    }
-
-    if (requestedLimit && requestedLimit > 0) {
-      return Math.min(1000, Math.max(requestedLimit, baseline));
-    }
-
-    return Math.min(1000, baseline);
-  }
-
   private async updateNoResultTracker(
     toolCalls: LLMToolCall[],
     toolResults: LLMMessage[],
@@ -4424,25 +3792,12 @@ ${toolRows.join('\n') || '(none)'}`;
   }
 
   private maybeExtendIterationBudget(currentIteration: number, currentBudget: number): number {
-    // Only check when approaching the limit
-    const remainingIterations = Math.max(0, currentBudget - currentIteration);
-    if (remainingIterations > 2) {
-      return currentBudget;
-    }
-
-    // Extend only if agent is making progress toward the goal — no hard ceiling
-    const hasRecentSignal = this.lastSignalIteration > 0 && (currentIteration - this.lastSignalIteration) <= 3;
-    const hasRecentProgress = this.progressTracker.lastProgressIteration > 0
-      && (currentIteration - this.progressTracker.lastProgressIteration) <= 2;
-    const hasProgress = this.progressTracker.iterationsSinceProgress < this.progressTracker.stuckThreshold
-      || hasRecentSignal
-      || hasRecentProgress;
-
-    if (!hasProgress) {
-      return currentBudget;
-    }
-
-    return currentBudget + 5;
+    return this.iterationBudget.maybeExtend(currentIteration, currentBudget, {
+      maxIterations: this.config.maxIterations || 25,
+      taskBudget: this.taskBudget,
+      lastSignalIteration: this.lastSignalIteration,
+      progress: { ...this.progressTracker.state },
+    });
   }
 
   private buildNoResultConclusionSummary(): string {
@@ -4480,24 +3835,12 @@ ${toolRows.join('\n') || '(none)'}`;
     return snippets;
   }
 
-  /**
-   * Phase 2: Detect if agent is stuck in a loop
-   */
   private detectStuck(): boolean {
-    // Pattern 1: Same 3 tools in a row
-    if (this.progressTracker.lastToolCalls.length >= 3) {
-      const lastThree = this.progressTracker.lastToolCalls.slice(-3);
-      if (new Set(lastThree).size === 1) {
-        return true; // Using same tool 3 times consecutively
-      }
-    }
-
-    // Pattern 2: No progress for threshold iterations
-    if (this.progressTracker.iterationsSinceProgress >= this.progressTracker.stuckThreshold) {
-      return true; // Output size hasn't grown for 3+ iterations
-    }
-
-    return false;
+    return this.qualityGate.detectStuck({
+      lastToolCalls: this.progressTracker.state.lastToolCalls,
+      iterationsSinceProgress: this.progressTracker.state.iterationsSinceProgress,
+      stuckThreshold: this.progressTracker.state.stuckThreshold,
+    });
   }
 
   private evaluateTierEscalationNeed(input: {
@@ -4505,40 +3848,19 @@ ${toolRows.join('\n') || '(none)'}`;
     iteration: number;
     maxIterations: number;
   }): { shouldEscalate: boolean; reason: string } {
-    if (!this.config.enableEscalation || this.config.onAskParent || input.tier === 'large') {
-      return { shouldEscalate: false, reason: '' };
-    }
-
-    const minIterationsBeforeEscalation = Math.max(3, Math.ceil(input.maxIterations * 0.25));
-    if (input.iteration < minIterationsBeforeEscalation) {
-      return { shouldEscalate: false, reason: '' };
-    }
-
-    const noProgress = this.progressTracker.iterationsSinceProgress >= this.progressTracker.stuckThreshold;
-    if (!noProgress) {
-      return { shouldEscalate: false, reason: '' };
-    }
-
-    const hasRecentSignal = this.lastSignalIteration > 0 && (input.iteration - this.lastSignalIteration) <= 3;
-    const hasRecentProgress = this.progressTracker.lastProgressIteration > 0
-      && (input.iteration - this.progressTracker.lastProgressIteration) <= 2;
-    if (hasRecentSignal || hasRecentProgress) {
-      return { shouldEscalate: false, reason: '' };
-    }
-
-    const repeatedSingleTool = this.progressTracker.lastToolCalls.length >= 3
-      && new Set(this.progressTracker.lastToolCalls.slice(-3)).size === 1;
-    if (repeatedSingleTool) {
-      return { shouldEscalate: true, reason: 'repeating same tool calls without new signal' };
-    }
-
-    const iterationUtilization = input.maxIterations > 0 ? input.iteration / input.maxIterations : 1;
-    const evidenceCount = this.filesRead.size + this.filesModified.size + this.filesCreated.size;
-    if (iterationUtilization >= 0.45 && evidenceCount <= 2) {
-      return { shouldEscalate: true, reason: 'low evidence accumulation and stalled progress' };
-    }
-
-    return { shouldEscalate: false, reason: '' };
+    return this.tierSelector.evaluateEscalationNeed({
+      ...input,
+      enableEscalation: !!this.config.enableEscalation,
+      hasOnAskParent: !!this.config.onAskParent,
+      progressIterationsSinceProgress: this.progressTracker.state.iterationsSinceProgress,
+      progressStuckThreshold: this.progressTracker.state.stuckThreshold,
+      lastSignalIteration: this.lastSignalIteration,
+      lastProgressIteration: this.progressTracker.state.lastProgressIteration,
+      lastToolCalls: this.progressTracker.state.lastToolCalls,
+      filesRead: this.filesRead,
+      filesModified: this.filesModified,
+      filesCreated: this.filesCreated,
+    });
   }
 
   /**
@@ -4826,340 +4148,20 @@ IMPORTANT: Do NOT mark question tasks as success only because text exists. Evide
     }
   }
 
-  /**
-   * Load project-specific agent instructions from AGENT.md or similar files
-   * Scans working directory for instruction files in priority order
-   */
-  private loadProjectInstructions(): string | null {
-    const workingDir = this.config.workingDir || process.cwd();
-
-    for (const fileName of INSTRUCTION_FILE_NAMES) {
-      const filePath = path.join(workingDir, fileName);
-      try {
-        if (fs.existsSync(filePath)) {
-          const content = fs.readFileSync(filePath, 'utf-8');
-          if (content.trim().length > 0) {
-            return content;
-          }
-        }
-      } catch {
-        // Ignore read errors, try next file
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Build system prompt with memory context and project instructions
-   */
   private async buildSystemPrompt(): Promise<string> {
     const responseMode = (
       this.config as unknown as { responseMode?: 'auto' | 'brief' | 'deep' }
     ).responseMode ?? 'auto';
-    let basePrompt = `You are an autonomous software engineering agent. You execute tasks end-to-end: research, implement, verify.
-
-# Core rules
-
-- NEVER answer from memory. Search codebase first, report only what you found in files.
-- Read files before editing. Understand existing code before modifying.
-- Verify your work. After editing, read the file back to confirm changes applied correctly.
-- Prefer editing existing files over creating new ones.
-- When stuck, try a different approach. Don't repeat the same failed action.
-
-# Response quality policy
-
-- Response mode: ${responseMode}
-- NEVER pad answer with generic statements. Prefer concrete facts from files/tools.
-- If confidence is limited, explicitly state uncertainty and what to verify next.
-
-Formatting by mode:
-- auto: choose format by question complexity.
-  - simple factual question -> concise direct answer (no forced long template)
-  - architecture/comparison/plan/debug question -> structured answer with sections
-- brief: concise answer by default, only essential points
-- deep: thorough structured answer with:
-  1) Key findings
-  2) Evidence (files/paths or tool outputs)
-  3) Gaps/uncertainties
-  4) Recommended next checks
-
-For auto mode complexity detection:
-- Treat as complex if request includes architecture/design/tradeoffs/comparison/plan/root-cause/migration/refactor,
-- or if it references multiple components/subsystems,
-- or if correctness/risk implications are high.
-- Otherwise keep answer short and direct.
-
-# Public reasoning traces (UI-visible)
-- Do NOT reveal private chain-of-thought. Keep internal reasoning private.
-- When calling tools, provide a short PUBLIC rationale first (1-2 sentences):
-  - what needs to be verified,
-  - why this tool helps,
-  - what result is expected.
-- Keep rationale concise and factual; these lines are shown in the UI between tool steps.
-
-# Conversation continuity
-- When conversation history is present, treat follow-up questions IN CONTEXT of previous turns.
-- Example: if user asked about one module/repository and then asks "what modules are there?", stay in the same scope first.
-- For follow-ups like "deeper/details/подробнее/глубже", first deepen the SAME files/packages from the previous answer.
-- Do NOT jump to a different top-level repo/package unless the user explicitly asks, or current scope has no relevant evidence.
-- ALWAYS match the user's language. If user writes in Russian, answer in Russian. If in English, answer in English.
-- Reference previous findings when relevant — don't repeat the same searches.
-- For simple directory listing questions ("what's in folder X?"), use fs_list or glob_search — not grep_search.
-
-# Scope strategy (no hard lock)
-- Do NOT assume global search is needed for every task.
-- If task appears local to one package/folder, first confirm local scope with fs_list/glob_search and continue there.
-- Keep scope flexible: narrow when evidence supports it, widen only if local scope has insufficient evidence.
-- Avoid cross-repo/package drift without explicit user request.
-
-# Retrieval policy
-- Avoid repetitive tiny fs_read slices. Prefer anchor-based reads with meaningful windows.
-- If file is small, read it fully instead of crawling line-by-line.
-- If repeated search passes produce no evidence, converge early: report what was checked and what remains uncertain.
-
-# Completeness protocol (for non-trivial analysis/audit tasks)
-- Before final report, run a short coverage pass:
-  1) primary symbols/entities from task text,
-  2) related synonyms/aliases,
-  3) failure/error variants (codes, keywords, provider-specific terms when relevant).
-- Do not stop after first hit when task asks for architecture/audit overview. Cross-check neighboring components (imports, callees, adjacent modules) to avoid missing major parts.
-- Keep findings categorized. Example for reliability audits: separate "LLM/provider-specific handling" from "generic infra/shell timeouts".
-- If something was not found, explicitly list what patterns were tried before concluding "not found".
-
-# Available tools
-
-## Search & Discovery
-- **find_definition** — find where a class/function/interface/type is defined. USE THIS FIRST for lookup queries.
-- **grep_search** — search for exact text or regex in file contents. Use for: imports, error messages, string patterns. Excludes node_modules/dist/.git by default; pass exclude=[] to search everywhere.
-- **glob_search** — find files by name pattern. Glob syntax: "*.ts", "*controller*", "src/**/*.tsx". NOT bare words. Same default excludes as grep_search.
-- **code_stats** — count lines/files by extension for a DIRECTORY scope. Do not use as proof for single-file line counts.
-
-## File Operations
-- **fs_read** — read file contents (with line numbers and metadata). ALWAYS read before editing.
-- **fs_write** — create new file or overwrite existing (use for new files).
-- **fs_patch** — replace a range of lines in existing file. Requires fs_read first. Line numbers are 1-indexed, inclusive.
-- **fs_list** — list directory contents.
-- **mass_replace** — batch find-and-replace across files. Use dryRun first to preview. Great for renaming across codebase.
-- Prefer primary source files over generated artifacts (dist/build/minified/backup) unless user explicitly asks for those artifacts.
-
-Tool semantics guardrails:
-- If user asks "how many lines in file X", use **fs_read(path=X)** and cite metadata.totalLines (or direct file content window evidence).
-- If user asks "how many lines in folder/package", use **code_stats(directory=...)**.
-- Do not present directory-level totals as file-level facts.
-
-## Execution
-- **shell_exec** — run shell commands (build, test, lint). Use to verify your changes work.
-  - Always be explicit about execution scope in monorepos: prefer package-local runs via cwd/filters before workspace-wide commands.
-  - Before running test/lint/build/qa, confirm current working directory and ensure it matches the target package.
-
-## Progress tracking
-- **todo_create** / **todo_update** / **todo_get** — track multi-step tasks. Create a checklist, mark items done.
-
-## Memory
-- **memory_get** — retrieve stored preferences and context.
-- **memory_finding** — store important discoveries with confidence level.
-- **memory_blocker** — record blockers you can't resolve.
-
-## Finishing
-- **report** — report your answer/result. Include evidence (file paths, code). Set confidence 0.0-1.0.
-
-# Workflow patterns
-
-## For research tasks (what/how/where questions):
-1. Search: find_definition or grep_search to locate relevant code
-2. Read: fs_read the files you found — get actual content, not just snippets
-3. Analyze: understand the code structure and relationships
-4. Report: report with file paths, code snippets, confidence
-
-## For edit tasks (create/modify/fix/add/refactor):
-1. Understand: read the target file and its surroundings first
-2. Plan: identify exactly what needs to change
-3. Edit: fs_patch for existing files, fs_write for new files
-4. Verify: fs_read the edited file to confirm changes are correct
-5. Test: shell_exec to run build/test if applicable
-6. Report: report with files changed and verification results
-
-## Progress discipline for 3+ step tasks:
-1. In first 1-2 iterations, create todo list with todo_create (3-7 concrete items).
-2. After each completed action block, mark item(s) with todo_update.
-3. Before final report, call todo_get and ensure all applicable items are done.
-4. If task is truly trivial (1-2 steps), skip todo tools and finish directly.
-
-## When stuck:
-- Try a different search approach (grep vs find_definition vs glob)
-- Read surrounding files for context
-- If truly blocked, report partial findings with low confidence — a partial answer beats an infinite loop
-- For routine tasks, aim to finish in ~3-10 meaningful steps. Avoid long exploratory loops once enough evidence is gathered.
-`;
-
-    // Add delegation section only for main agents (sub-agents don't have spawn_agent)
-    if (!this.config.parentAgentId) {
-      basePrompt += `
-## Delegation
-- **spawn_agent** — spawn a sub-agent for a subtask. The sub-agent works independently with its own iteration loop and returns the result. Use for: research in a different directory, isolated fixes, or multi-part analysis. Parameters: task (required string — be specific, sub-agent has no context), maxIterations (default 10), directory (optional, relative path for sub-agent workingDir).
-
-## For complex multi-part tasks:
-1. Break down: identify independent subtasks
-2. Delegate: use spawn_agent for each subtask (sub-agents work independently)
-3. Combine: merge sub-agent results into a unified answer
-4. Report: report the combined findings
-`;
-    }
-
-    // Add project-specific instructions from CLAUDE.md / AGENT.md (truncated to prevent overflow)
-    const projectInstructions = this.loadProjectInstructions();
-    if (projectInstructions) {
-      const MAX_INSTRUCTIONS_CHARS = 12000; // ~3000 tokens
-      const truncated = projectInstructions.length > MAX_INSTRUCTIONS_CHARS
-        ? projectInstructions.slice(0, MAX_INSTRUCTIONS_CHARS) + '\n\n[...instructions truncated...]'
-        : projectInstructions;
-      basePrompt += `\n\n**Project Instructions:**\n${truncated}`;
-    }
-
-    // Add memory context if available (already token-limited internally)
-    // Prefer structured memory when supported (includes corrections, last answer, constraints).
-    if (this.memory) {
-      let memoryContext = '';
-      if (typeof (this.memory as { getStructuredContext?: (maxTokens?: number) => Promise<string> }).getStructuredContext === 'function') {
-        memoryContext = await (this.memory as { getStructuredContext: (maxTokens?: number) => Promise<string> }).getStructuredContext(2500);
-      } else {
-        memoryContext = await this.memory.getContext(2000);
-      }
-      if (memoryContext.trim().length > 0) {
-        basePrompt += `\n\n**Previous Context from Memory:**\n${memoryContext}`;
-      }
-
-      // Check if there's an original user task in memory (from parent agent)
-      // Parent extracts structured context ONCE, sub-agent just reads it
-      const recentMemories = await this.memory.getRecent(20);
-      const originalTaskEntry = recentMemories.find(
-        (entry) => entry.metadata?.isOriginalUserTask === true
-      );
-
-      if (originalTaskEntry && this.currentTask !== originalTaskEntry.content) {
-        // Read structured context extracted by parent agent
-        const globalContext = originalTaskEntry.metadata?.globalContext;
-
-        basePrompt += `\n\n**⚠️ IMPORTANT CONTEXT - Original User Task:**\n${originalTaskEntry.content}\n`;
-        basePrompt += `\n**Your Current Subtask:**\n${this.currentTask}\n`;
-
-        if (globalContext?.targetDirectory) {
-          basePrompt += `\n**🎯 CRITICAL: Target Directory**\n`;
-          basePrompt += `All files must be created in: ${globalContext.targetDirectory}\n`;
-          basePrompt += `Do NOT write files to current directory unless explicitly required!\n`;
-        }
-
-        if (globalContext?.constraints && globalContext.constraints.length > 0) {
-          basePrompt += `\n**🚨 Constraints:**\n`;
-          globalContext.constraints.forEach((c) => {
-            basePrompt += `- ${c}\n`;
-          });
-        }
-
-        if (globalContext?.requirements && globalContext.requirements.length > 0) {
-          basePrompt += `\n**📋 Requirements:**\n`;
-          globalContext.requirements.forEach((r) => {
-            basePrompt += `- ${r}\n`;
-          });
-        }
-      }
-    }
-
-    // Keep a lightweight continuity note in system prompt.
-    // Full session history and trace context are injected via messages in executeWithTier.
-    if (this.config.sessionId && this.sessionRootDir) {
-      basePrompt += '\n\n# Session continuity\nUse previous turns already present in conversation messages as the primary context.\nDo not restate or duplicate long history from memory when it is already in messages.';
-    }
-
-    const workspaceMapPrompt = this.buildWorkspaceDiscoveryPrompt();
-    if (workspaceMapPrompt) {
-      basePrompt += `\n\n${workspaceMapPrompt}`;
-    }
-
-    return basePrompt;
-  }
-
-  /**
-   * Build cache key for tool call
-   * Normalizes input to ensure consistent keys (Phase 1, Step 1.4)
-   */
-  private buildCacheKey(toolName: string, input: Record<string, unknown>): string {
-    // Sort keys for consistent hashing
-    const sortedInput = Object.keys(input)
-      .sort()
-      .reduce((acc, key) => {
-        acc[key] = input[key];
-        return acc;
-      }, {} as Record<string, unknown>);
-
-    return JSON.stringify({ name: toolName, input: sortedInput });
-  }
-
-  /**
-   * Track tool calls and detect loops.
-   * Returns true if agent is stuck in a loop (same calls repeating).
-   */
-  private detectLoop(toolCalls: Array<{ name: string; arguments: string }>): boolean {
-    // Build signature for this iteration's tool calls
-    const sig = toolCalls.map(tc => `${tc.name}:${tc.arguments}`).sort().join('|');
-    this.recentToolCalls.push(sig);
-
-    // Keep last 6 iterations
-    if (this.recentToolCalls.length > 6) {
-      this.recentToolCalls.shift();
-    }
-
-    // Check if last 3 iterations have identical tool calls
-    if (this.recentToolCalls.length >= 3) {
-      const last3 = this.recentToolCalls.slice(-3);
-      if (last3[0] === last3[1] && last3[1] === last3[2]) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Get cached result if valid (not expired) (Phase 1, Step 1.4)
-   */
-  private getCachedResult(cacheKey: string): ToolResult | null {
-    const cached = this.toolResultCache.get(cacheKey);
-    if (!cached) {
-      return null;
-    }
-
-    const age = Date.now() - cached.timestamp;
-    if (age > Agent.CACHE_TTL_MS) {
-      this.toolResultCache.delete(cacheKey);
-      return null;
-    }
-
-    return cached.result;
-  }
-
-  /**
-   * Cache tool result (Phase 1, Step 1.4)
-   */
-  private cacheResult(cacheKey: string, result: ToolResult): void {
-    this.toolResultCache.set(cacheKey, {
-      result,
-      timestamp: Date.now(),
+    return this.systemPromptBuilder.build({
+      workingDir: this.config.workingDir || process.cwd(),
+      responseMode,
+      isSubAgent: !!this.config.parentAgentId,
+      sessionId: this.config.sessionId,
+      sessionRootDir: this.sessionRootDir,
+      currentTask: this.currentTask,
+      memory: this.memory,
+      workspaceDiscovery: this.workspaceDiscovery,
     });
-  }
-
-  /**
-   * Estimate time saved by cache hit (for logging) (Phase 1, Step 1.4)
-   */
-  private estimateSavedTimeMs(toolName: string): number {
-    const estimates: Record<string, number> = {
-      fs_read: 50,
-      grep_search: 200,
-      glob_search: 150,
-      shell_exec: 500,
-    };
-    return estimates[toolName] ?? 100;
   }
 
   /**

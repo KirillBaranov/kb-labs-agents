@@ -4,6 +4,7 @@
 
 import * as path from 'node:path';
 import type { ResultProcessor, TaskResult } from '@kb-labs/agent-contracts';
+import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 
 /**
  * Saves execution trace to .kb/traces/incremental/ directory using IncrementalTraceWriter
@@ -27,7 +28,6 @@ export class TraceSaverProcessor implements ResultProcessor {
     const traceFile = path.join(traceDir, `task-${timestamp}.ndjson`);
 
     // Save trace using IncrementalTraceWriter
-    const { IncrementalTraceWriter } = await import('../tracer/incremental-trace-writer.js');
     const tracer = new IncrementalTraceWriter('task-' + timestamp, {}, traceDir);
 
     // Add all trace entries
