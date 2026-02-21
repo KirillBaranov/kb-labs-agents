@@ -153,6 +153,9 @@ importers:
       '@kb-labs/agent-tools':
         specifier: workspace:*
         version: link:../agent-tools
+      '@kb-labs/agent-tracing':
+        specifier: workspace:*
+        version: link:../agent-tracing
       '@kb-labs/sdk':
         specifier: link:../../../kb-labs-sdk/packages/sdk
         version: link:../../../kb-labs-sdk/packages/sdk
@@ -215,9 +218,15 @@ importers:
       '@kb-labs/agent-contracts':
         specifier: workspace:*
         version: link:../agent-contracts
+      '@kb-labs/agent-history':
+        specifier: workspace:*
+        version: link:../agent-history
       '@kb-labs/agent-tools':
         specifier: workspace:*
         version: link:../agent-tools
+      '@kb-labs/agent-tracing':
+        specifier: workspace:*
+        version: link:../agent-tracing
       '@kb-labs/sdk':
         specifier: link:../../../kb-labs-sdk/packages/sdk
         version: link:../../../kb-labs-sdk/packages/sdk
@@ -237,6 +246,31 @@ importers:
       eslint:
         specifier: ^9
         version: 9.38.0
+      rimraf:
+        specifier: ^6.0.1
+        version: 6.0.1
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.0(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@24.10.4)
+
+  packages/agent-history:
+    dependencies:
+      '@kb-labs/agent-contracts':
+        specifier: workspace:*
+        version: link:../agent-contracts
+    devDependencies:
+      '@kb-labs/devkit':
+        specifier: link:../../../kb-labs-devkit
+        version: link:../../../kb-labs-devkit
+      '@types/node':
+        specifier: ^24.3.3
+        version: 24.10.4
       rimraf:
         specifier: ^6.0.1
         version: 6.0.1
@@ -283,12 +317,37 @@ importers:
       '@kb-labs/core-platform':
         specifier: link:../../../kb-labs-core/packages/core-platform
         version: link:../../../kb-labs-core/packages/core-platform
-      '@kb-labs/sdk':
-        specifier: link:../../../kb-labs-sdk/packages/sdk
-        version: link:../../../kb-labs-sdk/packages/sdk
       glob:
         specifier: ^11.0.2
         version: 11.0.3
+    devDependencies:
+      '@kb-labs/devkit':
+        specifier: link:../../../kb-labs-devkit
+        version: link:../../../kb-labs-devkit
+      '@types/node':
+        specifier: ^24.3.3
+        version: 24.10.4
+      rimraf:
+        specifier: ^6.0.1
+        version: 6.0.1
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.0(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@24.10.4)
+
+  packages/agent-tracing:
+    dependencies:
+      '@kb-labs/agent-contracts':
+        specifier: workspace:*
+        version: link:../agent-contracts
+      '@kb-labs/sdk':
+        specifier: link:../../../kb-labs-sdk/packages/sdk
+        version: link:../../../kb-labs-sdk/packages/sdk
     devDependencies:
       '@kb-labs/devkit':
         specifier: link:../../../kb-labs-devkit
