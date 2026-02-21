@@ -11,6 +11,9 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 export type TraceEventType =
+  // Lifecycle events (agent:start/end, iteration:start/end, status:change come from AgentEvent in events.ts)
+  | 'task:start'
+  | 'task:end'
   // Core events
   | 'iteration:detail'
   | 'llm:call'
@@ -18,6 +21,11 @@ export type TraceEventType =
   | 'memory:snapshot'
   | 'decision:point'
   | 'synthesis:forced'
+  // Memory observability events
+  | 'memory:fact_added'
+  | 'memory:archive_store'
+  | 'memory:summarization_result'
+  | 'memory:summarization_llm_call'
   // Debugging events
   | 'error:captured'
   | 'prompt:diff'
@@ -44,6 +52,38 @@ export interface BaseTraceEntry {
   type: TraceEventType;
   /** Which iteration (1-based) - optional for non-iteration events */
   iteration?: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Lifecycle Trace Events (trace-only, not in AgentEvent stream)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * task:start — includes systemPrompt and available tools.
+ * Complementary to agent:start (which is in AgentEvent/events.ts).
+ */
+export interface TaskStartEvent extends BaseTraceEntry {
+  type: 'task:start';
+  iteration: number;
+  task: string;
+  tier: string;
+  systemPrompt: string;
+  availableTools: Array<{ name: string; description: string }>;
+}
+
+/** task:end — final result summary at execution loop exit */
+export interface TaskEndEvent extends BaseTraceEntry {
+  type: 'task:end';
+  iteration: number;
+  success: boolean;
+  stopped?: boolean;
+  summary: string;
+  error?: string;
+  filesCreated: string[];
+  filesModified: string[];
+  filesRead: string[];
+  totalIterations: number;
+  totalTokens: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -179,6 +219,20 @@ export interface MemorySnapshotEvent extends BaseTraceEntry {
     searchesMade: number;
     toolsUsed: Record<string, number>; // {"fs:read": 5, "grep": 3}
   };
+
+  /** Two-tier memory: FactSheet snapshot (Tier 1) */
+  factSheet?: {
+    totalFacts: number;
+    estimatedTokens: number;
+    byCategory: Record<string, number>;
+  };
+
+  /** Two-tier memory: ArchiveMemory snapshot (Tier 2) */
+  archive?: {
+    totalEntries: number;
+    uniqueFiles: number;
+    totalChars: number;
+  };
 }
 
 /**
@@ -224,6 +278,123 @@ export interface SynthesisForcedTraceEvent extends BaseTraceEntry {
     content: string;
     tokens: number;
     durationMs: number;
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Memory Observability Events (3)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * memory:fact_added - Emitted when a fact is added/merged in the FactSheet
+ */
+export interface FactAddedEvent extends BaseTraceEntry {
+  type: 'memory:fact_added';
+  iteration: number;
+
+  fact: {
+    id: string;
+    category: string; // FactCategory
+    fact: string;
+    confidence: number;
+    source: string; // tool name or 'llm_extraction'
+    merged: boolean; // true if merged with existing fact (dedup)
+    superseded?: string; // id of replaced fact
+  };
+
+  factSheetStats: {
+    totalFacts: number;
+    estimatedTokens: number; // estimated tokens after addition
+    byCategory: Record<string, number>; // { file_content: 12, finding: 5, ... }
+  };
+}
+
+/**
+ * memory:archive_store - Emitted when a tool output is archived
+ */
+export interface ArchiveStoreEvent extends BaseTraceEntry {
+  type: 'memory:archive_store';
+  iteration: number;
+
+  entry: {
+    id: string;
+    toolName: string;
+    filePath?: string;
+    outputLength: number; // chars in full output
+    estimatedTokens: number;
+    keyFactsExtracted: number; // heuristic facts extracted
+  };
+
+  archiveStats: {
+    totalEntries: number;
+    totalChars: number;
+    uniqueFiles: number;
+    evicted: number; // entries evicted by this store
+  };
+}
+
+/**
+ * memory:summarization_result - Emitted after each LLM fact extraction cycle
+ */
+export interface SummarizationResultEvent extends BaseTraceEntry {
+  type: 'memory:summarization_result';
+  iteration: number;
+
+  input: {
+    iterationRange: [number, number]; // [startIter, endIter]
+    messagesCount: number;
+    inputChars: number;
+    inputTokens: number;
+  };
+
+  output: {
+    factsExtracted: number;
+    factsByCategory: Record<string, number>;
+    outputTokens: number;
+    llmDurationMs: number;
+  };
+
+  delta: {
+    factSheetBefore: number; // facts count before
+    factSheetAfter: number; // facts count after
+    tokensBefore: number; // estimated tokens before
+    tokensAfter: number; // estimated tokens after
+    newFacts: number;
+    mergedFacts: number;
+    evictedFacts: number;
+  };
+
+  efficiency: {
+    compressionRatio: number; // inputTokens / outputTokens
+    factDensity: number; // factsExtracted / messagesCount
+    newFactRate: number; // newFacts / factsExtracted
+  };
+}
+
+/**
+ * memory:summarization_llm_call - Raw LLM call made by SmartSummarizer.
+ * Useful for debugging fact extraction quality: see exact prompt sent and
+ * raw response received. Emitted alongside memory:summarization_result.
+ */
+export interface SummarizationLLMCallEvent extends BaseTraceEntry {
+  type: 'memory:summarization_llm_call';
+  iteration: number;
+
+  /** Exact prompt sent to LLM (full text, untruncated) */
+  prompt: string;
+
+  /** Raw LLM response content before JSON parsing */
+  rawResponse: string;
+
+  /** Whether JSON parsing succeeded */
+  parseSuccess: boolean;
+
+  /** Parse error message if parsing failed */
+  parseError?: string;
+
+  timing: {
+    durationMs: number;
+    outputTokens: number;
   };
 }
 
@@ -458,12 +629,22 @@ export interface LLMValidationEvent extends BaseTraceEntry {
  * Discriminated union of all trace event types
  */
 export type DetailedTraceEntry =
+  // Lifecycle (trace-only)
+  | TaskStartEvent
+  | TaskEndEvent
+  // Core
   | IterationDetailEvent
   | LLMCallEvent
   | ToolExecutionEvent
   | MemorySnapshotEvent
   | DecisionPointEvent
   | SynthesisForcedTraceEvent
+  // Memory observability
+  | FactAddedEvent
+  | ArchiveStoreEvent
+  | SummarizationResultEvent
+  | SummarizationLLMCallEvent
+  // Debugging
   | ErrorCapturedEvent
   | PromptDiffEvent
   | ToolFilterEvent

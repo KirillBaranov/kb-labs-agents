@@ -169,6 +169,89 @@ export interface PlanUpdate {
  */
 export type { AgentEventCallback, AgentEvent, AgentEventEmitter } from './events.js';
 
+// ═══════════════════════════════════════════════════════════════════════
+// Two-Tier Memory Types
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fact categories for the FactSheet (Tier 1: Hot Memory)
+ * Ordered by render/eviction priority (corrections first, environment last)
+ */
+export type FactCategory =
+  | 'correction'
+  | 'blocker'
+  | 'decision'
+  | 'finding'
+  | 'file_content'
+  | 'architecture'
+  | 'tool_result'
+  | 'environment';
+
+/**
+ * Single fact entry in the FactSheet
+ */
+export interface FactSheetEntry {
+  /** Unique fact ID (auto-generated) */
+  id: string;
+  /** Iteration when this fact was created/updated */
+  iteration: number;
+  /** Fact category */
+  category: FactCategory;
+  /** The fact text */
+  fact: string;
+  /** Confidence level 0.0-1.0 */
+  confidence: number;
+  /** Source of the fact (tool name or 'llm_extraction') */
+  source: string;
+  /** When this fact was last updated */
+  updatedAt: string;
+  /** Number of times this fact was confirmed/merged */
+  confirmations: number;
+  /** ID of fact this supersedes (if any) */
+  supersedes?: string;
+}
+
+/**
+ * Single entry in the ArchiveMemory (Tier 2: Cold Storage)
+ */
+export interface ArchiveEntry {
+  /** Unique archive entry ID */
+  id: string;
+  /** Iteration when this was stored */
+  iteration: number;
+  /** Tool that produced this output */
+  toolName: string;
+  /** Tool input parameters */
+  toolInput: Record<string, unknown>;
+  /** Full untruncated tool output */
+  fullOutput: string;
+  /** Length of fullOutput in chars */
+  outputLength: number;
+  /** Estimated tokens (chars / 4) */
+  estimatedTokens: number;
+  /** ISO timestamp */
+  timestamp: string;
+  /** File path if this was a file read */
+  filePath?: string;
+  /** Key facts extracted from this output */
+  keyFacts?: string[];
+}
+
+/**
+ * Configuration for the two-tier memory system
+ * All fields optional — defaults from AGENT_MEMORY constants
+ */
+export interface TwoTierMemoryConfig {
+  /** Max estimated tokens for FactSheet render (default: 5000) */
+  factSheetMaxTokens?: number;
+  /** Max number of facts in FactSheet (default: 60) */
+  factSheetMaxEntries?: number;
+  /** Max entries in ArchiveMemory (default: 200) */
+  archiveMaxEntries?: number;
+  /** Min confidence for auto-extracted facts (default: 0.5) */
+  autoFactMinConfidence?: number;
+}
+
 /**
  * Agent configuration
  */
@@ -192,6 +275,20 @@ export interface AgentConfig {
   resultProcessors?: ResultProcessor[];
   /** Event callback for streaming agent execution events to UI (optional) */
   onEvent?: import('./events.js').AgentEventCallback;
+  /** Two-tier memory configuration (FactSheet + ArchiveMemory, always active) */
+  twoTierMemory?: TwoTierMemoryConfig;
+  /**
+   * Pre-loaded conversation history from previous runs in this session.
+   * When provided, agent skips disk read to avoid race condition with
+   * async write queue from previous run's session manager.
+   */
+  conversationHistory?: {
+    recent: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
+    midTerm: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
+    old: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
+  };
+  /** Pre-loaded trace artifacts context string (companion to conversationHistory). */
+  traceArtifactsContext?: string;
 
   // ═══════════════════════════════════════════════════════════════════════
   // Hierarchical Event Correlation
@@ -278,10 +375,9 @@ export interface TraceEntry {
  */
 export interface Tracer {
   /**
-   * Record a trace entry
-   * Accepts both old TraceEntry format and new DetailedTraceEntry format
+   * Record a trace entry. seq and timestamp are assigned by the writer.
    */
-  trace(entry: TraceEntry | Partial<import('./detailed-trace-types.js').DetailedTraceEntry>): void;
+  trace(entry: Omit<import('./detailed-trace-types.js').DetailedTraceEntry, 'seq' | 'timestamp'>): void;
 
   /**
    * Get all trace entries
