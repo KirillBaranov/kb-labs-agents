@@ -121,17 +121,25 @@ describe('ContextFilter', () => {
 
   describe('Sliding Window', () => {
     it('should return last N iterations in context', async () => {
-      // Add 10 messages to history
+      // Add 10 messages to history, each with an iteration number
       for (let i = 1; i <= 10; i++) {
         await filter.appendToHistory([
-          { role: 'user', content: `message ${i}` },
+          { role: 'user', content: `message ${i}`, iteration: i } as Message,
         ]);
       }
 
       const systemMsg: Message = { role: 'system', content: 'system' };
       const taskMsg: Message = { role: 'user', content: 'task' };
 
-      const context = filter.buildDefaultContext(systemMsg, taskMsg, 10);
+      // Default slidingWindowSize = 10, but we have exactly 10 iterations
+      // so all fit. Use a filter with windowSize=5 to test trimming.
+      const smallFilter = new ContextFilter({ slidingWindowSize: 5 });
+      for (let i = 1; i <= 10; i++) {
+        await smallFilter.appendToHistory([
+          { role: 'user', content: `message ${i}`, iteration: i } as Message,
+        ]);
+      }
+      const context = smallFilter.buildDefaultContext(systemMsg, taskMsg, 10);
 
       // Should have: system + task + last 5 messages = 7 total
       expect(context.length).toBe(7);
@@ -232,9 +240,10 @@ describe('ContextFilter', () => {
     it('should respect custom slidingWindowSize', async () => {
       const customFilter = new ContextFilter({ slidingWindowSize: 3 });
 
+      // Messages need iteration metadata for iteration-based sliding window
       for (let i = 1; i <= 10; i++) {
         await customFilter.appendToHistory([
-          { role: 'user', content: `msg${i}` },
+          { role: 'user', content: `msg${i}`, iteration: i } as Message,
         ]);
       }
 
@@ -243,7 +252,7 @@ describe('ContextFilter', () => {
 
       const context = customFilter.buildDefaultContext(systemMsg, taskMsg, 10);
 
-      // Should have: system + task + last 3 messages = 5 total
+      // Should have: system + task + last 3 messages (iterations 8,9,10) = 5 total
       expect(context.length).toBe(5);
       expect(context[2]!.content).toBe('msg8');
       expect(context[4]!.content).toBe('msg10');

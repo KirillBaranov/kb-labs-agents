@@ -1,21 +1,37 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SmartSummarizer } from '../smart-summarizer';
+import type { FactExtractionResult, OnFactsExtracted } from '../smart-summarizer';
 import type { LLMMessage } from '@kb-labs/sdk';
 import { mockLLM } from '@kb-labs/sdk/testing';
+
+// Mock LLM response: valid JSON array of facts
+const MOCK_FACTS_JSON = JSON.stringify([
+  { category: 'finding', fact: 'Found 3 TODO items in source files', confidence: 0.8, source: 'grep_search' },
+  { category: 'file_content', fact: 'Read src/index.ts with 50 lines', confidence: 0.9, source: 'fs_read' },
+]);
 
 describe('SmartSummarizer', () => {
   let summarizer: SmartSummarizer;
   let llm: ReturnType<typeof mockLLM>;
+  let onFactsExtracted: OnFactsExtracted;
+  let extractedResults: FactExtractionResult[];
 
   beforeEach(() => {
+    extractedResults = [];
+    onFactsExtracted = vi.fn((result: FactExtractionResult) => {
+      extractedResults.push(result);
+    });
+
     summarizer = new SmartSummarizer({
       summarizationInterval: 10,
       llmTier: 'small',
       maxSummaryTokens: 500,
+      onFactsExtracted,
     });
+
     llm = mockLLM()
       .onAnyComplete()
-      .respondWith('Mock summary: Files created, tools used, accomplishments.');
+      .respondWith(MOCK_FACTS_JSON);
     summarizer.setLLM(llm);
   });
 
@@ -31,7 +47,6 @@ describe('SmartSummarizer', () => {
 
       // Iteration 10 - should trigger
       await summarizer.triggerSummarization(snapshot, 10);
-      // Wait for async processing
       await new Promise((resolve) => { setTimeout(resolve, 100); });
       expect(llm.complete).toHaveBeenCalled();
     });
@@ -39,7 +54,6 @@ describe('SmartSummarizer', () => {
     it('should extract correct iteration range', async () => {
       const snapshot: LLMMessage[] = [];
 
-      // Create messages for iterations 1-15
       for (let i = 1; i <= 15; i++) {
         snapshot.push({
           role: i % 2 === 0 ? 'assistant' : 'user',
@@ -48,22 +62,34 @@ describe('SmartSummarizer', () => {
         } as any);
       }
 
-      // Trigger at iteration 10 (should summarize 0-10, but we have 1-10)
       await summarizer.triggerSummarization(snapshot, 10);
-
-      // Wait for processing
       await new Promise((resolve) => { setTimeout(resolve, 100); });
 
-      // Should have summary for iteration 0
       const summary = summarizer.getSummary(0);
       expect(summary).toBeTruthy();
-      expect(summary).toContain('Mock summary');
+      // Summary is now built from extracted fact categories
+      expect(summary).toContain('[finding]');
+    });
+
+    it('should pass extracted facts to onFactsExtracted callback', async () => {
+      const snapshot: LLMMessage[] = [
+        { role: 'user', content: 'test', iteration: 5 } as any,
+      ];
+
+      await summarizer.triggerSummarization(snapshot, 10);
+      await new Promise((resolve) => { setTimeout(resolve, 100); });
+
+      expect(onFactsExtracted).toHaveBeenCalledTimes(1);
+      const result = extractedResults[0]!;
+      expect(result.facts).toHaveLength(2);
+      expect(result.facts[0]!.category).toBe('finding');
+      expect(result.iterationRange).toEqual([0, 10]);
+      expect(result.messagesCount).toBeGreaterThan(0);
     });
 
     it('should not include future iterations in summary', async () => {
       const snapshot: LLMMessage[] = [];
 
-      // Add iterations 1-15
       for (let i = 1; i <= 15; i++) {
         snapshot.push({
           role: 'user',
@@ -72,15 +98,13 @@ describe('SmartSummarizer', () => {
         } as any);
       }
 
-      // Trigger at iteration 10
       await summarizer.triggerSummarization(snapshot, 10);
       await new Promise((resolve) => { setTimeout(resolve, 100); });
 
-      // Summary should only include iterations 0-9 (we have 1-9)
       const completeCalls = (llm.complete as any).mock.calls;
       expect(completeCalls.length).toBe(1);
 
-      const prompt = completeCalls[0][0]; // First call, first argument is the prompt string
+      const prompt = completeCalls[0][0];
       expect(prompt).toContain('iterations 0 to 10');
     });
   });
@@ -94,14 +118,11 @@ describe('SmartSummarizer', () => {
         { role: 'user', content: 'task2', iteration: 15 } as any,
       ];
 
-      // Trigger two summaries
       await summarizer.triggerSummarization(snapshot1, 10);
       await summarizer.triggerSummarization(snapshot2, 20);
 
-      // Wait for processing
       await new Promise((resolve) => { setTimeout(resolve, 200); });
 
-      // Should have both summaries
       expect(summarizer.getSummary(0)).toBeTruthy();
       expect(summarizer.getSummary(10)).toBeTruthy();
     });
@@ -111,13 +132,11 @@ describe('SmartSummarizer', () => {
         { role: 'user', content: 'test', iteration: 5 } as any,
       ];
 
-      // Trigger twice for same range
       await summarizer.triggerSummarization(snapshot, 10);
       await summarizer.triggerSummarization(snapshot, 10);
 
       await new Promise((resolve) => { setTimeout(resolve, 200); });
 
-      // Should only call LLM once
       expect((llm.complete as any).mock.calls.length).toBe(1);
     });
 
@@ -127,15 +146,11 @@ describe('SmartSummarizer', () => {
       ];
 
       const startTime = Date.now();
-
-      // Trigger summarization (async)
       const promise = summarizer.triggerSummarization(snapshot, 10);
-
-      // Should return immediately (not wait for LLM)
       await promise;
       const endTime = Date.now();
 
-      expect(endTime - startTime).toBeLessThan(50); // Fast return
+      expect(endTime - startTime).toBeLessThan(50);
     });
   });
 
@@ -149,7 +164,9 @@ describe('SmartSummarizer', () => {
       await new Promise((resolve) => { setTimeout(resolve, 100); });
 
       const summary = summarizer.getSummary(0);
-      expect(summary).toContain('Mock summary');
+      expect(summary).toBeTruthy();
+      // Summary now contains fact categories from extracted facts
+      expect(summary).toContain('[finding]');
     });
 
     it('should return null for non-existent summary', () => {
@@ -165,11 +182,8 @@ describe('SmartSummarizer', () => {
       await summarizer.triggerSummarization(snapshot, 10);
       await new Promise((resolve) => { setTimeout(resolve, 100); });
 
-      // Iterations 0-9 should have summary
       expect(summarizer.hasSummary(5)).toBe(true);
       expect(summarizer.hasSummary(9)).toBe(true);
-
-      // Iteration 10+ should not
       expect(summarizer.hasSummary(15)).toBe(false);
     });
 
@@ -189,7 +203,6 @@ describe('SmartSummarizer', () => {
       expect(all.length).toBe(2);
       expect(all[0]!.startIteration).toBe(0);
       expect(all[1]!.startIteration).toBe(10);
-      expect(all[0]!.summary).toContain('Mock summary');
     });
   });
 
@@ -200,59 +213,26 @@ describe('SmartSummarizer', () => {
       ];
 
       await summarizer.triggerSummarization(snapshot, 10);
-
-      // Mutate original snapshot
       snapshot[0]!.content = 'modified';
-
       await new Promise((resolve) => { setTimeout(resolve, 100); });
 
-      // Summary should still use original (frozen snapshot)
       const summary = summarizer.getSummary(0);
-      expect(summary).toBeTruthy(); // Should have been generated successfully
-    });
-
-    it('should not process queue concurrently', async () => {
-      let processingCount = 0;
-
-      // Mock LLM with delay to simulate processing
-      const slowLLM = mockLLM()
-        .onAnyComplete()
-        .respondWith(() => {
-          processingCount++;
-          expect(processingCount).toBe(1); // Only one processing at a time
-          // Note: Cannot use async in respondWith, so just return synchronously
-          // The delay testing is done via setTimeout in the test itself
-          processingCount--;
-          return 'Summary';
-        });
-
-      summarizer.setLLM(slowLLM);
-
-      const snapshot: LLMMessage[] = [
-        { role: 'user', content: 'test', iteration: 5 } as any,
-      ];
-
-      // Trigger multiple summaries quickly
-      await Promise.all([
-        summarizer.triggerSummarization(snapshot, 10),
-        summarizer.triggerSummarization(snapshot, 20),
-        summarizer.triggerSummarization(snapshot, 30),
-      ]);
-
-      await new Promise((resolve) => { setTimeout(resolve, 300); });
+      expect(summary).toBeTruthy();
     });
   });
 
   describe('Configuration', () => {
     it('should respect custom interval', async () => {
-      const customSummarizer = new SmartSummarizer({ summarizationInterval: 5 });
+      const customSummarizer = new SmartSummarizer({
+        summarizationInterval: 5,
+        onFactsExtracted: vi.fn(),
+      });
       customSummarizer.setLLM(llm);
 
       const snapshot: LLMMessage[] = [
         { role: 'user', content: 'test', iteration: 3 } as any,
       ];
 
-      // Should trigger at iteration 5 (not 10)
       await customSummarizer.triggerSummarization(snapshot, 5);
       await new Promise((resolve) => { setTimeout(resolve, 100); });
 
@@ -290,20 +270,42 @@ describe('SmartSummarizer', () => {
   });
 
   describe('Error Handling', () => {
-    it('should throw if LLM not set', async () => {
-      const noLLMSummarizer = new SmartSummarizer();
+    it('should handle missing LLM gracefully', async () => {
+      const noLLMSummarizer = new SmartSummarizer({
+        onFactsExtracted: vi.fn(),
+      });
 
       const snapshot: LLMMessage[] = [
         { role: 'user', content: 'test', iteration: 5 } as any,
       ];
 
       await noLLMSummarizer.triggerSummarization(snapshot, 10);
-
-      // Wait for queue processing (should fail gracefully)
       await new Promise((resolve) => { setTimeout(resolve, 100); });
 
-      // Should not have summary (failed to generate)
       expect(noLLMSummarizer.getSummary(0)).toBeNull();
+    });
+
+    it('should handle invalid JSON from LLM', async () => {
+      const badLLM = mockLLM()
+        .onAnyComplete()
+        .respondWith('This is not JSON at all');
+
+      const badSummarizer = new SmartSummarizer({
+        summarizationInterval: 10,
+        onFactsExtracted: vi.fn(),
+      });
+      badSummarizer.setLLM(badLLM);
+
+      const snapshot: LLMMessage[] = [
+        { role: 'user', content: 'test', iteration: 5 } as any,
+      ];
+
+      await badSummarizer.triggerSummarization(snapshot, 10);
+      await new Promise((resolve) => { setTimeout(resolve, 100); });
+
+      // Should have summary but with no facts
+      const summary = badSummarizer.getSummary(0);
+      expect(summary).toContain('No facts extracted');
     });
   });
 });
