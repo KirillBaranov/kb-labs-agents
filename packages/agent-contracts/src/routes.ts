@@ -46,6 +46,18 @@ export const AGENTS_ROUTES = {
 
   /** GET /sessions/:sessionId/turns - Get session turns (turn-based UI) */
   SESSION_TURNS: '/sessions/:sessionId/turns',
+
+  /** GET /sessions/:sessionId/changes - List file changes for session */
+  SESSION_CHANGES: '/sessions/:sessionId/changes',
+
+  /** GET /sessions/:sessionId/changes/:changeId/diff - Get unified diff for a specific file change */
+  SESSION_CHANGE_DIFF: '/sessions/:sessionId/changes/:changeId/diff',
+
+  /** POST /sessions/:sessionId/rollback - Rollback file changes */
+  SESSION_ROLLBACK: '/sessions/:sessionId/rollback',
+
+  /** POST /sessions/:sessionId/approve - Approve file changes */
+  SESSION_APPROVE: '/sessions/:sessionId/approve',
 } as const;
 
 /**

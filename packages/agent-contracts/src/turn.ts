@@ -7,6 +7,23 @@
  */
 
 /**
+ * Lightweight summary of a file change for Turn.metadata.
+ * Does not include before/after content to keep turn history compact.
+ */
+export interface FileChangeSummary {
+  changeId: string;
+  filePath: string;
+  operation: 'write' | 'patch' | 'delete';
+  timestamp: string;
+  linesAdded?: number;
+  linesRemoved?: number;
+  /** True when the file was newly created by the agent */
+  isNew: boolean;
+  sizeAfter: number;
+  approved?: boolean;
+}
+
+/**
  * A turn represents a complete agent interaction cycle.
  * Assembled from multiple events by the backend.
  */
@@ -46,6 +63,10 @@ export interface Turn {
     taskId?: string;
     totalTokens?: number;
     totalDurationMs?: number;
+    /** Run ID that produced this assistant turn */
+    runId?: string;
+    /** Summary of files changed during this turn (populated on run completion) */
+    fileChanges?: FileChangeSummary[];
   };
 }
 
