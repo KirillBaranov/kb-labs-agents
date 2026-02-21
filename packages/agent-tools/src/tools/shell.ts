@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
 import { toolError } from './tool-error.js';
+import { SHELL_CONFIG } from '../config.js';
 
 /**
  * Execute shell command
@@ -55,7 +56,7 @@ export function createShellExecTool(context: ToolContext): Tool {
         const output = execSync(command, {
           cwd: resolvedCwd,
           encoding: 'utf-8',
-          maxBuffer: 5 * 1024 * 1024, // 5MB
+          maxBuffer: SHELL_CONFIG.maxBuffer,
           stdio: ['pipe', 'pipe', 'pipe'],
         });
 
