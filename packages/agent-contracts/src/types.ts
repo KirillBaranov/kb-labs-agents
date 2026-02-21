@@ -211,6 +211,8 @@ export interface AgentConfig {
   agentId?: string;
   /** Parent agent ID (for child agents spawned by orchestrator) */
   parentAgentId?: string;
+  /** Abort signal from parent — when aborted, this agent stops between iterations */
+  abortSignal?: AbortSignal;
 
   // ═══════════════════════════════════════════════════════════════════════
   // Phase 1: Agent → Orchestrator Communication
