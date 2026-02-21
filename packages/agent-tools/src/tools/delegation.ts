@@ -2,7 +2,9 @@
  * Delegation tools — spawn sub-agents for subtask execution
  */
 
-import type { Tool, ToolContext } from '../types.js';
+import type { ToolContext } from '../types.js';
+import type { Tool } from '../types.js';
+import { DELEGATION_CONFIG } from '../config.js';
 
 /**
  * Spawn a sub-agent to handle a subtask.
@@ -12,31 +14,35 @@ import type { Tool, ToolContext } from '../types.js';
 export function createSpawnAgentTool(context: ToolContext): Tool {
   return {
     definition: {
-      type: 'function' as const,
+      type: 'function',
       function: {
         name: 'spawn_agent',
-        description: 'Spawn a sub-agent to handle a subtask. The sub-agent works independently and returns its result. Use for: research ("investigate how X works"), fixes ("fix lint errors in module Y"), or isolated tasks ("run tests and fix failures"). You wait for the result.',
+        description:
+          'Spawn a sub-agent to handle a subtask. The sub-agent works independently and returns its result. Use for: research ("investigate how X works"), fixes ("fix lint errors in module Y"), or isolated tasks ("run tests and fix failures"). You wait for the result.',
         parameters: {
-          type: 'object' as const,
+          type: 'object',
           properties: {
             task: {
-              type: 'string' as const,
-              description: 'Clear task description for the sub-agent. Be specific — the sub-agent has no context about your current work.',
+              type: 'string',
+              description:
+                'Clear task description for the sub-agent. Be specific — the sub-agent has no context about your current work.',
             },
             maxIterations: {
-              type: 'number' as const,
-              description: 'Max iterations for the sub-agent (default: 10). Use 5 for simple lookups, 10-15 for research/fixes.',
+              type: 'number',
+              description:
+                'Max iterations for the sub-agent (default: 10). Use 5 for simple lookups, 10-15 for research/fixes.',
             },
             directory: {
-              type: 'string' as const,
-              description: 'Working directory for the sub-agent, relative to project root (e.g. "kb-labs-agents/packages/agent-tools"). Default: same as parent.',
+              type: 'string',
+              description:
+                'Working directory for the sub-agent, relative to project root (e.g. "kb-labs-agents/packages/agent-tools"). Default: same as parent.',
             },
           },
           required: ['task'],
         },
       },
     },
-    executor: async (input: Record<string, unknown>) => {
+    executor: async (input) => {
       if (!context.spawnAgent) {
         return {
           success: false,
@@ -45,13 +51,13 @@ export function createSpawnAgentTool(context: ToolContext): Tool {
       }
 
       const task = input.task as string;
-      const maxIterations = (input.maxIterations as number) || 10;
+      const maxIterations = input.maxIterations as number | undefined;
       const directory = input.directory as string | undefined;
 
       try {
         const result = await context.spawnAgent({
           task,
-          maxIterations,
+          maxIterations: maxIterations ?? DELEGATION_CONFIG.defaultMaxIterations,
           workingDir: directory,
         });
 
