@@ -1,90 +1,33 @@
-# @kb-labs/plugin-template-contracts
+# @kb-labs/agent-contracts
 
-Lightweight public contracts package for the plugin: it describes guaranteed artifacts, commands, workflows, API payloads, and the version of these promises.
+Shared type definitions and contracts for the KB Labs agent system. Provides TypeScript interfaces, event schemas, API routes, and Zod validation used by all other `agent-*` packages.
 
-## Why this package exists
+## What's Inside
 
-Every KB Labs plugin is expected to publish a clear, lightweight “promise” to the rest of the ecosystem. This package is that promise: it contains only types, manifests, and validation helpers, so other teams (CLI, Workflow Engine, Studio, REST, marketplace tooling) can rely on a single source of truth without dragging in plugin runtime code.
+| Export | Description |
+|--------|-------------|
+| `types.ts` | Core types — `AgentConfig`, `AgentResult`, `SessionInfo`, `TurnInfo`, execution state |
+| `events.ts` | Agent event system — `AgentEvent` union type covering full lifecycle |
+| `ws-messages.ts` | WebSocket message contracts for real-time streaming |
+| `verification.ts` | Quality gate types — `VerificationResult`, `GateConfig` |
+| `turn.ts` | Turn-based interaction models |
+| `schemas.ts` | Zod validation schemas for runtime input validation |
+| `routes.ts` | API route definitions (`/api/v1/agents/*`) |
+| `analytics.ts` | Analytics event type constants |
+| `config-types.ts` | Configuration types, `DEFAULT_FILE_HISTORY_CONFIG` |
+| `detailed-trace-types.ts` | Detailed trace event types for NDJSON tracing |
+| `trace-command-response.ts` | Trace CLI command response types |
 
-## Quick start checklist
+## Usage
 
-1. Clone this package as part of your plugin workspace (`packages/contracts`).
-2. Update `pluginContractsManifest` with your plugin ID and initial artifacts/commands.
-3. Adjust Zod schemas in `src/schema.ts` (or add new ones) to match your payloads.
-4. Bump `contractsVersion` whenever the public promise changes (SemVer rules below).
-5. Run `pnpm test` and `pnpm type-check` to ensure the manifest validates.
-6. Import the manifest in your CLI/REST/workflow code to avoid hard-coded IDs.
-
-### Renaming this package
-
-When you turn the template into your own plugin:
-- Change the npm name in `package.json` (e.g. `@kb-labs/my-plugin-contracts`).
-- Update `pluginContractsManifest.pluginId` in `src/contract.ts`.
-- Adjust aliases in `tsconfig.paths.json` and imports across the workspace (`@kb-labs/plugin-template-contracts` → your new name).
-- Replace sample artifact IDs (`template.hello.*`) with your own naming scheme.
-
-## What's inside
-
-- `pluginContractsManifest` — the single source of truth for the plugin's public capabilities
-- TypeScript types (`src/types`) and Zod schemas (`src/schema`) for artifacts, commands, workflows, and API payloads
-- `parsePluginContracts` utility for runtime validation of the manifest and third-party contracts
-
-## Versioning rules
-
-- `contractsVersion` follows SemVer and is **independent** from the plugin's npm version.
-- **MAJOR** — breaking changes (removing/renaming artifacts, changing payload formats).
-- **MINOR** — backwards-compatible extensions (new artifacts, commands, fields).
-- **PATCH** — documentation/metadata updates without altering payload formats.
-
-## Minimal manifest example
-
-```ts
-import type { PluginContracts } from '@kb-labs/plugin-template-contracts';
-
-export const pluginContractsManifest: PluginContracts = {
-  schema: 'kb.plugin.contracts/1',
-  pluginId: '@kb-labs/my-plugin',
-  contractsVersion: '1.0.0',
-  artifacts: {
-    'my-plugin.result': {
-      id: 'my-plugin.result',
-      kind: 'json',
-      description: 'Primary output of the CLI command.'
-    }
-  }
-  // commands/workflows/api can be added later when needed
-};
+```typescript
+import type { AgentConfig, AgentResult } from '@kb-labs/agent-contracts';
+import type { AgentEvent } from '@kb-labs/agent-contracts';
+import { AgentRunRequestSchema } from '@kb-labs/agent-contracts';
 ```
 
-## Optional sections
+This package has **no runtime dependencies** on other agent packages — it's pure types + Zod schemas. Every other `agent-*` package depends on it.
 
-All additional sections are **optional** — include only what your plugin actually supports:
+## Dependencies
 
-- `commands` — define CLI or workflow commands that produce/consume artifacts.
-- `workflows` — describe composed workflows and their steps.
-- `api` — document REST (or future surfaces) when the plugin exposes them.
-
-If your plugin only ships a CLI command, keep `commands` + `artifacts` and omit `workflows`/`api`. The Zod schema accepts missing sections.
-
-## Usage in plugin code
-
-```ts
-import { pluginContractsManifest } from '@kb-labs/plugin-template-contracts';
-
-const helloArtifactId = pluginContractsManifest.artifacts['template.hello.greeting'].id;
-```
-
-Use the manifest to avoid magic strings, assert that required artifacts exist, or log which promises were fulfilled.
-
-## Who relies on the contract
-
-- **Workflow Engine** — verifies allowed steps, required artifacts, and matches produced results with the contract.
-- **Studio** — builds UI and hints based on declared artifacts and commands.
-- **CLI / REST / other plugins** — reuse types and schemas as the source of truth, validate inputs/outputs.
-- **Marketplace & QA tooling** — checks plugin compatibility and correctness before publishing.
-
-## Looking ahead
-
-- Generate JSON Schema / OpenAPI from the `api` contract surface.
-- Add automatic inspectors in Studio and validators for the marketplace.
-
+- `zod` — runtime schema validation
