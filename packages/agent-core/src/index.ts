@@ -42,3 +42,21 @@ export * from './tool-input/index.js';
 
 // Progress tracking
 export * from './progress/index.js';
+
+// Search signal tracking
+export * from './search-signal/index.js';
+
+// Analytics and run metrics
+export * from './analytics/index.js';
+
+// Reflection engine
+export * from './reflection/index.js';
+
+// Todo sync coordination
+export * from './todo-sync/index.js';
+
+// Task classification
+export * from './task-classifier/index.js';
+
+// Task completion evaluation
+export * from './task-completion/index.js';
