@@ -43,6 +43,26 @@ import {
   ProgressTracker as ProgressTrackerModule,
   countFailedToolResults,
 } from './progress/index.js';
+import {
+  SearchSignalTracker,
+  assessSearchSignalHeuristic,
+  isLikelyDiscoveryTask,
+} from './search-signal/index.js';
+import type { SearchArtifact } from './search-signal/index.js';
+import {
+  RunMetricsEmitter,
+  getKpiBaselineKey,
+  extractToolErrorCode,
+} from './analytics/index.js';
+import type { EmitContext } from './analytics/index.js';
+import { ReflectionEngine } from './reflection/index.js';
+import { TodoSyncCoordinator, shouldNudgeTodoDiscipline } from './todo-sync/index.js';
+import { TaskClassifier } from './task-classifier/index.js';
+import {
+  TaskCompletionEvaluator,
+  getHistoricalChangesForSimilarTask,
+} from './task-completion/index.js';
+import type { CompletionEvaluationContext } from './task-completion/index.js';
 
 /**
  * Event type constants
@@ -120,15 +140,6 @@ function generateAgentId(): string {
  * Base Agent with LLM tool calling
  */
 export class Agent {
-  private static readonly PROCESS_KPI_BASELINES = new Map<string, {
-    driftRateEma: number;
-    evidenceDensityEma: number;
-    toolErrorRateEma: number;
-    samples: number;
-    tokenHistory: number[];
-    iterationUtilizationHistory: number[];
-    qualityScoreHistory: number[];
-  }>();
   private config: AgentConfig;
   private toolRegistry: ToolRegistry;
   private filesCreated: Set<string> = new Set();
@@ -144,6 +155,13 @@ export class Agent {
   private readonly qualityGate = new QualityGate();
   private readonly tierSelector = new TierSelector();
   private readonly systemPromptBuilder = new SystemPromptBuilder();
+  private readonly searchSignalTracker = new SearchSignalTracker(
+    (artifacts) => this.callSearchSignalLLM(artifacts),
+  );
+  private readonly runMetricsEmitter = new RunMetricsEmitter();
+  private readonly reflectionEngine = new ReflectionEngine(
+    (input) => this.callReflectionLLM(input),
+  );
   private readonly toolInputNormalizer = new ToolInputNormalizer(fs);
   private memory?: AgentMemory;
   private currentTask?: string;
@@ -176,7 +194,6 @@ export class Agent {
   private lastLLMCall?: { request: unknown; response: unknown; durationMs: number };
   private lastToolCall?: { name: string; input: unknown; output?: unknown; error?: string };
   private completedIterations: number[] = [];
-  private todoNudgeSent = false;
   private toolSuccessCount = 0;
   private toolErrorCount = 0;
   private touchedDomains = new Set<string>();
@@ -186,28 +203,15 @@ export class Agent {
   private runStartTier: LLMTier = DEFAULT_EXECUTION_TIER;
   private runFinalTier: LLMTier = DEFAULT_EXECUTION_TIER;
   private currentTier: LLMTier = DEFAULT_EXECUTION_TIER;
-  private tierEscalations: Array<{
-    from: LLMTier;
-    to: LLMTier;
-    reason: string;
-    iteration: number;
-  }> = [];
   private behaviorPolicy: AgentBehaviorPolicy = createDefaultAgentBehaviorPolicy();
   private workspaceDiscovery: WorkspaceDiscoveryResult | null = null;
-  private consecutiveNoSignalSearchIterations = 0;
   private smallReadWindowByPath = new Map<string, number>();
   private fileTotalLinesByPath = new Map<string, number>();
   private fileReadAttemptsByPath = new Map<string, number>();
-  private searchSignalHits = 0;
-  private recentSearchEvidence: string[] = [];
   private lastSignalIteration = 0;
   private iterationBudgetExtensions = 0;
   private taskIntent: 'action' | 'discovery' | 'analysis' | null = null;
   private taskBudget: number | null = null;
-  private lastReflectionIteration = 0;
-  private reflectionCount = 0;
-  private hypothesisSwitches = 0;
-  private lastReflectionHypothesis = '';
   private executionStateMachine = new ExecutionStateMachine();
   private taskLedger = new TaskLedger();
   private lastQualityGate: {
@@ -216,21 +220,17 @@ export class Agent {
     reasons: string[];
     nextChecks?: string[];
   } | null = null;
-  private todoSyncEnabled = false;
-  private todoSyncInitialized = false;
-  private todoSyncQueue: Promise<void> = Promise.resolve();
-  private todoPhaseItemIds: Record<'scoping' | 'executing' | 'verifying' | 'reporting', string | null> = {
-    scoping: null,
-    executing: null,
-    verifying: null,
-    reporting: null,
-  };
-  private todoPhaseStatus: Record<'scoping' | 'executing' | 'verifying' | 'reporting', 'pending' | 'in-progress' | 'completed' | 'blocked'> = {
-    scoping: 'pending',
-    executing: 'pending',
-    verifying: 'pending',
-    reporting: 'pending',
-  };
+  private readonly todoSyncCoordinator = new TodoSyncCoordinator(
+    (toolName, input) => this.executeTodoTool(toolName, input),
+    (name) => this.toolRegistry.getDefinitions().some((d) => d.function.name === name),
+    (msg) => this.log(msg),
+  );
+  private readonly taskClassifier = new TaskClassifier(
+    (tier) => useLLM({ tier: tier as LLMTier }) ?? null,
+    (msg) => this.log(msg),
+  );
+
+  private readonly taskCompletionEvaluator: TaskCompletionEvaluator;
 
   /** Progress tracking to detect when agent is stuck */
   private progressTracker = new ProgressTrackerModule();
@@ -438,6 +438,28 @@ export class Agent {
     if (config.onEvent) {
       this.eventEmitter.on(config.onEvent);
     }
+
+    // Initialize task completion evaluator
+    this.taskCompletionEvaluator = new TaskCompletionEvaluator(
+      () => {
+        const tier = this.chooseSmartTier('taskValidation', {
+          task: this.currentTask,
+          isInformationalTask: this.taskIntent ? this.taskIntent !== 'action' : undefined,
+          iterationsUsed: 0,
+        });
+        return useLLM({ tier }) ?? null;
+      },
+      async (filePath) => {
+        const result = await this.toolRegistry.execute('fs_read', { path: filePath });
+        return result.success && result.output ? result.output : null;
+      },
+      (task) => getHistoricalChangesForSimilarTask(task, {
+        sessionId: this.config.sessionId,
+        sessionRootDir: this.sessionRootDir,
+        agentId: this.agentId,
+      }, SessionManager),
+      (msg) => this.log(msg),
+    );
   }
 
   /**
@@ -499,73 +521,11 @@ export class Agent {
    * Only runs for main agents (not sub-agents).
    */
   private async extractScope(task: string): Promise<string | null> {
-    // Sub-agents already have scoped workingDir from parent
-    if (this.config.parentAgentId) { return null; }
-
-    const llm = useLLM({ tier: 'small' });
-    if (!llm || !llm.chatWithTools) { return null; }
-
-    const workingDir = this.config.workingDir;
-    let availableDirs: string[] = [];
-    try {
-      const entries = fs.readdirSync(workingDir, { withFileTypes: true });
-      availableDirs = entries
-        .filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules')
-        .map(e => e.name);
-    } catch {
-      return null;
-    }
-
-    if (availableDirs.length === 0) { return null; }
-
-    const scopeTool: LLMTool = {
-      name: 'select_scope',
-      description: 'Select the specific subdirectory/repository that this task is about, or indicate no specific scope',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          scope: {
-            type: 'string',
-            enum: [...availableDirs, 'none'],
-            description: 'The directory name if task is about a specific one, or "none" if task is general',
-          },
-        },
-        required: ['scope'],
-      },
-    };
-
-    const prompt = `Analyze this task and determine if it refers to a specific subdirectory/repository.
-
-**Task:** ${task}
-
-**Available directories:**
-${availableDirs.map(d => `- ${d}`).join('\n')}
-
-If the task explicitly mentions or is clearly about ONE of these directories, select it.
-If the task is general or mentions multiple directories, select "none".
-
-Call select_scope with your choice.`;
-
-    try {
-      const response = await llm.chatWithTools(
-        [{ role: 'user', content: prompt }],
-        { tools: [scopeTool], temperature: 0 }
-      );
-
-      const toolCall = response.toolCalls?.[0];
-      if (toolCall && toolCall.name === 'select_scope') {
-        const input = toolCall.input as { scope: string };
-        const scope = input.scope;
-        if (scope && scope !== 'none' && availableDirs.includes(scope)) {
-          this.log(`🎯 Extracted scope: ${scope}`);
-          return scope;
-        }
-      }
-    } catch (error) {
-      this.log(`⚠️ Scope extraction error: ${error}`);
-    }
-
-    return null;
+    return this.taskClassifier.extractScope(task, {
+      maxIterations: this.config.maxIterations || 25,
+      parentAgentId: this.config.parentAgentId,
+      workingDir: this.config.workingDir,
+    });
   }
 
   /**
@@ -644,92 +604,15 @@ Call select_scope with your choice.`;
   private async classifyTaskWithLLM(
     task: string,
   ): Promise<{ intent: 'action' | 'discovery' | 'analysis'; budget: number }> {
-    const configured = this.config.maxIterations || 25;
-    const cap = Math.min(configured, 20);
-
-    const llm = useLLM({ tier: 'small' });
-
-    if (llm?.chatWithTools) {
-      try {
-        const response = await llm.chatWithTools(
-          [
-            {
-              role: 'user',
-              content: `You are a task planner. Analyze the user task and return:
-1. intent — what kind of task it is
-2. budget — how many agent iterations (tool calls) are needed to complete it
-
-Intent options:
-- "action": task requires making changes (implement, fix, add, refactor, delete, write)
-- "discovery": task requires finding/locating something (where is X, what is Y, show me Z)
-- "analysis": task requires understanding/explaining/analyzing
-
-Budget guidelines (these are starting values; more may be granted if progress is made):
-- discovery (simple lookup): 6–8
-- analysis (explain/summarize): 8–12
-- action (small change, 1-2 files): 10–14
-- action (medium feature/fix, 3-10 files): 14–18
-- action (large refactor/architecture, many files): 18–${cap}
-
-User task:
-${task}`,
-            },
-          ],
-          {
-            temperature: 0,
-            tools: [
-              {
-                name: 'classify_task',
-                description: 'Classify the task and set initial iteration budget.',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    intent: {
-                      type: 'string',
-                      enum: ['action', 'discovery', 'analysis'],
-                      description: 'Task intent category',
-                    },
-                    budget: {
-                      type: 'number',
-                      description: 'Initial iteration budget (number of steps)',
-                    },
-                    reasoning: {
-                      type: 'string',
-                      description: 'One sentence explaining the classification',
-                    },
-                  },
-                  required: ['intent', 'budget'],
-                },
-              },
-            ],
-          },
-        );
-
-        const call = response.toolCalls?.find((tc) => tc.name === 'classify_task');
-        const input = (call?.input ?? {}) as { intent?: string; budget?: number; reasoning?: string };
-        const intent = input.intent === 'action' || input.intent === 'discovery' || input.intent === 'analysis'
-          ? input.intent
-          : null;
-        const budget = typeof input.budget === 'number' && input.budget > 0
-          ? Math.min(Math.max(input.budget, 4), cap)
-          : null;
-
-        if (intent && budget) {
-          this.log(`🧠 Task classified: intent=${intent} budget=${budget} — ${input.reasoning ?? ''}`);
-          return { intent, budget };
-        }
-      } catch {
-        // Fall through to defaults.
-      }
-    }
-
-    // Fallback: sensible defaults without regex
-    this.log('⚠️ LLM classification failed, using default budget');
-    return { intent: 'action', budget: Math.min(configured, 12) };
+    return this.taskClassifier.classifyTask(task, {
+      maxIterations: this.config.maxIterations || 25,
+      workingDir: this.config.workingDir,
+    });
   }
 
-  private async assessSearchSignalWithLLM(
-    artifacts: Array<{ tool: string; content: string }>
+  /** LLM bridge for SearchSignalTracker — tries LLM, falls back to heuristic */
+  private async callSearchSignalLLM(
+    artifacts: SearchArtifact[],
   ): Promise<{ signal: 'none' | 'partial' | 'strong'; snippets: string[] }> {
     const llm = useLLM({
       tier: this.chooseSmartTier('searchAssessment', {
@@ -787,23 +670,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
         // Fall through to heuristic fallback.
       }
     }
-
-    const snippets = artifacts.flatMap((a) => this.extractSearchEvidenceSnippets(a.content)).slice(0, 6);
-    if (snippets.length > 0) {
-      return { signal: 'partial', snippets };
-    }
-    const hasNegative = artifacts.every((a) => {
-      const content = a.content.toLowerCase();
-      return content.includes('no result')
-        || content.includes('no matches')
-        || content.includes('not found')
-        || content.includes('не найден')
-        || content.includes('нет совпад');
-    });
-    return {
-      signal: hasNegative ? 'none' : 'partial',
-      snippets: [],
-    };
+    return assessSearchSignalHeuristic(artifacts);
   }
 
   /**
@@ -825,7 +692,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     this.runStartTier = startTier;
     this.runFinalTier = startTier;
     this.currentTier = startTier;
-    this.tierEscalations = [];
+    this.runMetricsEmitter.reset();
 
     if (!this.config.enableEscalation) {
       return this.executeWithTier(task, startTier);
@@ -1094,12 +961,17 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
       });
 
       try {
-        if (this.shouldNudgeTodoDiscipline(iteration, task)) {
-          this.ensureTodoSyncInitialized(task);
+        if (shouldNudgeTodoDiscipline({
+          nudgeSent: this.todoSyncCoordinator.state.nudgeSent,
+          iteration,
+          toolsUsedCount: this.toolsUsedCount,
+          task,
+        })) {
+          this.todoSyncCoordinator.ensureInitialized(task, this.config.sessionId);
           this.injectedUserContext.push(
             'This task appears multi-step. Create a short todo checklist now (3-7 items), keep it updated after each completed action block, and check it before final report.'
           );
-          this.todoNudgeSent = true;
+          this.todoSyncCoordinator.markNudgeSent();
         }
 
         const isLastIteration = iteration === effectiveMaxIterations;
@@ -1271,7 +1143,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
             iteration,
             evidenceDelta,
             failedToolsThisIteration,
-            searchSignalHits: this.searchSignalHits,
+            searchSignalHits: this.searchSignalTracker.state.searchSignalHits,
           });
         }
 
@@ -1491,7 +1363,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
           this.progressTracker.state.lastToolCalls = [];
           this.progressTracker.state.lastOutputSizes = [];
           this.progressTracker.state.lastFailureCount = 0;
-          this.progressTracker.state.lastSearchSignalHits = this.searchSignalHits;
+          this.progressTracker.state.lastSearchSignalHits = this.searchSignalTracker.state.searchSignalHits;
           this.progressTracker.state.lastProgressIteration = iteration;
 
           // Handle parent action
@@ -1617,7 +1489,6 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     this.toolResultCache.clear();
     this.toolsUsedCount.clear();
     this.completedIterations = [];
-    this.todoNudgeSent = false;
     this.toolSuccessCount = 0;
     this.toolErrorCount = 0;
     this.touchedDomains.clear();
@@ -1625,37 +1496,18 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     this.currentTokenBudget = 0;
     this.taskBudget = null;
     this.tokenConvergenceNudgeSent = false;
-    this.consecutiveNoSignalSearchIterations = 0;
     this.smallReadWindowByPath.clear();
     this.fileTotalLinesByPath.clear();
     this.fileReadAttemptsByPath.clear();
-    this.searchSignalHits = 0;
-    this.recentSearchEvidence = [];
+    this.searchSignalTracker.reset();
     this.lastSignalIteration = 0;
-    this.lastReflectionIteration = 0;
-    this.reflectionCount = 0;
-    this.hypothesisSwitches = 0;
-    this.lastReflectionHypothesis = '';
+    this.reflectionEngine.reset();
     this.iterationBudgetExtensions = 0;
     this.progressTracker.reset();
     this.executionStateMachine = new ExecutionStateMachine();
     this.taskLedger = new TaskLedger();
     this.lastQualityGate = null;
-    this.todoSyncEnabled = false;
-    this.todoSyncInitialized = false;
-    this.todoSyncQueue = Promise.resolve();
-    this.todoPhaseItemIds = {
-      scoping: null,
-      executing: null,
-      verifying: null,
-      reporting: null,
-    };
-    this.todoPhaseStatus = {
-      scoping: 'pending',
-      executing: 'pending',
-      verifying: 'pending',
-      reporting: 'pending',
-    };
+    this.todoSyncCoordinator.reset();
   }
 
   /**
@@ -2257,25 +2109,6 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     );
   }
 
-  private shouldNudgeTodoDiscipline(iteration: number, task: string): boolean {
-    if (this.todoNudgeSent || iteration < 2) {
-      return false;
-    }
-
-    const hasTodo = ['todo_create', 'todo_update', 'todo_get']
-      .some((name) => (this.toolsUsedCount.get(name) ?? 0) > 0);
-    if (hasTodo) {
-      return false;
-    }
-
-    const totalToolCalls = Array.from(this.toolsUsedCount.values()).reduce((sum, count) => sum + count, 0);
-    if (totalToolCalls < 2) {
-      return false;
-    }
-
-    return /(fix|refactor|implement|add|change|update|investigate|analyze|проанализ|исправ|добав|обнов|сделай|проверь)/i.test(task);
-  }
-
   private computeIterationBudget(_task: string): number {
     return this.iterationBudget.computeIterationBudget({
       maxIterations: this.config.maxIterations || 25,
@@ -2499,7 +2332,7 @@ Do not continue exploration. Finalize with current evidence.`;
       filesCreated: this.filesCreated,
       toolErrorCount: this.toolErrorCount,
       touchedDomains: this.touchedDomains,
-      searchSignalHits: this.searchSignalHits,
+      searchSignalHits: this.searchSignalTracker.state.searchSignalHits,
       taskLedger: this.taskLedger,
       currentTask: this.currentTask,
       iterationsUsed,
@@ -2519,94 +2352,17 @@ Do not continue exploration. Finalize with current evidence.`;
   ): void {
     try {
       this.executionStateMachine.transition(next, reason);
-      this.syncTodoWithPhase(next);
+      this.todoSyncCoordinator.syncWithPhase(next, this.config.sessionId);
     } catch {
       // Phase transitions are observability metadata and must never break execution.
     }
   }
 
-  private ensureTodoSyncInitialized(task: string): void {
-    if (this.todoSyncInitialized) {
-      return;
-    }
-    this.todoSyncInitialized = true;
-    this.queueTodoSync(async () => {
-      if (!this.config.sessionId || !this.hasTool('todo_create')) {
-        return;
-      }
-
-      const sessionKey = this.config.sessionId;
-      const items = [
-        { description: `Scope task: ${task.slice(0, 80)}`, priority: 'high' as const },
-        { description: 'Collect evidence and execute relevant actions', priority: 'high' as const },
-        { description: 'Verify findings and convergence', priority: 'medium' as const },
-        { description: 'Prepare final response', priority: 'medium' as const },
-      ];
-
-      const result = await this.executeTodoTool('todo_create', {
-        sessionId: sessionKey,
-        items,
-      });
-      if (!result.success) {
-        return;
-      }
-
-      this.todoSyncEnabled = true;
-      this.todoPhaseItemIds = {
-        scoping: `${sessionKey}-1`,
-        executing: `${sessionKey}-2`,
-        verifying: `${sessionKey}-3`,
-        reporting: `${sessionKey}-4`,
-      };
-    });
-  }
-
-  private syncTodoWithPhase(
-    phase: 'scoping' | 'planning_lite' | 'executing' | 'converging' | 'verifying' | 'reporting'
-  ): void {
-    if (!this.todoSyncEnabled || !this.config.sessionId || !this.hasTool('todo_update')) {
-      return;
-    }
-
-    this.queueTodoSync(async () => {
-      if (phase === 'scoping') {
-        await this.updateTodoPhaseStatus('scoping', 'in-progress', 'Identifying task scope');
-        return;
-      }
-
-      if (phase === 'executing' || phase === 'converging') {
-        await this.updateTodoPhaseStatus('scoping', 'completed', 'Scope identified');
-        await this.updateTodoPhaseStatus('executing', 'in-progress', 'Executing task steps');
-        return;
-      }
-
-      if (phase === 'verifying') {
-        await this.updateTodoPhaseStatus('executing', 'completed', 'Execution done');
-        await this.updateTodoPhaseStatus('verifying', 'in-progress', 'Verifying evidence');
-        return;
-      }
-
-      if (phase === 'reporting') {
-        await this.updateTodoPhaseStatus('verifying', 'completed', 'Verification done');
-        await this.updateTodoPhaseStatus('reporting', 'in-progress', 'Preparing final response');
-      }
-    });
-  }
-
-  private queueTodoSync(job: () => Promise<void>): void {
-    this.todoSyncQueue = this.todoSyncQueue.then(job).catch((err) => {
-      this.log(`[Agent] TODO sync failed: ${err}`);
-    });
-  }
-
-  private hasTool(toolName: string): boolean {
-    return this.toolRegistry.getDefinitions().some((d) => d.function.name === toolName);
-  }
-
+  /** Bridge for TodoSyncCoordinator — keeps ledger/counter bookkeeping in agent. */
   private async executeTodoTool(
     toolName: 'todo_create' | 'todo_update' | 'todo_get',
-    input: Record<string, unknown>
-  ): Promise<{ success: boolean; output?: string; error?: string; errorDetails?: ToolResult['errorDetails'] }> {
+    input: Record<string, unknown>,
+  ): Promise<{ success: boolean; output?: string; error?: string; errorDetails?: { code?: string } }> {
     const ledgerStepId = this.taskLedger.startStep({
       goal: `Todo sync: ${toolName}`,
       capability: mapToolToCapability(toolName),
@@ -2635,55 +2391,6 @@ Do not continue exploration. Finalize with current evidence.`;
         success: false,
         error: err instanceof Error ? err.message : String(err),
       };
-    }
-  }
-
-  private async updateTodoPhaseStatus(
-    phase: 'scoping' | 'executing' | 'verifying' | 'reporting',
-    status: 'pending' | 'in-progress' | 'completed' | 'blocked',
-    notes?: string
-  ): Promise<void> {
-    const itemId = this.todoPhaseItemIds[phase];
-    if (!itemId || !this.config.sessionId) {
-      return;
-    }
-    if (this.todoPhaseStatus[phase] === status) {
-      return;
-    }
-
-    const result = await this.executeTodoTool('todo_update', {
-      sessionId: this.config.sessionId,
-      itemId,
-      status,
-      notes,
-    });
-    if (result.success) {
-      this.todoPhaseStatus[phase] = status;
-      return;
-    }
-
-    const code = result.errorDetails?.code || '';
-    if (code === 'TODO_LIST_NOT_FOUND' || code === 'TODO_ITEM_NOT_FOUND') {
-      this.todoSyncEnabled = false;
-      this.log(`[Agent] TODO sync disabled after ${code} to avoid repeated failed updates.`);
-    }
-  }
-
-  private async finalizeTodoSyncOnCompletion(success: boolean, notes: string): Promise<void> {
-    await this.todoSyncQueue.catch(() => {});
-
-    if (!this.todoSyncEnabled) {
-      return;
-    }
-
-    if (success) {
-      await this.updateTodoPhaseStatus('reporting', 'completed', notes.slice(0, 180));
-    } else {
-      await this.updateTodoPhaseStatus('reporting', 'blocked', notes.slice(0, 180));
-    }
-
-    if (this.hasTool('todo_get') && this.config.sessionId) {
-      await this.executeTodoTool('todo_get', { sessionId: this.config.sessionId });
     }
   }
 
@@ -2817,35 +2524,7 @@ Do not continue exploration. Finalize with current evidence.`;
     );
   }
 
-  private extractToolErrorCode(result: ToolResult): string | null {
-    if (result.errorDetails?.code) {
-      return result.errorDetails.code;
-    }
-    if (result.metadata && typeof result.metadata.errorCode === 'string' && result.metadata.errorCode.trim()) {
-      return result.metadata.errorCode;
-    }
-    const errorText = result.error || '';
-    const prefixed = errorText.match(/^([A-Z0-9_]{3,}):/);
-    return prefixed?.[1] || null;
-  }
-
-  private trackToolOutcome(toolName: string, result: ToolResult, durationMs: number): void {
-    const analytics = useAnalytics();
-    if (!analytics) {
-      return;
-    }
-
-    const errorCode = result.success ? null : this.extractToolErrorCode(result);
-    void analytics.track(AGENT_ANALYTICS_EVENTS.TOOL_CALLED, {
-      toolName,
-      success: result.success,
-      durationMs,
-      errorCode: errorCode ?? undefined,
-      retryable: result.errorDetails?.retryable ?? result.metadata?.retryable ?? undefined,
-    }).catch((err) => {
-      this.log(`[Agent] Failed to emit tool analytics: ${String(err)}`);
-    });
-  }
+  // trackToolOutcome and extractToolErrorCode delegated to RunMetricsEmitter (below)
 
   /**
    * Record tool execution in trace
@@ -3053,13 +2732,13 @@ Do not continue exploration. Finalize with current evidence.`;
         filesRead: Array.from(this.filesRead),
         totalIterations: iteration,
         totalTokens: this.totalTokens,
-        reflectionCount: this.reflectionCount,
-        hypothesisSwitches: this.hypothesisSwitches,
+        reflectionCount: this.reflectionEngine.state.reflectionCount,
+        hypothesisSwitches: this.reflectionEngine.state.hypothesisSwitches,
       },
       durationMs: 0,
     });
 
-    await this.finalizeTodoSyncOnCompletion(true, finalSummary);
+    await this.todoSyncCoordinator.finalize(true, finalSummary, this.config.sessionId);
     await this.emitRunKpis(finalSuccess, finalSummary, iteration, durationMs);
 
     return {
@@ -3148,13 +2827,13 @@ Do not continue exploration. Finalize with current evidence.`;
         filesRead: Array.from(this.filesRead),
         totalIterations: iteration,
         totalTokens: this.totalTokens,
-        reflectionCount: this.reflectionCount,
-        hypothesisSwitches: this.hypothesisSwitches,
+        reflectionCount: this.reflectionEngine.state.reflectionCount,
+        hypothesisSwitches: this.reflectionEngine.state.hypothesisSwitches,
       },
       durationMs: 0,
     });
 
-    await this.finalizeTodoSyncOnCompletion(false, error || summary);
+    await this.todoSyncCoordinator.finalize(false, error || summary, this.config.sessionId);
     await this.emitRunKpis(false, summary, iteration, durationMs, error || summary);
 
     return {
@@ -3226,7 +2905,7 @@ Do not continue exploration. Finalize with current evidence.`;
       durationMs,
     });
 
-    await this.finalizeTodoSyncOnCompletion(false, summary);
+    await this.todoSyncCoordinator.finalize(false, summary, this.config.sessionId);
     await this.emitRunKpis(false, summary, iteration - 1, durationMs, summary);
 
     return {
@@ -3242,6 +2921,17 @@ Do not continue exploration. Finalize with current evidence.`;
     };
   }
 
+  private makeEmitContext(): EmitContext {
+    const sessionId = this.config.sessionId;
+    return {
+      analytics: useAnalytics() ?? null,
+      sessionId,
+      persister: (sessionId && this.sessionRootDir) ? new SessionManager(this.sessionRootDir) : undefined,
+      baselineKey: getKpiBaselineKey(this.sessionRootDir, this.config.workingDir || ''),
+      log: (msg: string) => this.log(msg),
+    };
+  }
+
   private async emitRunKpis(
     success: boolean,
     summary: string,
@@ -3249,26 +2939,14 @@ Do not continue exploration. Finalize with current evidence.`;
     durationMs: number,
     errorMessage?: string
   ): Promise<void> {
-    const analytics = useAnalytics();
-    if (!analytics) {
-      return;
-    }
-
     const toolCallsTotal = Array.from(this.toolsUsedCount.values()).reduce((sum, count) => sum + count, 0);
     const todoToolCalls = (this.toolsUsedCount.get('todo_create') ?? 0)
       + (this.toolsUsedCount.get('todo_update') ?? 0)
       + (this.toolsUsedCount.get('todo_get') ?? 0);
-    const driftDomainCount = this.touchedDomains.size;
-    const driftRate = toolCallsTotal > 0
-      ? Math.max(0, driftDomainCount - 1) / toolCallsTotal
-      : 0;
-    const evidenceCount = this.filesRead.size + this.filesModified.size + this.filesCreated.size;
     const iterationBudget = this.currentIterationBudget || this.config.maxIterations || iterationsUsed;
-    const phaseDurationsMs = this.executionStateMachine.getPhaseDurationsMs();
     const phaseTransitions = this.executionStateMachine.getTransitions();
-    const ledgerSummary = this.taskLedger.getSummary();
 
-    const payload = {
+    await this.runMetricsEmitter.emitRunKpis({
       sessionId: this.config.sessionId,
       agentId: this.agentId,
       task: this.currentTask || '',
@@ -3277,53 +2955,28 @@ Do not continue exploration. Finalize with current evidence.`;
       summaryPreview: summary.slice(0, 300),
       iterationsUsed,
       iterationBudget,
-      iterationUtilization: iterationBudget > 0 ? iterationsUsed / iterationBudget : 1,
       tokenBudget: this.currentTokenBudget > 0 ? this.currentTokenBudget : undefined,
       tokenUtilization: this.currentTokenBudget > 0 ? this.totalTokens / this.currentTokenBudget : undefined,
       startTier: this.runStartTier,
       finalTier: this.runFinalTier,
-      escalated: this.tierEscalations.length > 0,
-      escalationCount: this.tierEscalations.length,
-      escalationReasons: this.tierEscalations.map((e) => e.reason),
-      escalationPath: this.tierEscalations.map((e) => `${e.from}->${e.to}`),
       durationMs,
       tokensUsed: this.totalTokens,
       toolCallsTotal,
       toolSuccessCount: this.toolSuccessCount,
       toolErrorCount: this.toolErrorCount,
-      toolErrorRate: toolCallsTotal > 0 ? this.toolErrorCount / toolCallsTotal : 0,
       todoToolCalls,
-      todoUsed: todoToolCalls > 0,
       filesReadCount: this.filesRead.size,
       filesModifiedCount: this.filesModified.size,
       filesCreatedCount: this.filesCreated.size,
-      evidenceDensity: iterationsUsed > 0 ? evidenceCount / iterationsUsed : evidenceCount,
-      driftDomainCount,
+      driftDomainCount: this.touchedDomains.size,
       driftDomains: Array.from(this.touchedDomains),
-      driftRate,
       executionPhase: this.executionStateMachine.getCurrent(),
-      phaseDurationsMs,
+      phaseDurationsMs: this.executionStateMachine.getPhaseDurationsMs(),
       phaseTransitionCount: phaseTransitions.length,
       phaseTransitions: phaseTransitions.slice(-20),
-      ledger: ledgerSummary,
+      ledger: this.taskLedger.getSummary(),
       qualityGate: this.lastQualityGate,
-    };
-
-    await this.emitQualityRegressionEvent({
-      driftRate,
-      evidenceDensity: iterationsUsed > 0 ? evidenceCount / iterationsUsed : evidenceCount,
-      toolErrorRate: toolCallsTotal > 0 ? this.toolErrorCount / toolCallsTotal : 0,
-      tokensUsed: this.totalTokens,
-      iterationsUsed,
-      iterationBudget,
-      iterationUtilization: iterationBudget > 0 ? iterationsUsed / iterationBudget : 1,
-      qualityScore: this.lastQualityGate?.score ?? (success ? 1 : 0),
-      qualityGateStatus: this.lastQualityGate?.status ?? 'pass',
-    });
-
-    await analytics.track('agent.kpi.run_completed', payload).catch((err) => {
-      this.log(`[Agent] Failed to emit KPI analytics: ${err}`);
-    });
+    }, this.makeEmitContext());
   }
 
   private async recordTierEscalation(
@@ -3332,150 +2985,32 @@ Do not continue exploration. Finalize with current evidence.`;
     reason: string,
     iteration: number
   ): Promise<void> {
-    this.tierEscalations.push({ from, to, reason, iteration });
-
-    const analytics = useAnalytics();
-    if (!analytics) {
-      return;
-    }
-
-    await analytics.track(AGENT_ANALYTICS_EVENTS.TIER_ESCALATED, {
+    await this.runMetricsEmitter.recordTierEscalation(from, to, reason, iteration, {
+      analytics: useAnalytics() ?? null,
       sessionId: this.config.sessionId,
       agentId: this.agentId,
       task: this.currentTask || '',
-      fromTier: from,
-      toTier: to,
-      reason,
-      iteration,
-      escalationCount: this.tierEscalations.length,
-    }).catch((err) => {
-      this.log(`[Agent] Failed to emit tier escalation analytics: ${err}`);
+      tierEscalatedEvent: AGENT_ANALYTICS_EVENTS.TIER_ESCALATED,
+      log: (msg: string) => this.log(msg),
     });
   }
 
-  private getKpiBaselineKey(): string {
-    return `${this.sessionRootDir || this.config.workingDir || 'workspace'}::agent`;
-  }
-
-  private async emitQualityRegressionEvent(metrics: {
-    driftRate: number;
-    evidenceDensity: number;
-    toolErrorRate: number;
-    tokensUsed: number;
-    iterationsUsed: number;
-    iterationBudget: number;
-    iterationUtilization: number;
-    qualityScore: number;
-    qualityGateStatus: 'pass' | 'partial';
-  }): Promise<void> {
-    const analytics = useAnalytics();
-    if (!analytics) {
-      return;
-    }
-
-    let baseline = {
-      driftRateEma: metrics.driftRate,
-      evidenceDensityEma: metrics.evidenceDensity,
-      toolErrorRateEma: metrics.toolErrorRate,
-      samples: 0,
-      tokenHistory: [] as number[],
-      iterationUtilizationHistory: [] as number[],
-      qualityScoreHistory: [] as number[],
-    };
-
-    const sessionId = this.config.sessionId;
-    let sessionManager: SessionManager | null = null;
-    if (sessionId && this.sessionRootDir) {
-      try {
-        sessionManager = new SessionManager(this.sessionRootDir);
-        const persisted = await sessionManager.getKpiBaseline(sessionId);
-        if (persisted) {
-          baseline = {
-            driftRateEma: persisted.driftRateEma,
-            evidenceDensityEma: persisted.evidenceDensityEma,
-            toolErrorRateEma: persisted.toolErrorRateEma,
-            samples: persisted.samples,
-            tokenHistory: persisted.tokenHistory,
-            iterationUtilizationHistory: persisted.iterationUtilizationHistory,
-            qualityScoreHistory: persisted.qualityScoreHistory,
-          };
-        }
-      } catch (err) {
-        this.log(`[Agent] Failed to read persisted KPI baseline: ${err}`);
-      }
-    } else {
-      const key = this.getKpiBaselineKey();
-      baseline = Agent.PROCESS_KPI_BASELINES.get(key) ?? baseline;
-    }
-
-    const enoughHistory = baseline.samples >= 3;
-    const driftRegressed = enoughHistory && metrics.driftRate > baseline.driftRateEma + 0.08;
-    const evidenceRegressed = enoughHistory && metrics.evidenceDensity < baseline.evidenceDensityEma - 0.2;
-    const errorRegressed = enoughHistory && metrics.toolErrorRate > baseline.toolErrorRateEma + 0.15;
-    const overBudget = metrics.iterationBudget > 0 && metrics.iterationsUsed / metrics.iterationBudget > 0.9;
-    const partialGate = metrics.qualityGateStatus === 'partial';
-
-    const regressed = driftRegressed || evidenceRegressed || errorRegressed || (partialGate && overBudget);
-    if (regressed) {
-      const reasons: string[] = [];
-      if (driftRegressed) {reasons.push('drift_rate_regressed');}
-      if (evidenceRegressed) {reasons.push('evidence_density_regressed');}
-      if (errorRegressed) {reasons.push('tool_error_rate_regressed');}
-      if (partialGate && overBudget) {reasons.push('partial_quality_near_budget_limit');}
-
-      await analytics.track('agent.kpi.quality_regression', {
-        sessionId: this.config.sessionId,
-        agentId: this.agentId,
-        task: this.currentTask || '',
-        reasons,
-        metrics,
-        baseline: {
-          driftRateEma: baseline.driftRateEma,
-          evidenceDensityEma: baseline.evidenceDensityEma,
-          toolErrorRateEma: baseline.toolErrorRateEma,
-          samples: baseline.samples,
-        },
-      }).catch((err) => {
-        this.log(`[Agent] Failed to emit quality regression analytics: ${err}`);
-      });
-    }
-
-    const alpha = 0.25;
-    const updatedBaseline = {
-      driftRateEma: baseline.samples === 0
-        ? metrics.driftRate
-        : baseline.driftRateEma * (1 - alpha) + metrics.driftRate * alpha,
-      evidenceDensityEma: baseline.samples === 0
-        ? metrics.evidenceDensity
-        : baseline.evidenceDensityEma * (1 - alpha) + metrics.evidenceDensity * alpha,
-      toolErrorRateEma: baseline.samples === 0
-        ? metrics.toolErrorRate
-        : baseline.toolErrorRateEma * (1 - alpha) + metrics.toolErrorRate * alpha,
-      samples: baseline.samples + 1,
-      tokenHistory: [...baseline.tokenHistory, metrics.tokensUsed].slice(-50),
-      iterationUtilizationHistory: [...baseline.iterationUtilizationHistory, metrics.iterationUtilization].slice(-50),
-      qualityScoreHistory: [...baseline.qualityScoreHistory, metrics.qualityScore].slice(-50),
-    };
-
-    if (sessionManager && sessionId) {
-      await sessionManager.updateKpiBaseline(sessionId, () => ({
-        version: 1,
-        updatedAt: new Date().toISOString(),
-        driftRateEma: updatedBaseline.driftRateEma,
-        evidenceDensityEma: updatedBaseline.evidenceDensityEma,
-        toolErrorRateEma: updatedBaseline.toolErrorRateEma,
-        samples: updatedBaseline.samples,
-        tokenHistory: updatedBaseline.tokenHistory,
-        iterationUtilizationHistory: updatedBaseline.iterationUtilizationHistory,
-        qualityScoreHistory: updatedBaseline.qualityScoreHistory,
-      })).catch((err) => {
-        this.log(`[Agent] Failed to persist KPI baseline: ${err}`);
-      });
-      return;
-    }
-
-    const key = this.getKpiBaselineKey();
-    Agent.PROCESS_KPI_BASELINES.set(key, updatedBaseline);
+  private trackToolOutcome(toolName: string, result: ToolResult, durationMs: number): void {
+    const errorCode = result.success ? null : extractToolErrorCode(result);
+    this.runMetricsEmitter.trackToolOutcome(
+      {
+        toolName,
+        success: result.success,
+        durationMs,
+        errorCode: errorCode ?? undefined,
+        retryable: result.errorDetails?.retryable ?? (result.metadata?.retryable as boolean | undefined) ?? undefined,
+      },
+      {
+        analytics: useAnalytics() ?? null,
+        toolCalledEvent: AGENT_ANALYTICS_EVENTS.TOOL_CALLED,
+        log: (msg: string) => this.log(msg),
+      },
+    );
   }
 
   /**
@@ -3511,42 +3046,13 @@ Do not continue exploration. Finalize with current evidence.`;
       filesRead: this.filesRead,
       filesModified: this.filesModified,
       filesCreated: this.filesCreated,
-      searchSignalHits: this.searchSignalHits,
-      recentSearchEvidenceCount: this.recentSearchEvidence.length,
+      searchSignalHits: this.searchSignalTracker.state.searchSignalHits,
+      recentSearchEvidenceCount: this.searchSignalTracker.state.recentSearchEvidence.length,
     });
   }
 
   private countFailedToolResults(toolResults: LLMMessage[]): number {
     return countFailedToolResults(toolResults);
-  }
-
-  private shouldTriggerReflection(input: {
-    trigger: 'post_tools' | 'before_escalation' | 'before_no_result';
-    iteration: number;
-    failedToolsThisIteration: number;
-    escalationReason?: string;
-    force: boolean;
-  }): boolean {
-    if (input.force || input.trigger !== 'post_tools') {
-      return true;
-    }
-
-    if (input.iteration <= 1) {
-      return input.failedToolsThisIteration > 0;
-    }
-
-    if (input.iteration - this.lastReflectionIteration < 2) {
-      return false;
-    }
-
-    const repeatedSingleTool = this.progressTracker.state.lastToolCalls.length >= 3
-      && new Set(this.progressTracker.state.lastToolCalls.slice(-3)).size === 1;
-
-    return (
-      input.failedToolsThisIteration > 0
-      || repeatedSingleTool
-      || this.progressTracker.state.iterationsSinceProgress >= this.progressTracker.state.stuckThreshold - 1
-    );
   }
 
   private async maybeRunOperationalReflection(
@@ -3561,33 +3067,23 @@ Do not continue exploration. Finalize with current evidence.`;
     },
     messages: LLMMessage[]
   ): Promise<void> {
-    if (!this.shouldTriggerReflection(input)) {
+    const result = await this.reflectionEngine.maybeRunReflection({
+      trigger: input.trigger,
+      iteration: input.iteration,
+      toolCalls: input.toolCalls.map((tc) => ({ id: tc.id, name: tc.name })),
+      toolResults: input.toolResults.map((tr) => ({ toolCallId: tr.toolCallId, content: tr.content })),
+      failedToolsThisIteration: input.failedToolsThisIteration,
+      force: input.force,
+      escalationReason: input.escalationReason,
+      lastToolCalls: this.progressTracker.state.lastToolCalls,
+      iterationsSinceProgress: this.progressTracker.state.iterationsSinceProgress,
+      stuckThreshold: this.progressTracker.state.stuckThreshold,
+      task: this.currentTask || '',
+    });
+
+    if (!result) {
       return;
     }
-
-    const reflection = await this.generateOperationalReflection(input);
-    if (!reflection) {
-      return;
-    }
-
-    const normalizedHypothesis = reflection.hypothesis.trim().toLowerCase();
-    if (normalizedHypothesis && this.lastReflectionHypothesis && normalizedHypothesis !== this.lastReflectionHypothesis) {
-      this.hypothesisSwitches += 1;
-    }
-    if (normalizedHypothesis) {
-      this.lastReflectionHypothesis = normalizedHypothesis;
-    }
-    this.lastReflectionIteration = input.iteration;
-    this.reflectionCount += 1;
-
-    const summary = [
-      `[Reflection @iter ${input.iteration}] trigger=${input.trigger}; confidence=${reflection.confidence.toFixed(2)}`,
-      `Hypothesis: ${reflection.hypothesis}`,
-      `Evidence+: ${reflection.evidenceFor}`,
-      `Evidence-: ${reflection.evidenceAgainst}`,
-      `Next check: ${reflection.nextBestCheck}`,
-      `Why: ${reflection.whyThisCheck}`,
-    ].join('\n');
 
     this.emit({
       type: EVENT_TYPE_STATUS_CHANGE,
@@ -3595,23 +3091,25 @@ Do not continue exploration. Finalize with current evidence.`;
       sessionId: this.config.sessionId,
       data: {
         status: 'thinking',
-        message: `Reflection checkpoint: ${reflection.hypothesis} (conf ${reflection.confidence.toFixed(2)})`,
+        message: `Reflection checkpoint: ${result.hypothesis} (conf ${result.confidence.toFixed(2)})`,
       },
     });
 
     messages.push({
       role: 'assistant',
-      content: summary,
+      content: result.summaryMessage,
     });
   }
 
-  private async generateOperationalReflection(input: {
-    trigger: 'post_tools' | 'before_escalation' | 'before_no_result';
+  /**
+   * LLM bridge for ReflectionEngine — keeps LLM call in agent.ts
+   */
+  private async callReflectionLLM(input: {
+    trigger: string;
     iteration: number;
-    toolCalls: LLMToolCall[];
-    toolResults: LLMMessage[];
+    task: string;
+    toolRows: string;
     failedToolsThisIteration: number;
-    force: boolean;
     escalationReason?: string;
   }): Promise<{
     hypothesis: string;
@@ -3635,20 +3133,14 @@ Do not continue exploration. Finalize with current evidence.`;
       return null;
     }
 
-    const toolRows = input.toolCalls.slice(-6).map((toolCall) => {
-      const result = input.toolResults.find((item) => item.toolCallId === toolCall.id);
-      const content = typeof result?.content === 'string' ? result.content.slice(0, 360) : '';
-      return `${toolCall.name}: ${content}`;
-    });
-
     const prompt = `Create a short operational reflection checkpoint for an autonomous agent.
-Task: ${this.currentTask || ''}
+Task: ${input.task}
 Trigger: ${input.trigger}
 Iteration: ${input.iteration}
 Failed tools this iteration: ${input.failedToolsThisIteration}
 Escalation reason candidate: ${input.escalationReason || 'n/a'}
 Recent tool outcomes:
-${toolRows.join('\n') || '(none)'}`;
+${input.toolRows || '(none)'}`;
 
     try {
       const response = await llm.chatWithTools(
@@ -3713,82 +3205,28 @@ ${toolRows.join('\n') || '(none)'}`;
     toolResults: LLMMessage[],
     iteration: number
   ): Promise<void> {
-    if (toolCalls.length === 0) {
-      this.consecutiveNoSignalSearchIterations = 0;
-      return;
-    }
-
-    const searchCalls = toolCalls.filter((call) =>
-      call.name === 'grep_search' || call.name === 'glob_search' || call.name === 'find_definition'
-    );
-    if (searchCalls.length === 0) {
-      this.consecutiveNoSignalSearchIterations = 0;
-      return;
-    }
-
-    const searchArtifacts = searchCalls.map((call) => {
-      const result = toolResults.find((r) => r.toolCallId === call.id);
-      return {
-        tool: call.name,
-        content: (result?.content || '').slice(0, 2000),
-      };
-    });
-
-    const llmJudgement = await this.assessSearchSignalWithLLM(searchArtifacts);
-    if (llmJudgement.snippets.length > 0) {
-      for (const snippet of llmJudgement.snippets) {
-        if (!this.recentSearchEvidence.includes(snippet)) {
-          this.recentSearchEvidence.push(snippet);
-        }
-      }
-      this.recentSearchEvidence = this.recentSearchEvidence.slice(-8);
-    }
-
-    const positiveSignalDetected = llmJudgement.signal !== 'none';
-    if (positiveSignalDetected) {
-      this.searchSignalHits += 1;
-      this.lastSignalIteration = iteration;
-    }
-
-    const lowSignal = llmJudgement.signal === 'none';
-    if (lowSignal) {
-      this.consecutiveNoSignalSearchIterations += 1;
-    } else {
-      this.consecutiveNoSignalSearchIterations = 0;
-    }
+    await this.searchSignalTracker.updateNoResultTracker(toolCalls, toolResults, iteration);
+    this.lastSignalIteration = this.searchSignalTracker.state.lastSignalIteration;
   }
 
   private shouldConcludeNoResultEarly(iteration: number): boolean {
-    const task = this.currentTask || '';
-    if (this.isLikelyActionTask(task)) {
-      return false;
-    }
-    if (!this.isLikelyDiscoveryTask(task)) {
-      return false;
-    }
-
-    if (iteration < this.behaviorPolicy.noResult.minIterationsBeforeConclusion) {
-      return false;
-    }
-
-    const maxNoSignal = this.behaviorPolicy.noResult.maxConsecutiveNoSignalSearchByTier[this.currentTier];
-    if (this.consecutiveNoSignalSearchIterations < maxNoSignal) {
-      return false;
-    }
-
-    if (this.searchSignalHits > 0) {
-      return false;
-    }
-
-    const evidenceCount = this.filesRead.size + this.filesModified.size + this.filesCreated.size;
-    return evidenceCount <= 1;
+    return this.searchSignalTracker.shouldConcludeNoResultEarly(
+      iteration,
+      {
+        task: this.currentTask || '',
+        taskIntent: this.taskIntent,
+        behaviorPolicy: this.behaviorPolicy,
+        currentTier: this.currentTier,
+        filesRead: this.filesRead,
+        filesModified: this.filesModified,
+        filesCreated: this.filesCreated,
+      },
+      this.isLikelyActionTask(this.currentTask || ''),
+    );
   }
 
   private isLikelyDiscoveryTask(task: string): boolean {
-    if (this.taskIntent) {
-      return this.taskIntent === 'discovery';
-    }
-    return /(find|search|locate|where|which|what exports|usage|symbol|definition|найди|поиск|где|какой|какие|экспорт|используется|определение)/i.test(task);
+    return isLikelyDiscoveryTask(task, this.taskIntent);
   }
 
   private maybeExtendIterationBudget(currentIteration: number, currentBudget: number): number {
@@ -3801,38 +3239,7 @@ ${toolRows.join('\n') || '(none)'}`;
   }
 
   private buildNoResultConclusionSummary(): string {
-    const searchTools = ['grep_search', 'glob_search', 'find_definition']
-      .map((name) => ({ name, count: this.toolsUsedCount.get(name) ?? 0 }))
-      .filter((item) => item.count > 0);
-    const attempts = searchTools.length > 0
-      ? searchTools.map((item) => `${item.name}×${item.count}`).join(', ')
-      : 'search tools';
-
-    if (this.recentSearchEvidence.length > 0) {
-      const evidence = this.recentSearchEvidence.slice(0, 5).map((item) => `- ${item}`).join('\n');
-      return `Partial signal found after repeated search attempts (${attempts}), but evidence was insufficient for a high-confidence final claim.\nObserved matches:\n${evidence}\n\nProvide a narrower symbol/path or expected module to continue with a focused verification pass.`;
-    }
-
-    return `Insufficient evidence found after repeated search attempts (${attempts}). I could not locate reliable matches for the requested target in the current workspace scope.`;
-  }
-
-  private extractSearchEvidenceSnippets(content: string): string[] {
-    if (!content.trim()) {
-      return [];
-    }
-
-    const snippets: string[] = [];
-    const lines = content.split('\n').map((line) => line.trim()).filter(Boolean);
-    for (const line of lines) {
-      if (/[a-z0-9_\-./]+\.(ts|tsx|js|jsx|json|md|py|go|rs|yml|yaml)(:\d+)?/i.test(line)) {
-        snippets.push(line.length > 180 ? `${line.slice(0, 177)}...` : line);
-      }
-      if (snippets.length >= 6) {
-        break;
-      }
-    }
-
-    return snippets;
+    return this.searchSignalTracker.buildNoResultConclusionSummary(this.toolsUsedCount);
   }
 
   private detectStuck(): boolean {
@@ -3871,281 +3278,20 @@ ${toolRows.join('\n') || '(none)'}`;
     agentResponse?: string,
     iterationsUsed = 0
   ): Promise<{ success: boolean; summary: string }> {
-    const historicalChanges = await this.getHistoricalChangesForSimilarTask(task);
-    const effectiveModified = new Set<string>([
-      ...Array.from(this.filesModified),
-      ...historicalChanges.filesModified,
-    ]);
-    const effectiveCreated = new Set<string>([
-      ...Array.from(this.filesCreated),
-      ...historicalChanges.filesCreated,
-    ]);
-    const hasHistoricalFileChanges = historicalChanges.filesCreated.length > 0
-      || historicalChanges.filesModified.length > 0;
-    const ranVerificationCommands = (this.toolsUsedCount.get('shell_exec') ?? 0) > 0;
-    const responseLooksLikeVerification = /(test|tests|vitest|jest|build|lint|passed|success|успеш|пройден|green)/i.test(agentResponse || '');
-
-    // Read content of modified/created files for validation
-    let fileContents = '';
-    if (effectiveModified.size > 0 || effectiveCreated.size > 0) {
-      const filesToCheck = [
-        ...Array.from(effectiveModified),
-        ...Array.from(effectiveCreated),
-      ].slice(0, 3);
-
-      for (const file of filesToCheck) {
-        try {
-           
-          const result = await this.toolRegistry.execute('fs_read', {
-            path: file,
-          });
-          if (result.success && result.output) {
-            fileContents += `\n--- ${file} ---\n${result.output.slice(0, 1000)}\n`;
-          }
-        } catch {
-          // Ignore read errors
-        }
-      }
-    }
-
-    // For informational/research tasks, return the agent response directly as summary
-    // This includes questions (what/how/why) AND research verbs (analyze/scan/inspect/review/identify/check)
-    const isInformationalTask = this.taskIntent ? this.taskIntent !== 'action' : !this.isLikelyActionTask(task);
-
-    const evidenceCount = this.filesRead.size + this.filesModified.size + this.filesCreated.size;
-    const hasFileChanges = effectiveCreated.size > 0 || effectiveModified.size > 0;
-    const evidenceDensity = iterationsUsed > 0 ? evidenceCount / iterationsUsed : evidenceCount;
-    const searchAttempts = (this.toolsUsedCount.get('grep_search') ?? 0)
-      + (this.toolsUsedCount.get('glob_search') ?? 0)
-      + (this.toolsUsedCount.get('find_definition') ?? 0);
-    const looksLikeNoResultConclusion = /(not found|не найден|no matches|no results|не удалось найти|не содержит)/i.test(agentResponse || '');
-    // Require substantial answer with evidence (file paths, code blocks, or technical details)
-    const hasEvidence = /\.(ts|js|tsx|jsx|md|json|py|go|rs|yaml|yml)|\/[a-z]|```|:\d+/.test(agentResponse || '');
-    if (
-      isInformationalTask
-      && agentResponse
-      && agentResponse.trim().length >= this.behaviorPolicy.evidence.minInformationalResponseChars
-      && hasEvidence
-      && (
-        this.filesRead.size >= this.behaviorPolicy.evidence.minFilesReadForInformational
-        || evidenceDensity >= this.behaviorPolicy.evidence.minEvidenceDensityForInformational
-        || this.searchSignalHits > 0
-        || this.recentSearchEvidence.length > 0
-      )
-    ) {
-      // For questions, the agent's response IS the answer - use it directly
-      return {
-        success: true,
-        summary: agentResponse,
-      };
-    }
-
-    if (isInformationalTask && agentResponse && looksLikeNoResultConclusion && searchAttempts >= 2) {
-      return {
-        success: true,
-        summary: agentResponse,
-      };
-    }
-
-    const llmTier = this.chooseSmartTier('taskValidation', {
+    const ctx: CompletionEvaluationContext = {
       task,
-      isInformationalTask,
-      evidenceDensity,
+      agentResponse,
       iterationsUsed,
-    });
-    const llm = useLLM({ tier: llmTier });
-
-    const prompt = `You are validating if an agent task was successfully completed.
-
-**Original Task:** ${task}
-
-**Files Created (current run):** ${Array.from(this.filesCreated).join(', ') || 'None'}
-**Files Modified (current run):** ${Array.from(this.filesModified).join(', ') || 'None'}
-**Files Created (including prior matching runs):** ${Array.from(effectiveCreated).join(', ') || 'None'}
-**Files Modified (including prior matching runs):** ${Array.from(effectiveModified).join(', ') || 'None'}
-**Historical matching runs with file changes:** ${historicalChanges.matchingRunCount}
-**Verification commands in current run:** ${ranVerificationCommands ? 'Yes' : 'No'}
-**Files Read:** ${Array.from(this.filesRead).join(', ') || 'None'}
-
-**Modified/Created Files Content:**${fileContents || '\n(No files to show)'}
-
-${agentResponse ? `**Agent Response:**\n${agentResponse}\n` : ''}
-
-**Validation Rules:**
-
-1. **For informational/question tasks** (starting with "What", "How", "Why", "Explain", "Tell me", etc.):
-   - SUCCESS only if response includes concrete evidence from current run.
-   - Require at least one concrete reference (file path/symbol/line/code detail) grounded in tool outputs.
-   - If response is generic or not evidence-backed, mark as FAILED.
-
-2. **For action tasks** (create, edit, delete, run, etc.):
-   - SUCCESS if appropriate files were created/modified/read.
-   - IMPORTANT for retries: if current run mostly verifies/tests but prior matching runs already changed files, this can still be SUCCESS when verification evidence exists.
-   - Example: "Create file.txt" → file.txt created = SUCCESS
-
-IMPORTANT: Do NOT mark question tasks as success only because text exists. Evidence-grounded answer is required.
-
-**CRITICAL for summary field:**
-- For research/informational tasks: Include ACTUAL FINDINGS - specific file paths, package names, code details discovered
-- For action tasks: Describe what was done specifically
-- NEVER write meta-descriptions like "The agent successfully provided..." - include the actual discovered content
-- If Agent Response exists, extract and include the key information from it`;
-
-    try {
-      if (!llm) {
-        throw new Error('LLM not available');
-      }
-
-      if (llm.chatWithTools) {
-        const response = await llm.chatWithTools(
-          [{ role: 'user', content: prompt }],
-          {
-            temperature: 0,
-            tools: [
-              {
-                name: 'set_validation_result',
-                description: 'Set final validation result and summary.',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    success: { type: 'boolean' },
-                    summary: { type: 'string' },
-                  },
-                  required: ['success', 'summary'],
-                },
-              },
-            ],
-          }
-        );
-        const call = response.toolCalls?.find((tc) => tc.name === 'set_validation_result');
-        const input = (call?.input ?? {}) as { success?: boolean; summary?: string };
-        if (typeof input.success === 'boolean' && typeof input.summary === 'string' && input.summary.trim()) {
-          if (
-            !input.success
-            && hasHistoricalFileChanges
-            && this.filesCreated.size === 0
-            && this.filesModified.size === 0
-            && (ranVerificationCommands || responseLooksLikeVerification)
-          ) {
-            return {
-              success: true,
-              summary: `Verified retry succeeded using artifacts from prior run(s): ${input.summary}`,
-            };
-          }
-          return {
-            success: input.success,
-            summary: input.summary,
-          };
-        }
-      } else {
-        const response = await llm.complete(`${prompt}\n\nReturn concise verdict and summary.`, {
-          temperature: 0,
-        });
-        const content = response.content || '';
-        if (content.trim().length > 0) {
-          return {
-            success: hasFileChanges || hasEvidence || looksLikeNoResultConclusion,
-            summary: content.trim().slice(0, 1200),
-          };
-        }
-      }
-    } catch (error) {
-      this.log(`⚠️  Validation error: ${error}`);
-    }
-
-    // Fallback: only file changes count as concrete success for non-informational tasks
-
-    return {
-      success: hasFileChanges || (
-        isInformationalTask
-        && (
-          hasEvidence
-          || looksLikeNoResultConclusion
-          || this.searchSignalHits > 0
-          || this.recentSearchEvidence.length > 0
-        )
-      ),
-      summary: hasFileChanges
-        ? `Modified ${effectiveModified.size} file(s), created ${effectiveCreated.size} file(s)`
-        : agentResponse?.slice(0, 200) || 'Task did not produce concrete results',
+      taskIntent: this.taskIntent,
+      filesRead: this.filesRead,
+      filesModified: this.filesModified,
+      filesCreated: this.filesCreated,
+      toolsUsedCount: this.toolsUsedCount,
+      searchSignalHits: this.searchSignalTracker.state.searchSignalHits,
+      recentSearchEvidence: this.searchSignalTracker.state.recentSearchEvidence,
+      behaviorPolicy: this.behaviorPolicy,
     };
-  }
-
-  private async getHistoricalChangesForSimilarTask(task: string): Promise<{
-    filesCreated: string[];
-    filesModified: string[];
-    matchingRunCount: number;
-  }> {
-    if (!this.config.sessionId || !this.sessionRootDir) {
-      return { filesCreated: [], filesModified: [], matchingRunCount: 0 };
-    }
-
-    try {
-      const sessionManager = new SessionManager(this.sessionRootDir);
-      const events = await sessionManager.getSessionEvents(this.config.sessionId, {
-        types: ['agent:start', 'agent:end'],
-      });
-      if (events.length === 0) {
-        return { filesCreated: [], filesModified: [], matchingRunCount: 0 };
-      }
-
-      const normalizeTask = (value: string): string => value.toLowerCase().replace(/\s+/g, ' ').trim();
-      const currentTaskNorm = normalizeTask(task);
-      const taskByAgentId = new Map<string, string>();
-
-      for (const event of events) {
-        if (event.type !== 'agent:start' || event.parentAgentId || !event.agentId) {
-          continue;
-        }
-        const candidate = typeof event.data?.task === 'string' ? event.data.task : '';
-        if (candidate.trim()) {
-          taskByAgentId.set(event.agentId, candidate);
-        }
-      }
-
-      const filesCreated = new Set<string>();
-      const filesModified = new Set<string>();
-      let matchingRunCount = 0;
-
-      for (const event of events) {
-        if (event.type !== 'agent:end' || event.parentAgentId || !event.agentId) {
-          continue;
-        }
-        if (event.agentId === this.agentId) {
-          continue;
-        }
-        const priorTask = taskByAgentId.get(event.agentId);
-        if (!priorTask || normalizeTask(priorTask) !== currentTaskNorm) {
-          continue;
-        }
-
-        const created = Array.isArray(event.data?.filesCreated) ? event.data.filesCreated : [];
-        const modified = Array.isArray(event.data?.filesModified) ? event.data.filesModified : [];
-        if (created.length === 0 && modified.length === 0) {
-          continue;
-        }
-
-        matchingRunCount += 1;
-        for (const file of created) {
-          if (typeof file === 'string' && file.trim()) {
-            filesCreated.add(file);
-          }
-        }
-        for (const file of modified) {
-          if (typeof file === 'string' && file.trim()) {
-            filesModified.add(file);
-          }
-        }
-      }
-
-      return {
-        filesCreated: Array.from(filesCreated),
-        filesModified: Array.from(filesModified),
-        matchingRunCount,
-      };
-    } catch {
-      return { filesCreated: [], filesModified: [], matchingRunCount: 0 };
-    }
+    return this.taskCompletionEvaluator.evaluate(ctx);
   }
 
   private async buildSystemPrompt(): Promise<string> {
