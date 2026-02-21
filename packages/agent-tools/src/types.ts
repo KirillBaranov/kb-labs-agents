@@ -33,6 +33,20 @@ export interface IFileChangeTracker {
 }
 
 /**
+ * Interface for ArchiveMemory (Tier 2: Cold Storage).
+ * Defined here to avoid circular dependency: agent-tools cannot import agent-core.
+ */
+export interface IArchiveMemory {
+  recallByFilePath(filePath: string): { fullOutput: string; iteration: number; toolName: string } | null;
+  recallByToolName(toolName: string, limit?: number): Array<{ fullOutput: string; iteration: number; toolName: string; filePath?: string }>;
+  recallByIteration(iteration: number): Array<{ fullOutput: string; iteration: number; toolName: string; filePath?: string }>;
+  search(keyword: string, limit?: number): Array<{ fullOutput: string; toolName: string; iteration: number; filePath?: string }>;
+  getArchivedFilePaths(): string[];
+  hasFile(filePath: string): boolean;
+  getSummaryHint(): string;
+}
+
+/**
  * Tool context (working directory, etc.)
  */
 export interface ToolContext {
@@ -49,6 +63,8 @@ export interface ToolContext {
   fileChangeTracker?: IFileChangeTracker;
   /** Agent ID for attribution */
   agentId?: string;
+  /** Archive memory for cold storage recall (Tier 2) */
+  archiveMemory?: IArchiveMemory;
   /** Spawn sub-agent callback (injected by Agent, not available for sub-agents) */
   spawnAgent?: (request: {
     task: string;
