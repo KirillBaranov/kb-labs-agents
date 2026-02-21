@@ -4,7 +4,7 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import type { AgentSession, AgentSessionInfo, AgentMode, AgentEvent, Turn } from '@kb-labs/agent-contracts';
+import type { AgentSession, AgentSessionInfo, AgentMode, AgentEvent, Turn, FileChangeSummary } from '@kb-labs/agent-contracts';
 import { TurnAssembler } from './turn-assembler.js';
 
 /**
@@ -686,6 +686,79 @@ export class SessionManager {
   }
 
   /**
+   * Attach file change summaries to the assistant turn for a given runId.
+   * Called after agent.execute() completes to surface file changes in the UI.
+   */
+  async attachFileChangesToTurn(
+    sessionId: string,
+    runId: string,
+    fileChanges: FileChangeSummary[]
+  ): Promise<void> {
+    const prev = this.writeQueues.get(sessionId) ?? Promise.resolve();
+    const next = prev.then(() => this._attachFileChangesToTurn(sessionId, runId, fileChanges));
+    this.writeQueues.set(sessionId, next.catch(() => {}));
+    return next;
+  }
+
+  private async _attachFileChangesToTurn(
+    sessionId: string,
+    runId: string,
+    fileChanges: FileChangeSummary[]
+  ): Promise<void> {
+    const turnsPath = this.getTurnsPath(sessionId);
+
+    let turns: Turn[] = [];
+    try {
+      const content = await fs.readFile(turnsPath, 'utf-8');
+      turns = JSON.parse(content);
+    } catch {
+      return; // No turns file yet
+    }
+
+    // Find the assistant turn for this runId
+    const turnIndex = turns.findIndex(
+      (t) => t.type === 'assistant' && t.metadata?.runId === runId
+    );
+    if (turnIndex < 0) {
+      return; // Turn not found — may happen if run was never persisted
+    }
+
+    turns[turnIndex]!.metadata.fileChanges = fileChanges;
+    await fs.writeFile(turnsPath, JSON.stringify(turns, null, 2), 'utf-8');
+  }
+
+  /**
+   * Update fileChanges metadata on a turn (e.g. after approve/rollback).
+   * Patches individual change entries by changeId.
+   */
+  async updateTurnFileChanges(
+    sessionId: string,
+    runId: string,
+    updatedChanges: import('@kb-labs/agent-contracts').FileChangeSummary[]
+  ): Promise<void> {
+    const turnsPath = this.getTurnsPath(sessionId);
+    let turns: Turn[] = [];
+    try {
+      const content = await fs.readFile(turnsPath, 'utf-8');
+      turns = JSON.parse(content);
+    } catch {
+      return;
+    }
+
+    const turnIndex = turns.findIndex(
+      (t) => t.type === 'assistant' && t.metadata?.runId === runId
+    );
+    if (turnIndex < 0) return;
+
+    const existing = turns[turnIndex]!.metadata.fileChanges ?? [];
+    const patchMap = new Map(updatedChanges.map((c) => [c.changeId, c]));
+    turns[turnIndex]!.metadata.fileChanges = existing.map((c) =>
+      patchMap.has(c.changeId) ? { ...c, ...patchMap.get(c.changeId) } : c
+    );
+    await fs.writeFile(turnsPath, JSON.stringify(turns, null, 2), 'utf-8');
+  }
+
+  /**
    * Load turn snapshots for session
    */
   async getTurns(sessionId: string): Promise<Turn[]> {
@@ -824,6 +897,11 @@ export class SessionManager {
     });
 
     if (turn) {
+      // Stamp runId on the turn so fileChanges can be associated by runId later
+      if (event.runId && turn.type === 'assistant' && !turn.metadata.runId) {
+        turn.metadata.runId = event.runId;
+      }
+
       await this.storeTurnSnapshot(sessionId, turn);
       return turn;
     }
