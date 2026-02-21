@@ -57,6 +57,9 @@ import { createAskParentTool, createReportTool } from './reporting.js';
 // Delegation tools
 import { createSpawnAgentTool } from './delegation.js';
 
+// Archive recall tool (Tier 2: Cold Storage)
+import { createArchiveRecallTool } from './archive-recall.js';
+
 /**
  * Create and register all tools
  */
@@ -89,6 +92,10 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   registry.register(createMemoryCorrectionTool(context));
   registry.register(createMemoryFindingTool(context));
   registry.register(createMemoryBlockerTool(context));
+  // Archive recall (Tier 2: Cold Storage)
+  if (context.archiveMemory) {
+    registry.register(createArchiveRecallTool(context));
+  }
 
   // Register TODO tools
   registry.register(createTodoCreateTool(context));
@@ -140,4 +147,5 @@ export {
   createAskParentTool,
   createReportTool,
   createSpawnAgentTool,
+  createArchiveRecallTool,
 };
