@@ -344,6 +344,19 @@ class RunManagerImpl {
   }
 
   /**
+   * Request graceful stop of a running agent (and its child agents via propagated AbortSignal).
+   * Agent finishes its current tool call then exits at the next iteration boundary.
+   */
+  requestStop(runId: string): boolean {
+    const run = this.activeRuns.get(runId);
+    if (!run || run.status !== 'running') {
+      return false;
+    }
+    run.agent.requestStop();
+    return true;
+  }
+
+  /**
    * Clean up completed runs from memory (cache handles its own TTL)
    */
   cleanup(): void {

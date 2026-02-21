@@ -55,9 +55,6 @@ export default defineHandler({
       durationMs: run.durationMs,
       summary: run.summary,
       error: run.error,
-      activeAgents: run.status === 'running'
-        ? run.orchestrator.getActiveAgents()
-        : undefined,
     };
   },
 });
