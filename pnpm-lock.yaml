@@ -283,6 +283,9 @@ importers:
       '@kb-labs/core-platform':
         specifier: link:../../../kb-labs-core/packages/core-platform
         version: link:../../../kb-labs-core/packages/core-platform
+      '@kb-labs/sdk':
+        specifier: link:../../../kb-labs-sdk/packages/sdk
+        version: link:../../../kb-labs-sdk/packages/sdk
       glob:
         specifier: ^11.0.2
         version: 11.0.3
