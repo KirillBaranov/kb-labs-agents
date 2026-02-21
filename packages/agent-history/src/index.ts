@@ -10,9 +10,11 @@ export { ConflictDetector } from './conflict-detector.js';
 export { ConflictResolver } from './conflict-resolver.js';
 export type {
   FileChange,
+  FileChangeSummary,
   RollbackResult,
   ConflictInfo,
   StorageConfig,
 } from './types.js';
 export type { DetectedConflict, ConflictType } from './conflict-detector.js';
 export type { ResolutionResult } from './conflict-resolver.js';
+export { generateUnifiedDiff, countDiffLines } from './diff-generator.js';

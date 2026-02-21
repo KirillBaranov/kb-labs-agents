@@ -34,6 +34,7 @@ export class FileChangeTracker extends EventEmitter {
   private workingDir: string;
   private storage: SnapshotStorage;
   private changes: FileChange[] = [];
+  private runId?: string;
 
   constructor(
     sessionId: string,
@@ -46,6 +47,14 @@ export class FileChangeTracker extends EventEmitter {
     this.agentId = agentId;
     this.workingDir = workingDir;
     this.storage = storage;
+  }
+
+  /**
+   * Set the run ID — call this right after an agent run starts.
+   * All changes captured after this call will be tagged with the given runId.
+   */
+  setRunId(runId: string): void {
+    this.runId = runId;
   }
 
   /**
@@ -65,6 +74,7 @@ export class FileChangeTracker extends EventEmitter {
       id: changeId,
       sessionId: this.sessionId,
       agentId: this.agentId,
+      runId: this.runId,
       filePath,
       operation,
       timestamp: new Date().toISOString(),

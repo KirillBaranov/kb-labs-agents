@@ -15,6 +15,9 @@ export interface FileChange {
   /** Agent ID that made the change */
   agentId: string;
 
+  /** Run ID that produced this change — enables per-turn/per-run filtering */
+  runId?: string;
+
   /** File path relative to working directory */
   filePath: string;
 
@@ -52,6 +55,45 @@ export interface FileChange {
     // fs_delete specific
     wasDeleted?: boolean;
   };
+
+  /** User explicitly approved this change */
+  approved?: boolean;
+
+  /** ISO timestamp when change was approved */
+  approvedAt?: string;
+}
+
+/**
+ * Lightweight summary of a file change — no before/after content.
+ * Used in Turn.metadata.fileChanges to avoid bloating session turn history.
+ */
+export interface FileChangeSummary {
+  /** ID of the full FileChange record */
+  changeId: string;
+
+  /** File path relative to working directory */
+  filePath: string;
+
+  /** Operation type */
+  operation: 'write' | 'patch' | 'delete';
+
+  /** Timestamp when change was made */
+  timestamp: string;
+
+  /** Lines added (from metadata) */
+  linesAdded?: number;
+
+  /** Lines removed (from metadata) */
+  linesRemoved?: number;
+
+  /** True when before was null (new file created by agent) */
+  isNew: boolean;
+
+  /** Size of file after change in bytes */
+  sizeAfter: number;
+
+  /** Whether user approved this change */
+  approved?: boolean;
 }
 
 /**
