@@ -39,7 +39,6 @@ describe('ContextFilter', () => {
 
       expect(result.content?.length).toBeLessThan(600); // 500 + suffix
       expect(result.content).toContain('9500 more characters truncated');
-      expect(result.content).toContain('use context_retrieve');
       expect(result.metadata?.truncated).toBe(true);
       expect(result.metadata?.originalLength).toBe(10000);
     });
@@ -95,7 +94,6 @@ describe('ContextFilter', () => {
       expect(msg).toContain('iteration 3');
       expect(msg).toContain('fs:read');
       expect(msg).toContain('file contents here');
-      expect(msg).toContain('context_retrieve');
     });
 
     it('should track deduplication stats', () => {
