@@ -200,7 +200,8 @@ export class TaskRunner {
 
         this.log(`\n${message}\n`);
 
-        // For now, abort on escalation (TODO: add human-in-the-loop)
+        // NOT_IMPLEMENTED: human-in-the-loop — abort is the safe default until
+        // the HITL channel (websocket / CLI prompt) is wired up.
         return this.createAbortResult(checkpoint, 'Task requires human decision');
       }
 
