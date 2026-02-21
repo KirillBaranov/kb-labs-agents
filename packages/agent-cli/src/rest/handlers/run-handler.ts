@@ -204,6 +204,28 @@ export default defineHandler({
       maxContextTokens: 8000,
     });
 
+    // Pre-load conversation history BEFORE launching agent in background.
+    // This avoids the race condition where the previous run's fire-and-forget
+    // sessionManager.addEvent() calls may not have flushed turns.json to disk
+    // by the time the new agent creates a fresh SessionManager and reads it.
+    // Using the same sessionManager instance here ensures all pending writes
+    // are chained and visible when we read.
+    let preloadedHistory: {
+      recent: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
+      midTerm: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
+      old: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
+    } | undefined;
+    let preloadedTraceArtifactsContext: string | undefined;
+
+    try {
+      preloadedHistory = await sessionManager.getConversationHistoryWithSummarization(finalSessionId);
+      preloadedTraceArtifactsContext = await sessionManager.getTraceArtifactsContext(finalSessionId);
+      const totalTurns = preloadedHistory.recent.length + preloadedHistory.midTerm.length + preloadedHistory.old.length;
+      ctx.platform.logger.info(`[run-handler] Pre-loaded ${totalTurns} conversation turns for session ${finalSessionId}`);
+    } catch (err) {
+      ctx.platform.logger.warn(`[run-handler] Failed to pre-load conversation history: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Create agent with event broadcasting and session persistence
     const agent = new Agent(
       {
@@ -218,6 +240,8 @@ export default defineHandler({
         responseMode: body.responseMode ?? 'auto',
         memory, // Enable memory for context persistence and last answer tracking
         tracer: traceWriter,
+        conversationHistory: preloadedHistory,
+        traceArtifactsContext: preloadedTraceArtifactsContext,
         onEvent: (event) => {
           // Broadcast to all WebSocket listeners (assigns seq)
           const seqEvent = RunManager.broadcast(runId, event);

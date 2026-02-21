@@ -279,6 +279,9 @@ export default defineCommand({
           await sessionManager.storeTraceArtifacts(effectiveSessionId, runId, detailedTrace);
         }
 
+        // Finalize tracer: generate index with memory stats, cleanup old traces
+        await tracer.finalize();
+
         // Event renderer already showed the result via agent:end event
         // Just return the structured result
 
