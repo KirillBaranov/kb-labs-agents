@@ -5,11 +5,12 @@
 import type { Tool, ToolContext } from '../types.js';
 import type { TodoList, TodoItem } from '@kb-labs/agent-contracts';
 import { toolError } from './tool-error.js';
+import { TODO_CONFIG } from '../config.js';
 
 // In-memory TODO storage (session-scoped)
 const todoLists = new Map<string, TodoList>();
-const TODO_CACHE_PREFIX = 'agent:todo:';
-const TODO_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const TODO_CACHE_PREFIX = TODO_CONFIG.cachePrefix;
+const TODO_CACHE_TTL_MS = TODO_CONFIG.cacheTtlMs;
 
 function getTodoCacheKey(sessionId: string): string {
   return `${TODO_CACHE_PREFIX}${sessionId}`;
