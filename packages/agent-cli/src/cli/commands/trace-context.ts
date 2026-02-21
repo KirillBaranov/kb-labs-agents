@@ -11,9 +11,8 @@
  */
 
 import { defineCommand, type PluginContextV3 } from '@kb-labs/sdk';
-import { promises as fs } from 'fs';
-import path from 'path';
 import type { TraceCommandResponse, TraceErrorCode } from '@kb-labs/agent-contracts';
+import { loadTrace, formatTraceLoadError } from '@kb-labs/agent-tracing';
 
 type TraceContextInput = {
   taskId?: string;
@@ -73,30 +72,13 @@ export default defineCommand({
         ? parseInt(flags.iteration, 10)
         : (flags.iteration as number | undefined);
 
-      if (!taskId) {
-        ctx.ui.write(JSON.stringify(error('INVALID_TASK_ID', 'Missing required --task-id flag'), null, 2) + '\n');
-        return { exitCode: 1 };
-      }
-
-      if (!/^[a-zA-Z0-9_-]+$/.test(taskId)) {
-        ctx.ui.write(JSON.stringify(error('INVALID_TASK_ID', 'Invalid task ID format'), null, 2) + '\n');
-        return { exitCode: 1 };
-      }
-
       try {
-        const traceDir = path.join(process.cwd(), '.kb', 'traces', 'incremental');
-        const tracePath = path.join(traceDir, `${taskId}.ndjson`);
-
-        const resolvedPath = path.resolve(tracePath);
-        if (!resolvedPath.startsWith(path.resolve(traceDir))) {
-          ctx.ui.write(JSON.stringify(error('INVALID_TASK_ID', 'Path traversal detected'), null, 2) + '\n');
+        const loaded = await loadTrace(taskId);
+        if (!loaded.ok) {
+          ctx.ui.write(JSON.stringify(error('INVALID_TASK_ID', formatTraceLoadError(loaded.error)), null, 2) + '\n');
           return { exitCode: 1 };
         }
-
-        const content = await fs.readFile(tracePath, 'utf-8');
-        const events = content.split('\n').filter(Boolean).map(line => {
-          try { return JSON.parse(line); } catch { return null; }
-        }).filter(Boolean);
+        const events = loaded.events;
 
         // Collect context snapshots and LLM responses
         const iterations: IterationContext[] = [];
@@ -172,9 +154,9 @@ function printTimeline(ctx: PluginContextV3, iterations: IterationContext[]): vo
       const role = msg.role.padEnd(10);
       const size = `${msg.chars}`.padStart(5) + ' chars';
       let flags = '';
-      if (msg.truncated) flags += ' [TRUNCATED]';
-      if (msg.toolCalls) flags += ` → calls: ${msg.toolCalls.join(', ')}`;
-      if (msg.toolCallId) flags += ` (result for ${msg.toolCallId.slice(0, 8)}...)`;
+      if (msg.truncated) {flags += ' [TRUNCATED]';}
+      if (msg.toolCalls) {flags += ` → calls: ${msg.toolCalls.join(', ')}`;}
+      if (msg.toolCallId) {flags += ` (result for ${msg.toolCallId.slice(0, 8)}...)`;}
 
       ctx.ui.write(`    [${msg.index}] ${role} ${size}${flags}\n`);
 

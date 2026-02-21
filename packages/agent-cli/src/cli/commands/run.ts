@@ -7,12 +7,12 @@
 import { defineCommand, useCache, useConfig, type PluginContextV3 } from '@kb-labs/sdk';
 import {
   Agent,
-  IncrementalTraceWriter,
   TraceSaverProcessor,
   MetricsCollectorProcessor,
   FileMemory,
   SessionManager,
 } from '@kb-labs/agent-core';
+import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 import { createToolRegistry } from '@kb-labs/agent-tools';
 import type { AgentConfig, ModeConfig, AgentMode, AgentEvent, AgentsPluginConfig } from '@kb-labs/agent-contracts';
 import { createEventRenderer, createMinimalRenderer, createDetailedRenderer } from '../ui/index.js';

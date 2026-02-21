@@ -7,7 +7,7 @@
  */
 
 import type { Agent } from '@kb-labs/agent-core';
-import { SessionManager } from '@kb-labs/agent-core';
+import type { SessionManager } from '@kb-labs/agent-core';
 import type { AgentEvent, AgentEventCallback } from '@kb-labs/agent-contracts';
 import { useCache, usePlatform } from '@kb-labs/sdk';
 

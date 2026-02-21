@@ -8,14 +8,13 @@
 
 import { defineCommand, useLogger } from '@kb-labs/sdk';
 import type { PluginContextV3 } from '@kb-labs/sdk';
-import { promises as fs } from 'fs';
-import path from 'path';
 import type {
   TraceCommandResponse,
   StatsResponse,
   TraceErrorCode,
 } from '@kb-labs/agent-contracts';
-import type { DetailedTraceEntry, LLMCallEvent, ToolExecutionEvent } from '@kb-labs/agent-contracts';
+import type { LLMCallEvent, ToolExecutionEvent } from '@kb-labs/agent-contracts';
+import { loadTrace, formatTraceLoadError } from '@kb-labs/agent-tracing';
 
 type TraceStatsInput = {
   taskId?: string;
@@ -34,71 +33,20 @@ export default defineCommand({
       const flags = (input as any).flags ?? input;
       const taskId = flags.taskId as string | undefined;
 
-    // Validate taskId
-    if (!taskId) {
-      const err = error('INVALID_TASK_ID', 'Missing required --task-id flag');
-      ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-      return { exitCode: 1, response: err };
-    }
-
-    // Validate taskId format (prevent path traversal)
-    if (!/^[a-zA-Z0-9_-]+$/.test(taskId)) {
-      const err = error('INVALID_TASK_ID', 'Task ID must contain only alphanumeric characters, hyphens, and underscores');
-      ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-      return { exitCode: 1, response: err };
-    }
-
     try {
-      // Find trace file with path traversal protection
-      const traceDir = path.join(process.cwd(), '.kb', 'traces', 'incremental');
-      const tracePath = path.join(traceDir, `${taskId}.ndjson`);
-
-      // Verify resolved path is within expected directory (prevent path traversal)
-      const resolvedPath = path.resolve(tracePath);
-      const resolvedDir = path.resolve(traceDir);
-      const relative = path.relative(resolvedDir, resolvedPath);
-      if (relative.startsWith('..') || path.isAbsolute(relative)) {
-        const err = error('INVALID_TASK_ID', 'Invalid task ID: path traversal detected');
+      const loaded = await loadTrace(taskId);
+      if (!loaded.ok) {
+        const code: TraceErrorCode =
+          loaded.error.kind === 'invalid_task_id' ? 'INVALID_TASK_ID' :
+          loaded.error.kind === 'not_found' ? 'TRACE_NOT_FOUND' :
+          loaded.error.kind === 'too_large' ? 'FILE_TOO_LARGE' :
+          'CORRUPTED_TRACE';
+        const err = error(code, formatTraceLoadError(loaded.error));
         ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
         return { exitCode: 1, response: err };
       }
 
-      // Check if file exists and validate size
-      let fileStats;
-      try {
-        fileStats = await fs.stat(tracePath);
-      } catch {
-        const err = error('TRACE_NOT_FOUND', `Trace file not found: ${taskId}`);
-        ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-        return { exitCode: 1, response: err };
-      }
-
-      // Prevent memory exhaustion from large files (100MB limit)
-      const MAX_FILE_SIZE = 100 * 1024 * 1024;
-      if (fileStats.size > MAX_FILE_SIZE) {
-        const err = error('FILE_TOO_LARGE', `Trace file exceeds maximum size of ${MAX_FILE_SIZE / 1024 / 1024}MB`);
-        ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-        return { exitCode: 1, response: err };
-      }
-
-      // Read and parse trace with error handling for malformed NDJSON
-      const content = await fs.readFile(tracePath, 'utf-8');
-      const lines = content.split('\n').filter(Boolean);
-      const events: DetailedTraceEntry[] = [];
-      for (const line of lines) {
-        try {
-          events.push(JSON.parse(line) as DetailedTraceEntry);
-        } catch {
-          // Skip malformed lines gracefully
-          console.warn(`Skipped malformed NDJSON line: ${line.substring(0, 50)}...`);
-        }
-      }
-
-      if (events.length === 0) {
-        const err = error('CORRUPTED_TRACE', 'Trace file is empty');
-        ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-        return { exitCode: 1, response: err };
-      }
+      const { events } = loaded;
 
       // Calculate stats
       const stats = calculateStats(events);
