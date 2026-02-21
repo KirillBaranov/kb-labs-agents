@@ -65,6 +65,14 @@ export class SessionManager {
 
   /** Write queue per session to prevent concurrent write race conditions */
   private writeQueues = new Map<string, Promise<void>>();
+
+  /**
+   * Serialized event-processing queue per session.
+   * Ensures addEvent calls for the same session are processed in arrival order
+   * even when the caller fires them concurrently with void (fire-and-forget).
+   * This prevents tool:end being processed by TurnAssembler before tool:start.
+   */
+  private eventQueues = new Map<string, Promise<void>>();
   /** Write queue per session for artifact projection updates */
   private artifactWriteQueues = new Map<string, Promise<void>>();
   /** Write queue per session for KPI baseline updates */
@@ -294,9 +302,24 @@ export class SessionManager {
   /**
    * Add event to session (append-only, race-condition safe).
    * Assigns per-run sessionSeq for ordering within each run.
-   * NEW: Also processes event to update turn snapshots!
+   * Also processes event to update turn snapshots.
+   *
+   * Events for the same session are serialized via eventQueues so that
+   * concurrent fire-and-forget callers (void addEvent(...)) don't cause
+   * tool:end to be processed before tool:start in TurnAssembler.
    */
   async addEvent(sessionId: string, event: AgentEvent): Promise<void> {
+    const prev = this.eventQueues.get(sessionId) ?? Promise.resolve();
+    // Chain this event after prev, but store a "silenced" tail that always resolves
+    // (never rejects and holds no references to prior chain links after completion).
+    // This prevents unbounded promise chain growth which causes OOM on long runs.
+    const next = prev.then(() => this._addEventInternal(sessionId, event));
+    const tail = next.then(() => {}, () => {});
+    this.eventQueues.set(sessionId, tail);
+    return next;
+  }
+
+  private async _addEventInternal(sessionId: string, event: AgentEvent): Promise<void> {
     const sessionDir = this.getSessionDir(sessionId);
     await fs.mkdir(sessionDir, { recursive: true });
 
@@ -305,7 +328,7 @@ export class SessionManager {
     const line = JSON.stringify({ ...event, sessionSeq }) + '\n';
     await fs.appendFile(this.getEventsPath(sessionId), line, 'utf-8');
 
-    // NEW: Process event and update turn snapshot
+    // Process event and update turn snapshot
     await this.processEventAndUpdateTurn(sessionId, { ...event, sessionSeq });
   }
 
