@@ -14,8 +14,23 @@ import type {
 } from '@kb-labs/agent-contracts';
 
 /**
+ * Pending tool:end / tool:error event that arrived before its tool:start.
+ * Buffered per turnId, keyed by toolCallId or toolName.
+ */
+interface PendingToolResult {
+  event: AgentEvent;
+  type: 'tool:end' | 'tool:error';
+}
+
+/**
  * Assembles Turn snapshots from raw AgentEvent stream.
  * Maintains state for in-progress turns and emits snapshots on updates.
+ *
+ * Out-of-order tolerance: when tool:end / tool:error arrive before their
+ * corresponding tool:start (due to fire-and-forget async dispatch), the
+ * result event is buffered in orphanedToolResults. As soon as tool:start
+ * is processed the buffer is flushed, guaranteeing the step ends up in
+ * the correct final state.
  */
 export class TurnAssembler {
   /** Active turns being assembled (turnId -> Turn) */
@@ -26,6 +41,12 @@ export class TurnAssembler {
 
   /** Next sequence number per session */
   private sequenceCounters = new Map<string, number>();
+
+  /**
+   * Orphaned tool result events (tool:end / tool:error) that arrived before
+   * their corresponding tool:start. Key: `${turnId}:${toolCallId|toolName}`.
+   */
+  private orphanedToolResults = new Map<string, PendingToolResult[]>();
 
   /**
    * Process an event and return updated Turn snapshot if changed.
@@ -49,7 +70,7 @@ export class TurnAssembler {
     this.eventBuffers.set(turnId, buffer);
 
     // Update turn based on event type
-    const updated = this.updateTurn(turn, event);
+    const updated = this.updateTurn(turn, event, turnId);
 
     // Check if turn completed
     let completed = false;
@@ -90,7 +111,7 @@ export class TurnAssembler {
     this.eventBuffers.set(turnId, buffer);
 
     // Update turn based on event type
-    const updated = this.updateTurn(turn, event);
+    const updated = this.updateTurn(turn, event, turnId);
 
     // Check if turn completed
     let completed = false;
@@ -197,7 +218,7 @@ export class TurnAssembler {
    * Update turn with new event data.
    * Returns true if turn was modified.
    */
-  private updateTurn(turn: Turn, event: AgentEvent): boolean {
+  private updateTurn(turn: Turn, event: AgentEvent, turnId: string): boolean {
     switch (event.type) {
       case 'thinking:start':
       case 'thinking:chunk': {
@@ -250,12 +271,14 @@ export class TurnAssembler {
 
       case 'tool:start': {
         const startMeta = event.data?.metadata;
+        const toolCallId = (event.data?.toolCallId as string | undefined);
+        const toolName = (event.data?.toolName as string) ?? 'unknown';
         const step: ToolUseStep = {
           type: 'tool_use',
           id: `step-${turn.steps.length + 1}`,
           timestamp: event.timestamp,
-          toolName: (event.data?.toolName as string) ?? 'unknown',
-          toolCallId: (event.data?.toolCallId as string | undefined),
+          toolName,
+          toolCallId,
           input: (event.data?.input as Record<string, unknown>) ?? {},
           status: 'pending',
           ...(startMeta ? {
@@ -268,11 +291,14 @@ export class TurnAssembler {
           } : {}),
         };
         turn.steps.push(step);
+
+        // Flush any orphaned tool:end / tool:error that arrived before this start
+        this.flushOrphanedToolResults(turn, turnId, step);
+
         return true;
       }
 
       case 'tool:end': {
-        // Find the matching tool_use step and update it in-place
         const toolCallId = event.data?.toolCallId as string | undefined;
         const toolName = (event.data?.toolName as string) ?? 'unknown';
         const existing = turn.steps.find(
@@ -282,32 +308,15 @@ export class TurnAssembler {
             (toolCallId ? s.toolCallId === toolCallId : s.toolName === toolName)
         );
         if (existing) {
-          existing.status = 'done';
-          existing.output = event.data?.output;
-          existing.durationMs = event.data?.durationMs as number | undefined;
-          // Propagate rich metadata for UI rendering (diff, resultCount, confidence, etc.)
-          const m = event.data?.metadata;
-          if (m) {
-            existing.metadata = {
-              filePath: m.filePath,
-              diff: m.diff,
-              linesChanged: m.linesChanged,
-              linesAdded: m.linesAdded,
-              linesRemoved: m.linesRemoved,
-              resultCount: m.resultCount,
-              confidence: m.confidence,
-              exitCode: m.exitCode,
-              summary: m.summary,
-              uiHint: m.uiHint,
-              structured: m.structured,
-            };
-          }
+          this.applyToolEnd(existing, event);
+        } else {
+          // tool:start hasn't been processed yet — buffer for later
+          this.bufferOrphanedToolResult(turnId, toolCallId, toolName, { event, type: 'tool:end' });
         }
         return true;
       }
 
       case 'tool:error': {
-        // Find the matching tool_use step and update it in-place
         const toolCallId = event.data?.toolCallId as string | undefined;
         const toolName = (event.data?.toolName as string) ?? 'unknown';
         const existing = turn.steps.find(
@@ -319,6 +328,9 @@ export class TurnAssembler {
         if (existing) {
           existing.status = 'error';
           existing.error = (event.data?.error as string) ?? 'Unknown error';
+        } else {
+          // tool:start hasn't been processed yet — buffer for later
+          this.bufferOrphanedToolResult(turnId, toolCallId, toolName, { event, type: 'tool:error' });
         }
         return true;
       }
@@ -389,6 +401,87 @@ export class TurnAssembler {
    */
   private isTurnComplete(event: AgentEvent): boolean {
     return event.type === 'agent:end' && !event.parentAgentId;
+  }
+
+  // ─── Out-of-order tool result buffering ─────────────────────────────────
+
+  /**
+   * Build the orphan buffer key for a tool result.
+   * Prefer toolCallId (unique per invocation) over toolName (may repeat).
+   */
+  private orphanKey(turnId: string, toolCallId: string | undefined, toolName: string): string {
+    return toolCallId ? `${turnId}:id:${toolCallId}` : `${turnId}:name:${toolName}`;
+  }
+
+  /**
+   * Buffer an orphaned tool:end / tool:error event so it can be applied
+   * once the matching tool:start step is created.
+   */
+  private bufferOrphanedToolResult(
+    turnId: string,
+    toolCallId: string | undefined,
+    toolName: string,
+    pending: PendingToolResult
+  ): void {
+    const key = this.orphanKey(turnId, toolCallId, toolName);
+    const existing = this.orphanedToolResults.get(key) ?? [];
+    existing.push(pending);
+    this.orphanedToolResults.set(key, existing);
+  }
+
+  /**
+   * After a tool:start step is pushed, flush any buffered results for it.
+   */
+  private flushOrphanedToolResults(turn: Turn, turnId: string, step: ToolUseStep): void {
+    // Try lookup by toolCallId first, then fall back to toolName
+    const keyById = step.toolCallId ? `${turnId}:id:${step.toolCallId}` : null;
+    const keyByName = `${turnId}:name:${step.toolName}`;
+
+    const pendingById = keyById ? this.orphanedToolResults.get(keyById) : undefined;
+    const pendingByName = this.orphanedToolResults.get(keyByName);
+
+    const pending = pendingById ?? pendingByName;
+    const usedKey = pendingById ? keyById! : keyByName;
+
+    if (!pending || pending.length === 0) {
+      return;
+    }
+
+    // Apply the most recent result (last wins — same semantics as live processing)
+    const last = pending[pending.length - 1];
+    if (last.type === 'tool:end') {
+      this.applyToolEnd(step, last.event);
+    } else {
+      step.status = 'error';
+      step.error = (last.event.data?.error as string) ?? 'Unknown error';
+    }
+
+    this.orphanedToolResults.delete(usedKey);
+  }
+
+  /**
+   * Apply a tool:end event payload to an existing ToolUseStep.
+   */
+  private applyToolEnd(step: ToolUseStep, event: AgentEvent): void {
+    step.status = 'done';
+    step.output = event.data?.output;
+    step.durationMs = event.data?.durationMs as number | undefined;
+    const m = event.data?.metadata;
+    if (m) {
+      step.metadata = {
+        filePath: m.filePath,
+        diff: m.diff,
+        linesChanged: m.linesChanged,
+        linesAdded: m.linesAdded,
+        linesRemoved: m.linesRemoved,
+        resultCount: m.resultCount,
+        confidence: m.confidence,
+        exitCode: m.exitCode,
+        summary: m.summary,
+        uiHint: m.uiHint,
+        structured: m.structured,
+      };
+    }
   }
 
   private sanitizePublicContent(content: string): string {
@@ -476,5 +569,6 @@ export class TurnAssembler {
     this.activeTurns.clear();
     this.eventBuffers.clear();
     this.sequenceCounters.clear();
+    this.orphanedToolResults.clear();
   }
 }
