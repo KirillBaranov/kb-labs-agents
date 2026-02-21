@@ -91,6 +91,19 @@ export interface TraceIndex {
 
   errors: number;
 
+  /** Two-tier memory statistics (aggregated from memory:* events) */
+  memory?: {
+    totalFactsAdded: number;
+    totalArchiveStores: number;
+    summarizationRuns: number;
+    avgCompressionRatio: number;
+    avgNewFactRate: number;
+    finalFactSheetSize: number;
+    finalFactSheetTokens: number;
+    finalArchiveEntries: number;
+    finalArchiveUniqueFiles: number;
+  };
+
   iterations: Array<{
     iteration: number;
     eventCount: number;
@@ -294,6 +307,8 @@ export class IncrementalTraceWriter implements Tracer {
 
         errors: stats.errors,
 
+        memory: stats.memory,
+
         iterations: Array.from(stats.iterations.entries())
           .map(([iteration, iterStats]) => ({ iteration, ...iterStats }))
           .sort((a, b) => a.iteration - b.iteration),
@@ -403,11 +418,33 @@ export class IncrementalTraceWriter implements Tracer {
     iterations: Map<number, { eventCount: number; llmCalls: number; toolCalls: number }>;
     totalCost: number;
     errors: number;
+    memory?: {
+      totalFactsAdded: number;
+      totalArchiveStores: number;
+      summarizationRuns: number;
+      avgCompressionRatio: number;
+      avgNewFactRate: number;
+      finalFactSheetSize: number;
+      finalFactSheetTokens: number;
+      finalArchiveEntries: number;
+      finalArchiveUniqueFiles: number;
+    };
   } {
     const eventCounts: Record<string, number> = {};
     const iterations = new Map<number, { eventCount: number; llmCalls: number; toolCalls: number }>();
     let totalCost = 0;
     let errors = 0;
+
+    // Memory stats accumulators
+    let totalFactsAdded = 0;
+    let totalArchiveStores = 0;
+    let summarizationRuns = 0;
+    let compressionRatioSum = 0;
+    let newFactRateSum = 0;
+    let lastFactSheetSize = 0;
+    let lastFactSheetTokens = 0;
+    let lastArchiveEntries = 0;
+    let lastArchiveUniqueFiles = 0;
 
     for (const entry of entries) {
       // Count by type
@@ -437,9 +474,54 @@ export class IncrementalTraceWriter implements Tracer {
       if (entry.type === 'error:captured') {
         errors++;
       }
+
+      // Aggregate memory events
+      if (entry.type === 'memory:fact_added') {
+        totalFactsAdded++;
+        if (entry.factSheetStats) {
+          lastFactSheetSize = entry.factSheetStats.totalFacts || 0;
+          lastFactSheetTokens = entry.factSheetStats.estimatedTokens || 0;
+        }
+      }
+
+      if (entry.type === 'memory:archive_store') {
+        totalArchiveStores++;
+        if (entry.archiveStats) {
+          lastArchiveEntries = entry.archiveStats.totalEntries || 0;
+          lastArchiveUniqueFiles = entry.archiveStats.uniqueFiles || 0;
+        }
+      }
+
+      if (entry.type === 'memory:summarization_result') {
+        summarizationRuns++;
+        if (entry.efficiency) {
+          compressionRatioSum += entry.efficiency.compressionRatio || 0;
+          newFactRateSum += entry.efficiency.newFactRate || 0;
+        }
+      }
     }
 
-    return { eventCounts, iterations, totalCost, errors };
+    const hasMemoryEvents = totalFactsAdded > 0 || totalArchiveStores > 0 || summarizationRuns > 0;
+
+    return {
+      eventCounts,
+      iterations,
+      totalCost,
+      errors,
+      memory: hasMemoryEvents
+        ? {
+            totalFactsAdded,
+            totalArchiveStores,
+            summarizationRuns,
+            avgCompressionRatio: summarizationRuns > 0 ? compressionRatioSum / summarizationRuns : 0,
+            avgNewFactRate: summarizationRuns > 0 ? newFactRateSum / summarizationRuns : 0,
+            finalFactSheetSize: lastFactSheetSize,
+            finalFactSheetTokens: lastFactSheetTokens,
+            finalArchiveEntries: lastArchiveEntries,
+            finalArchiveUniqueFiles: lastArchiveUniqueFiles,
+          }
+        : undefined,
+    };
   }
 
   /**

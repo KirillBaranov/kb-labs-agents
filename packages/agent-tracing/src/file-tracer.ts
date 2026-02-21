@@ -4,13 +4,14 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import type { Tracer, TraceEntry } from '@kb-labs/agent-contracts';
+import type { Tracer, TraceEntry, DetailedTraceEntry } from '@kb-labs/agent-contracts';
+type AnyEntry = Omit<DetailedTraceEntry, 'seq' | 'timestamp'>;
 
 /**
  * File tracer implementation
  */
 export class FileTracer implements Tracer {
-  private entries: TraceEntry[] = [];
+  private entries: AnyEntry[] = [];
   private taskId: string;
   private sessionId?: string;
 
@@ -22,7 +23,7 @@ export class FileTracer implements Tracer {
   /**
    * Record a trace entry
    */
-  trace(entry: TraceEntry): void {
+  trace(entry: AnyEntry): void {
     this.entries.push(entry);
   }
 
@@ -30,7 +31,7 @@ export class FileTracer implements Tracer {
    * Get all trace entries
    */
   getEntries(): TraceEntry[] {
-    return [...this.entries];
+    return this.entries as unknown as TraceEntry[];
   }
 
   /**
@@ -71,12 +72,19 @@ export class FileTracer implements Tracer {
     avgLLMDuration: number;
     avgToolDuration: number;
   } {
-    const llmCalls = this.entries.filter(e => e.type === 'llm_call');
-    const toolCalls = this.entries.filter(e => e.type === 'tool_call');
+    const llmCalls = this.entries.filter(e => e.type === 'llm:call');
+    const toolCalls = this.entries.filter(e => e.type === 'tool:execution');
 
-    const totalDuration = this.entries.reduce((sum, e) => sum + (e.durationMs || 0), 0);
-    const llmDuration = llmCalls.reduce((sum, e) => sum + (e.durationMs || 0), 0);
-    const toolDuration = toolCalls.reduce((sum, e) => sum + (e.durationMs || 0), 0);
+    const getDuration = (e: AnyEntry): number => {
+      if (e.type === 'llm:call' || e.type === 'tool:execution') {
+        return (e as { timing?: { durationMs?: number } }).timing?.durationMs ?? 0;
+      }
+      return 0;
+    };
+
+    const totalDuration = this.entries.reduce((sum, e) => sum + getDuration(e), 0);
+    const llmDuration = llmCalls.reduce((sum, e) => sum + getDuration(e), 0);
+    const toolDuration = toolCalls.reduce((sum, e) => sum + getDuration(e), 0);
 
     return {
       totalEntries: this.entries.length,

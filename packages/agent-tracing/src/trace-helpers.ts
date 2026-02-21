@@ -15,6 +15,10 @@ import type {
   DecisionPointEvent,
   SynthesisForcedTraceEvent,
   ErrorCapturedEvent,
+  FactAddedEvent,
+  ArchiveStoreEvent,
+  SummarizationResultEvent,
+  SummarizationLLMCallEvent,
 } from '@kb-labs/agent-contracts';
 import type { LLMMessage, LLMToolCall, LLMToolCallResponse } from '@kb-labs/sdk';
 
@@ -474,5 +478,134 @@ export function createLLMValidationEvent(params: {
       },
       issues: params.issues,
     },
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Two-Tier Memory Events
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Create memory:fact_added event
+ */
+export function createFactAddedEvent(params: {
+  iteration: number;
+  fact: {
+    id: string;
+    category: string;
+    fact: string;
+    confidence: number;
+    source: string;
+    merged: boolean;
+    superseded?: string;
+  };
+  factSheetStats: {
+    totalFacts: number;
+    estimatedTokens: number;
+    byCategory: Record<string, number>;
+  };
+}): Omit<FactAddedEvent, 'seq' | 'timestamp'> {
+  return {
+    type: 'memory:fact_added',
+    iteration: params.iteration,
+    fact: params.fact,
+    factSheetStats: params.factSheetStats,
+  };
+}
+
+/**
+ * Create memory:archive_store event
+ */
+export function createArchiveStoreEvent(params: {
+  iteration: number;
+  entry: {
+    id: string;
+    toolName: string;
+    filePath?: string;
+    outputLength: number;
+    estimatedTokens: number;
+    keyFactsExtracted: number;
+  };
+  archiveStats: {
+    totalEntries: number;
+    totalChars: number;
+    uniqueFiles: number;
+    evicted: number;
+  };
+}): Omit<ArchiveStoreEvent, 'seq' | 'timestamp'> {
+  return {
+    type: 'memory:archive_store',
+    iteration: params.iteration,
+    entry: params.entry,
+    archiveStats: params.archiveStats,
+  };
+}
+
+/**
+ * Create memory:summarization_llm_call event.
+ * Records the raw LLM interaction for fact extraction debugging.
+ */
+export function createSummarizationLLMCallEvent(params: {
+  iteration: number;
+  prompt: string;
+  rawResponse: string;
+  parseSuccess: boolean;
+  parseError?: string;
+  durationMs: number;
+  outputTokens: number;
+}): Omit<SummarizationLLMCallEvent, 'seq' | 'timestamp'> {
+  return {
+    type: 'memory:summarization_llm_call',
+    iteration: params.iteration,
+    prompt: params.prompt,
+    rawResponse: params.rawResponse,
+    parseSuccess: params.parseSuccess,
+    parseError: params.parseError,
+    timing: {
+      durationMs: params.durationMs,
+      outputTokens: params.outputTokens,
+    },
+  };
+}
+
+/**
+ * Create memory:summarization_result event
+ */
+export function createSummarizationResultEvent(params: {
+  iteration: number;
+  input: {
+    iterationRange: [number, number];
+    messagesCount: number;
+    inputChars: number;
+    inputTokens: number;
+  };
+  output: {
+    factsExtracted: number;
+    factsByCategory: Record<string, number>;
+    outputTokens: number;
+    llmDurationMs: number;
+  };
+  delta: {
+    factSheetBefore: number;
+    factSheetAfter: number;
+    tokensBefore: number;
+    tokensAfter: number;
+    newFacts: number;
+    mergedFacts: number;
+    evictedFacts: number;
+  };
+  efficiency: {
+    compressionRatio: number;
+    factDensity: number;
+    newFactRate: number;
+  };
+}): Omit<SummarizationResultEvent, 'seq' | 'timestamp'> {
+  return {
+    type: 'memory:summarization_result',
+    iteration: params.iteration,
+    input: params.input,
+    output: params.output,
+    delta: params.delta,
+    efficiency: params.efficiency,
   };
 }
