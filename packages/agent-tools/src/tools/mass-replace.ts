@@ -13,49 +13,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { glob } from 'glob';
 import type { Tool, ToolContext } from '../types.js';
+import { validatePath } from '../utils.js';
+import { MASS_REPLACE_CONFIG } from '../config.js';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Constants
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Maximum file size to process (1MB) */
-const MAX_FILE_SIZE = 1_000_000;
-
-/** Maximum number of files to process in one operation */
-const MAX_FILES = 100;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Helper: Validate path is within working directory
-// ═══════════════════════════════════════════════════════════════════════════
-
-function validatePath(workingDir: string, filePath: string): { valid: boolean; resolved: string; error?: string } {
-  let resolved = path.resolve(workingDir, filePath);
-
-  // Resolve symlinks to prevent symlink-based bypasses
-  try {
-    if (fs.existsSync(resolved)) {
-      resolved = fs.realpathSync(resolved);
-    }
-  } catch (error) {
-    // If realpath fails, continue with resolved path (might be a non-existent file)
-  }
-
-  // Use path.relative() to check if resolved path escapes working directory
-  // More secure than startsWith() which can be bypassed with symlinks
-  const relative = path.relative(workingDir, resolved);
-
-  // Path traversal attempt if relative path starts with '..'
-  // Note: path.isAbsolute(relative) is always false since relative() returns a relative path
-  if (relative.startsWith('..')) {
-    return {
-      valid: false,
-      resolved,
-      error: `PATH_TRAVERSAL_ERROR: Cannot access "${filePath}" - path is outside working directory.`,
-    };
-  }
-
-  return { valid: true, resolved };
-}
+const MAX_FILE_SIZE = MASS_REPLACE_CONFIG.maxFileSize;
+const MAX_FILES = MASS_REPLACE_CONFIG.maxFiles;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // mass_replace - Batch text replacement with history tracking
