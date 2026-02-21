@@ -36,8 +36,8 @@ export class ContextFilter {
 
   constructor(config: ContextFilterConfig = {}) {
     this.config = {
-      maxOutputLength: config.maxOutputLength ?? 500,
-      slidingWindowSize: config.slidingWindowSize ?? 5,
+      maxOutputLength: config.maxOutputLength ?? 8000,
+      slidingWindowSize: config.slidingWindowSize ?? 10,
       enableDeduplication: config.enableDeduplication ?? true,
     };
   }
@@ -74,64 +74,67 @@ export class ContextFilter {
   }
 
   /**
-   * Get recent history respecting message pair boundaries
-   * Ensures tool result messages are never orphaned from their assistant message
-   *
-   * This is critical for ALL LLM providers (OpenAI, Anthropic, etc.) because
-   * the API requires that tool messages must follow an assistant message with tool_calls.
+   * Get recent history based on iteration count (not message count).
+   * Keeps messages from the last N unique iterations.
+   * Messages without iteration metadata (user/system injected messages) are
+   * always included. Ensures tool result messages are never orphaned from
+   * their assistant message (required by OpenAI/Anthropic APIs).
    */
   private getRecentHistoryWithPairBoundary(windowSize: number): Message[] {
     if (this.fullHistory.length === 0) {
       return [];
     }
 
-    // Calculate initial window start
-    let windowStart = Math.max(0, this.fullHistory.length - windowSize);
-
-    // Walk backward from windowStart to find a safe boundary
-    // A safe boundary is where we're NOT cutting between assistant+tool pairs
-    while (windowStart > 0) {
-      const prevMsg = this.fullHistory[windowStart - 1];
-      const currentMsg = this.fullHistory[windowStart];
-
-      // Check if we're cutting between assistant (with tool_calls) and tool result
-      const isPrevAssistantWithToolCalls =
-        prevMsg?.role === 'assistant' &&
-        prevMsg.toolCalls &&
-        prevMsg.toolCalls.length > 0;
-
-      const isCurrentToolResult = currentMsg?.role === 'tool';
-
-      // If cutting between assistant+tool pair, move window start back
-      if (isPrevAssistantWithToolCalls && isCurrentToolResult) {
-        windowStart--;
-        continue;
+    // Collect unique iterations present in history
+    const iterationsInHistory = new Set<number>();
+    for (const msg of this.fullHistory) {
+      const iter = (msg as Record<string, unknown>).iteration as number | undefined;
+      if (iter !== undefined) {
+        iterationsInHistory.add(iter);
       }
+    }
 
-      // Also check if we're in the middle of a tool result sequence
-      // (multiple tool results for one assistant message)
-      if (isCurrentToolResult) {
-        // Walk back to find the assistant message
-        let checkIdx = windowStart - 1;
-        while (checkIdx >= 0) {
-          const checkMsg = this.fullHistory[checkIdx];
-          if (!checkMsg) {break;} // Safety check
+    // If no iteration metadata at all, fall back to keeping all messages
+    if (iterationsInHistory.size === 0) {
+      return this.fullHistory.slice();
+    }
 
-          if (checkMsg.role === 'assistant' && checkMsg.toolCalls && checkMsg.toolCalls.length > 0) {
-            // Found the assistant message - include it
-            windowStart = checkIdx;
-            break;
-          } else if (checkMsg.role === 'tool') {
-            // Keep walking back through tool results
-            checkIdx--;
-          } else {
-            // Hit a non-tool message before finding assistant - safe boundary
-            break;
-          }
+    // Keep last N iterations
+    const sortedIters = Array.from(iterationsInHistory).sort((a, b) => a - b);
+    const keepIters = new Set(sortedIters.slice(-windowSize));
+    const minKeepIter = Math.min(...keepIters);
+
+    // Find index of first message belonging to a kept iteration
+    let windowStart = 0;
+    for (let i = 0; i < this.fullHistory.length; i++) {
+      const msg = this.fullHistory[i];
+      const iter = (msg as Record<string, unknown>).iteration as number | undefined;
+      if (iter !== undefined && iter >= minKeepIter) {
+        windowStart = i;
+        break;
+      }
+    }
+
+    // Walk backward to avoid cutting inside an assistant+tool group
+    while (windowStart > 0) {
+      const currentMsg = this.fullHistory[windowStart];
+      if (currentMsg?.role !== 'tool') {
+        break;
+      }
+      // Current message is a tool result — find its preceding assistant message
+      let checkIdx = windowStart - 1;
+      while (checkIdx >= 0) {
+        const checkMsg = this.fullHistory[checkIdx];
+        if (!checkMsg) { break; }
+        if (checkMsg.role === 'assistant' && checkMsg.toolCalls && checkMsg.toolCalls.length > 0) {
+          windowStart = checkIdx;
+          break;
+        } else if (checkMsg.role === 'tool') {
+          checkIdx--;
+        } else {
+          break;
         }
       }
-
-      // Found a safe boundary
       break;
     }
 

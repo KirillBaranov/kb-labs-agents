@@ -29,13 +29,43 @@ export const AGENT_CONTEXT = {
 export const AGENT_SUMMARIZER = {
   /**
    * Run summarization every N iterations to compress old context.
+   * Lowered from 10 to 5 to extract facts more frequently.
    */
-  summarizationInterval: 10,
+  summarizationInterval: 5,
 
   /**
    * Token budget for each generated summary.
+   * Increased from 500 to 800 for structured fact extraction.
    */
-  maxSummaryTokens: 500,
+  maxSummaryTokens: 800,
+} as const;
+
+export const AGENT_MEMORY = {
+  /**
+   * Max estimated tokens for FactSheet render output.
+   * ~5000 tokens ≈ 20K chars of compact markdown.
+   */
+  factSheetMaxTokens: 5_000,
+
+  /**
+   * Max number of facts in the FactSheet before eviction kicks in.
+   */
+  factSheetMaxEntries: 60,
+
+  /**
+   * Max entries in ArchiveMemory (cold storage).
+   */
+  archiveMaxEntries: 200,
+
+  /**
+   * Max total chars across all ArchiveMemory entries (~2MB).
+   */
+  archiveMaxTotalChars: 2_000_000,
+
+  /**
+   * Minimum confidence for auto-extracted facts to be added to FactSheet.
+   */
+  autoFactMinConfidence: 0.5,
 } as const;
 
 export const AGENT_TOOL_CACHE = {

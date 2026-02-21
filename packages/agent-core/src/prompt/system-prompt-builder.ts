@@ -24,6 +24,10 @@ export interface SystemPromptInput {
   currentTask?: string;
   memory?: AgentMemory;
   workspaceDiscovery?: WorkspaceDiscoveryResult | null;
+  /** Rendered fact sheet content (Tier 1: Hot Memory) */
+  factSheetContent?: string;
+  /** Archive summary hint (Tier 2: Cold Storage) */
+  archiveSummaryHint?: string;
 }
 
 export class SystemPromptBuilder {
@@ -60,6 +64,16 @@ export class SystemPromptBuilder {
       if (originalTaskContext) {
         prompt += originalTaskContext;
       }
+    }
+
+    // Inject Fact Sheet (Tier 1: Hot Memory) — accumulated knowledge from all iterations
+    if (input.factSheetContent) {
+      prompt += `\n\n# Accumulated Knowledge (Fact Sheet)\n${input.factSheetContent}`;
+    }
+
+    // Inject Archive Hint (Tier 2: Cold Storage) — what's available via archive_recall
+    if (input.archiveSummaryHint) {
+      prompt += `\n\n${input.archiveSummaryHint}`;
     }
 
     if (input.sessionId && input.sessionRootDir) {
@@ -116,7 +130,7 @@ async function getMemoryContext(memory: AgentMemory): Promise<string> {
   ) {
     return (
       memory as { getStructuredContext: (maxTokens?: number) => Promise<string> }
-    ).getStructuredContext(2500);
+    ).getStructuredContext(1500);
   }
   return memory.getContext(2000);
 }
@@ -214,12 +228,15 @@ For auto mode complexity detection:
 - Otherwise keep answer short and direct.
 
 # Public reasoning traces (UI-visible)
-- Do NOT reveal private chain-of-thought. Keep internal reasoning private.
-- When calling tools, provide a short PUBLIC rationale first (1-2 sentences):
-  - what needs to be verified,
-  - why this tool helps,
-  - what result is expected.
-- Keep rationale concise and factual; these lines are shown in the UI between tool steps.
+- ALWAYS write 1-3 sentences of reasoning BEFORE each tool call (or batch of tool calls).
+- This text is shown directly to the user in the UI — make it useful and human-readable.
+- Explain: what you found so far, what you're about to check, and why.
+- Examples of good rationale:
+  - "The index.ts exports 5 modules. I need to read fact-sheet.ts and archive-memory.ts to understand the two-tier memory architecture."
+  - "Search returned 3 matches for 'slidingWindowSize'. Let me read the context-filter.ts implementation to see how it's used."
+  - "I have the full picture now. Writing the final analysis."
+- Do NOT use generic filler like "Let me check" or "I will now". Be specific about what and why.
+- Keep rationale concise (1-3 sentences max). These lines appear between tool steps in the UI.
 
 # Conversation continuity
 - When conversation history is present, treat follow-up questions IN CONTEXT of previous turns.
@@ -283,6 +300,9 @@ Tool semantics guardrails:
 - **memory_get** — retrieve stored preferences and context.
 - **memory_finding** — store important discoveries with confidence level.
 - **memory_blocker** — record blockers you can't resolve.
+- **archive_recall** — retrieve full content from previously-read files or tool outputs WITHOUT re-reading them. Use to recall file contents, grep results, or any tool output from earlier iterations. Avoids redundant file reads.
+
+> **Rule:** Before calling "fs_read" on any file, first check "archive_recall" with that file path. If the archive has it — use the cached content. Only call "fs_read" if the archive returns nothing.
 
 ## Finishing
 - **report** — report your answer/result. Include evidence (file paths, code). Set confidence 0.0-1.0.

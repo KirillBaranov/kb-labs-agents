@@ -12,6 +12,8 @@ import type {
   Tracer,
   AgentMemory,
   AgentEvent,
+  TaskStartEvent,
+  TaskEndEvent,
 } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
 import { createToolRegistry } from '@kb-labs/agent-tools';
@@ -26,7 +28,7 @@ import {
   type LLMToolCall,
   type LLMToolCallResponse,
 } from '@kb-labs/sdk';
-import { AGENT_CONTEXT, AGENT_SUMMARIZER } from './constants.js';
+import { AGENT_CONTEXT, AGENT_SUMMARIZER, AGENT_MEMORY } from './constants.js';
 import {
   IterationBudget,
   QualityGate,
@@ -116,9 +118,15 @@ import {
   createLLMValidationEvent,
   createStoppingAnalysisEvent,
   createContextTrimEvent,
+  createFactAddedEvent,
+  createArchiveStoreEvent,
+  createSummarizationResultEvent,
+  createSummarizationLLMCallEvent,
 } from '@kb-labs/agent-tracing';
 import { ContextFilter } from './context/context-filter.js';
-import { SmartSummarizer } from './context/smart-summarizer.js';
+import { SmartSummarizer, extractHeuristicFacts } from './context/smart-summarizer.js';
+import { FactSheet } from './memory/fact-sheet.js';
+import { ArchiveMemory } from './memory/archive-memory.js';
 // context_retrieve tool removed — agents should re-read files instead
 import { FileChangeTracker, SnapshotStorage, ConflictDetector, ConflictResolver } from '@kb-labs/agent-history';
 import { AGENT_ANALYTICS_EVENTS, DEFAULT_FILE_HISTORY_CONFIG } from '@kb-labs/agent-contracts';
@@ -240,6 +248,11 @@ export class Agent {
    */
   private contextFilter: ContextFilter;
   private smartSummarizer: SmartSummarizer;
+  private factSheet: FactSheet;
+  private archiveMemory: ArchiveMemory;
+  private memPersistDir?: string;
+  private factSheetConfig: { maxTokens: number; maxEntries: number } = { maxTokens: 0, maxEntries: 0 };
+  private archiveMemoryConfig: { maxEntries: number; maxTotalChars: number } = { maxEntries: 0, maxTotalChars: 0 };
   private cachedSystemPrompt?: string;
   private cachedTaskMessage?: string;
   /** Stable root directory for session history/memory lookup (must not change with scope narrowing). */
@@ -428,10 +441,129 @@ export class Agent {
       enableDeduplication: true,
     });
 
+    // Initialize two-tier memory (load from disk if session exists)
+    const memConfig = config.twoTierMemory;
+    this.memPersistDir = config.sessionId
+      ? path.join(this.sessionRootDir, '.kb', 'memory', config.sessionId)
+      : undefined;
+    const factSheetConfig = {
+      maxTokens: memConfig?.factSheetMaxTokens ?? AGENT_MEMORY.factSheetMaxTokens,
+      maxEntries: memConfig?.factSheetMaxEntries ?? AGENT_MEMORY.factSheetMaxEntries,
+    };
+    // Store configs for use in run() when loading from disk
+    this.factSheetConfig = factSheetConfig;
+    this.archiveMemoryConfig = {
+      maxEntries: memConfig?.archiveMaxEntries ?? AGENT_MEMORY.archiveMaxEntries,
+      maxTotalChars: AGENT_MEMORY.archiveMaxTotalChars,
+    };
+    // Initialize with empty memory — will be loaded from disk at start of run()
+    this.factSheet = new FactSheet(factSheetConfig);
+    this.archiveMemory = new ArchiveMemory({
+      ...this.archiveMemoryConfig,
+      persistDir: this.memPersistDir,
+    });
+
+    // Inject archiveMemory into tool context so archive_recall tool can access it
+    context.archiveMemory = this.archiveMemory;
+
     this.smartSummarizer = new SmartSummarizer({
       summarizationInterval: AGENT_SUMMARIZER.summarizationInterval,
       llmTier: 'small',
       maxSummaryTokens: AGENT_SUMMARIZER.maxSummaryTokens,
+      onTrace: (event) => {
+        if (this.tracer) {
+          this.tracer.trace(createSummarizationLLMCallEvent({
+            iteration: event.iteration,
+            prompt: event.prompt,
+            rawResponse: event.rawResponse,
+            parseSuccess: event.parseSuccess,
+            parseError: event.parseError,
+            durationMs: event.durationMs,
+            outputTokens: event.outputTokens,
+          }));
+        }
+      },
+      onFactsExtracted: (result) => {
+        // Snapshot FactSheet before adding LLM-extracted facts
+        const beforeStats = this.factSheet.getStats();
+        let newFacts = 0;
+        let mergedFacts = 0;
+
+        for (const extractedFact of result.facts) {
+          const minConfidence = memConfig?.autoFactMinConfidence ?? AGENT_MEMORY.autoFactMinConfidence;
+          if (extractedFact.confidence < minConfidence) continue;
+
+          const { entry, merged } = this.factSheet.addFact({
+            category: extractedFact.category,
+            fact: extractedFact.fact,
+            confidence: extractedFact.confidence,
+            source: extractedFact.source,
+            iteration: result.iterationRange[1],
+          });
+
+          if (merged) {
+            mergedFacts++;
+          } else {
+            newFacts++;
+          }
+
+          // Trace each fact addition
+          if (this.tracer) {
+            this.tracer.trace(createFactAddedEvent({
+              iteration: result.iterationRange[1],
+              fact: {
+                id: entry.id,
+                category: entry.category,
+                fact: entry.fact,
+                confidence: entry.confidence,
+                source: entry.source,
+                merged,
+              },
+              factSheetStats: this.factSheet.getStats(),
+            }));
+          }
+        }
+
+        // Trace summarization result
+        const afterStats = this.factSheet.getStats();
+        if (this.tracer) {
+          const factsExtracted = result.facts.length;
+          const factsByCategory: Record<string, number> = {};
+          for (const f of result.facts) {
+            factsByCategory[f.category] = (factsByCategory[f.category] || 0) + 1;
+          }
+
+          this.tracer.trace(createSummarizationResultEvent({
+            iteration: result.iterationRange[1],
+            input: {
+              iterationRange: result.iterationRange,
+              messagesCount: result.messagesCount,
+              inputChars: result.inputChars,
+              inputTokens: result.inputTokens,
+            },
+            output: {
+              factsExtracted,
+              factsByCategory,
+              outputTokens: result.outputTokens,
+              llmDurationMs: result.llmDurationMs,
+            },
+            delta: {
+              factSheetBefore: beforeStats.totalFacts,
+              factSheetAfter: afterStats.totalFacts,
+              tokensBefore: beforeStats.estimatedTokens,
+              tokensAfter: afterStats.estimatedTokens,
+              newFacts,
+              mergedFacts,
+              evictedFacts: Math.max(0, beforeStats.totalFacts + newFacts - afterStats.totalFacts),
+            },
+            efficiency: {
+              compressionRatio: result.outputTokens > 0 ? result.inputTokens / result.outputTokens : 0,
+              factDensity: result.messagesCount > 0 ? factsExtracted / result.messagesCount : 0,
+              newFactRate: factsExtracted > 0 ? newFacts / factsExtracted : 0,
+            },
+          }));
+        }
+      },
     });
 
     // Subscribe external callback if provided
@@ -686,6 +818,17 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
 
     // Standard execution
     const startTier = this.config.tier || DEFAULT_EXECUTION_TIER;
+
+    // Load mid-term memory from disk if session has prior runs
+    if (this.memPersistDir) {
+      this.factSheet = await FactSheet.load(this.memPersistDir, this.factSheetConfig);
+      this.archiveMemory = await ArchiveMemory.load({
+        ...this.archiveMemoryConfig,
+        persistDir: this.memPersistDir,
+      });
+      this.toolRegistry.getContext().archiveMemory = this.archiveMemory;
+    }
+
     await this.ensureWorkspaceDiscoveryLoaded();
     this.taskIntent = await this.inferTaskIntent(task);
     this.iterationBudgetExtensions = 0;
@@ -788,6 +931,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     this.resetState();
     this.currentTask = task;
     this.startTime = Date.now();
+
     this.startTimestamp = new Date().toISOString();
     let effectiveMaxIterations = this.computeIterationBudget(task);
     this.currentIterationBudget = effectiveMaxIterations;
@@ -844,10 +988,16 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
 
     // Load conversation history from previous runs in this session
     // Uses progressive summarization: recent (full), mid-term (summarized), old (ultra-brief)
-    if (this.config.sessionId && this.sessionRootDir) {
-      const sessionManager = new SessionManager(this.sessionRootDir);
-      const history = await sessionManager.getConversationHistoryWithSummarization(this.config.sessionId);
-      const traceArtifactsContext = await sessionManager.getTraceArtifactsContext(this.config.sessionId);
+    // Prefer pre-loaded history from config to avoid race condition with async write queue.
+    if (this.config.sessionId && (this.sessionRootDir || this.config.conversationHistory)) {
+      const history = this.config.conversationHistory
+        ?? (this.sessionRootDir
+          ? await new SessionManager(this.sessionRootDir).getConversationHistoryWithSummarization(this.config.sessionId)
+          : { recent: [], midTerm: [], old: [] });
+      const traceArtifactsContext = this.config.traceArtifactsContext
+        ?? (this.sessionRootDir
+          ? await new SessionManager(this.sessionRootDir).getTraceArtifactsContext(this.config.sessionId)
+          : '');
 
       const totalTurns = history.recent.length + history.midTerm.length + history.old.length;
 
@@ -923,26 +1073,27 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     this.transitionPhase('executing', 'tool execution loop started');
 
     // Trace task start with system prompt and available tools
-    this.recordTrace({
-      iteration: 0,
-      timestamp: new Date().toISOString(),
-      type: 'task_start',
-      data: {
+    if (this.tracer) {
+      const taskStartEvent: TaskStartEvent = {
+        seq: 0,
+        type: 'task:start',
+        timestamp: new Date().toISOString(),
+        iteration: 0,
         task,
         tier,
         systemPrompt,
         availableTools: tools.map((t) => ({
           name: t.name,
-          description: t.description,
+          description: t.description ?? '',
         })),
-      },
-      durationMs: 0,
-    });
+      };
+      this.tracer.trace(taskStartEvent);
+    }
 
     for (let iteration = 1; iteration <= effectiveMaxIterations; iteration++) {
       // Check stop signal between iterations — never interrupts a running tool call
       if (this.abortController.signal.aborted) {
-        return this.createStoppedResult(iteration, effectiveMaxIterations);
+        return this.createStoppedResult(iteration);
       }
 
       this.logIterationHeader(iteration, effectiveMaxIterations);
@@ -1227,8 +1378,8 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
           throw new TierEscalationSignal(escalationCheck.reason, iteration);
         }
 
-        // Phase 4: Trigger async summarization every 10 iterations (non-blocking)
-        if (iteration % 10 === 0) {
+        // Phase 4: Trigger async summarization every N iterations (non-blocking)
+        if (iteration % AGENT_SUMMARIZER.summarizationInterval === 0) {
           const historySnapshot = this.contextFilter.getHistorySnapshot();
           this.smartSummarizer.triggerSummarization(historySnapshot, iteration)
             .catch((err: Error) => {
@@ -1546,8 +1697,19 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
       `Iterations ${s.startIteration}-${s.startIteration + 10}:\n${s.summary}`
     );
 
+    // Inject two-tier memory into system prompt
+    let enrichedSystemPrompt = systemPrompt;
+    const factSheetContent = this.factSheet.render();
+    if (factSheetContent) {
+      enrichedSystemPrompt += `\n\n# Accumulated Knowledge (Fact Sheet)\n${factSheetContent}`;
+    }
+    const archiveHint = this.archiveMemory.getSummaryHint();
+    if (archiveHint) {
+      enrichedSystemPrompt += `\n\n${archiveHint}`;
+    }
+
     // Build lean context with truncation + sliding window
-    const systemMsg: LLMMessage = { role: 'system', content: systemPrompt };
+    const systemMsg: LLMMessage = { role: 'system', content: enrichedSystemPrompt };
     const taskMsg: LLMMessage = { role: 'user', content: taskMessage };
 
     const leanContext = this.contextFilter.buildDefaultContext(
@@ -1805,41 +1967,6 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
       );
     }
 
-    this.recordTrace({
-      iteration,
-      timestamp: new Date().toISOString(),
-      type: 'llm_call',
-      data: {
-        tier,
-        tokensUsed,
-      },
-      durationMs,
-    });
-
-    // Record LLM response with FULL reasoning text and tool calls
-    this.recordTrace({
-      iteration,
-      timestamp: new Date().toISOString(),
-      type: 'llm_response',
-      data: {
-        // Full reasoning text — critical for debugging agent decisions
-        content: response.content || '',
-        contentLength: (response.content || '').length,
-        hasToolCalls: Boolean(response.toolCalls && response.toolCalls.length > 0),
-        toolCallsCount: response.toolCalls?.length || 0,
-        toolCalls: response.toolCalls?.map(tc => ({
-          name: tc.name,
-          // Full args for debugging — not truncated
-          args: typeof tc.input === 'string'
-            ? tc.input
-            : JSON.stringify(tc.input || {}),
-        })),
-        // Stop reason helps understand why LLM chose tools vs text
-        stopReason: response.toolCalls && response.toolCalls.length > 0 ? 'tool_use' : 'end_turn',
-      },
-      durationMs,
-    });
-
     return response;
   }
 
@@ -1869,13 +1996,6 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
         capability: mapToolToCapability(toolCall.name),
         toolName: toolCall.name,
       });
-
-      // === DISABLED: Cache has bug with tool_use_id format (Phase 1, Step 1.4) ===
-      // TODO: Fix cache to work within single LLM request, not across iterations
-      // const cacheKey = this.buildCacheKey(toolCall.name, input);
-      // const cached = this.getCachedResult(cacheKey);
-      // ... cache logic disabled for now
-      // === END DISABLED ===
 
       this.log(
         `🔧 ${toolCall.name}(${JSON.stringify(toolCall.input).slice(0, 100)}...)`
@@ -1954,7 +2074,6 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
           }
         }
         this.logToolResult(result);
-        this.recordToolTrace(toolCall, result, iteration, toolDurationMs);
         this.trackToolOutcome(toolCall.name, result, toolDurationMs);
 
         // Trace detailed tool:execution event
@@ -1982,6 +2101,9 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
             output: result.output,
           };
         }
+
+        // Two-tier memory: archive full output + extract heuristic facts
+        this.processToolResult(toolCall.name, input, result, iteration);
 
         // Emit tool:end with output, metadata, and correlation IDs
         this.emit({
@@ -2527,40 +2649,6 @@ Do not continue exploration. Finalize with current evidence.`;
   // trackToolOutcome and extractToolErrorCode delegated to RunMetricsEmitter (below)
 
   /**
-   * Record tool execution in trace
-   */
-  private recordToolTrace(
-    toolCall: LLMToolCall,
-    result: ToolResult,
-    iteration: number,
-    durationMs: number
-  ): void {
-    this.recordTrace({
-      iteration,
-      timestamp: new Date().toISOString(),
-      type: 'tool_call',
-      data: {
-        toolName: toolCall.name,
-        input: toolCall.input,
-      },
-      durationMs,
-    });
-
-    this.recordTrace({
-      iteration,
-      timestamp: new Date().toISOString(),
-      type: 'tool_result',
-      data: {
-        toolName: toolCall.name,
-        success: result.success,
-        output: result.output,
-        error: result.error,
-      },
-      durationMs: 0,
-    });
-  }
-
-  /**
    * Create tool result message for LLM
    * Truncates long outputs to prevent token overflow
    *
@@ -2720,11 +2808,12 @@ Do not continue exploration. Finalize with current evidence.`;
     });
 
     // Trace task end
-    this.recordTrace({
-      iteration,
-      timestamp: new Date().toISOString(),
-      type: 'task_end',
-      data: {
+    if (this.tracer) {
+      const taskEndEvent: TaskEndEvent = {
+        seq: 0,
+        type: 'task:end',
+        timestamp: new Date().toISOString(),
+        iteration,
         success: finalSuccess,
         summary: finalSummary,
         filesCreated: Array.from(this.filesCreated),
@@ -2732,14 +2821,18 @@ Do not continue exploration. Finalize with current evidence.`;
         filesRead: Array.from(this.filesRead),
         totalIterations: iteration,
         totalTokens: this.totalTokens,
-        reflectionCount: this.reflectionEngine.state.reflectionCount,
-        hypothesisSwitches: this.reflectionEngine.state.hypothesisSwitches,
-      },
-      durationMs: 0,
-    });
+      };
+      this.tracer.trace(taskEndEvent);
+    }
 
     await this.todoSyncCoordinator.finalize(true, finalSummary, this.config.sessionId);
     await this.emitRunKpis(finalSuccess, finalSummary, iteration, durationMs);
+
+    // Persist mid-term memory (non-critical)
+    if (this.memPersistDir) {
+      try { await this.factSheet.persist(this.memPersistDir); } catch { /* ignore */ }
+    }
+    try { await this.archiveMemory.persist(); } catch { /* ignore */ }
 
     return {
       success: finalSuccess,
@@ -2814,11 +2907,12 @@ Do not continue exploration. Finalize with current evidence.`;
     });
 
     // Trace task end
-    this.recordTrace({
-      iteration,
-      timestamp: new Date().toISOString(),
-      type: 'task_end',
-      data: {
+    if (this.tracer) {
+      const taskEndEvent: TaskEndEvent = {
+        seq: 0,
+        type: 'task:end',
+        timestamp: new Date().toISOString(),
+        iteration,
         success: false,
         summary,
         error,
@@ -2827,14 +2921,18 @@ Do not continue exploration. Finalize with current evidence.`;
         filesRead: Array.from(this.filesRead),
         totalIterations: iteration,
         totalTokens: this.totalTokens,
-        reflectionCount: this.reflectionEngine.state.reflectionCount,
-        hypothesisSwitches: this.reflectionEngine.state.hypothesisSwitches,
-      },
-      durationMs: 0,
-    });
+      };
+      this.tracer.trace(taskEndEvent);
+    }
 
     await this.todoSyncCoordinator.finalize(false, error || summary, this.config.sessionId);
     await this.emitRunKpis(false, summary, iteration, durationMs, error || summary);
+
+    // Persist mid-term memory (non-critical)
+    if (this.memPersistDir) {
+      try { await this.factSheet.persist(this.memPersistDir); } catch { /* ignore */ }
+    }
+    try { await this.archiveMemory.persist(); } catch { /* ignore */ }
 
     return {
       success: false,
@@ -2854,7 +2952,7 @@ Do not continue exploration. Finalize with current evidence.`;
    * Waits for the current tool call to finish (never interrupts mid-flight),
    * then saves partial trace and emits agent:end with stopped=true.
    */
-  private async createStoppedResult(iteration: number, maxIterations: number): Promise<TaskResult> {
+  private async createStoppedResult(iteration: number): Promise<TaskResult> {
     try {
       this.executionStateMachine.transition('failed', 'stopped by user');
     } catch {
@@ -2887,11 +2985,12 @@ Do not continue exploration. Finalize with current evidence.`;
       data: { status: 'done', message: summary },
     });
 
-    this.recordTrace({
-      iteration,
-      timestamp: new Date().toISOString(),
-      type: 'task_end',
-      data: {
+    if (this.tracer) {
+      const taskEndEvent: TaskEndEvent = {
+        seq: 0,
+        type: 'task:end',
+        timestamp: new Date().toISOString(),
+        iteration,
         success: false,
         stopped: true,
         summary,
@@ -2900,13 +2999,18 @@ Do not continue exploration. Finalize with current evidence.`;
         filesRead: Array.from(this.filesRead),
         totalIterations: iteration - 1,
         totalTokens: this.totalTokens,
-        maxIterations,
-      },
-      durationMs,
-    });
+      };
+      this.tracer.trace(taskEndEvent);
+    }
 
     await this.todoSyncCoordinator.finalize(false, summary, this.config.sessionId);
     await this.emitRunKpis(false, summary, iteration - 1, durationMs, summary);
+
+    // Persist mid-term memory (non-critical)
+    if (this.memPersistDir) {
+      try { await this.factSheet.persist(this.memPersistDir); } catch { /* ignore */ }
+    }
+    try { await this.archiveMemory.persist(); } catch { /* ignore */ }
 
     return {
       success: false,
@@ -3011,6 +3115,96 @@ Do not continue exploration. Finalize with current evidence.`;
         log: (msg: string) => this.log(msg),
       },
     );
+  }
+
+  /**
+   * Process tool result for two-tier memory: archive full output + extract heuristic facts.
+   * Called after every successful tool execution, BEFORE output truncation.
+   */
+  private processToolResult(
+    toolName: string,
+    input: Record<string, unknown>,
+    result: ToolResult,
+    iteration: number
+  ): void {
+    try {
+      const fullOutput = result.output || '';
+
+      // Determine file path for indexing (if applicable)
+      const filePath = toolName === 'fs_read'
+        ? (input.path as string | undefined)
+        : undefined;
+
+      // 1. Archive full output (Tier 2: Cold Storage)
+      const { entry: archiveEntry, evicted } = this.archiveMemory.store({
+        iteration,
+        toolName,
+        toolInput: input,
+        fullOutput,
+        filePath,
+      });
+
+      // 2. Extract heuristic facts (no LLM, instant)
+      const heuristicFacts = extractHeuristicFacts(
+        toolName,
+        input,
+        fullOutput,
+        result.success !== false
+      );
+
+      const minConfidence = this.config.twoTierMemory?.autoFactMinConfidence
+        ?? AGENT_MEMORY.autoFactMinConfidence;
+
+      for (const hFact of heuristicFacts) {
+        if (hFact.confidence < minConfidence) continue;
+
+        const { entry: factEntry, merged } = this.factSheet.addFact({
+          category: hFact.category,
+          fact: hFact.fact,
+          confidence: hFact.confidence,
+          source: hFact.source,
+          iteration,
+        });
+
+        // Trace fact addition
+        if (this.tracer) {
+          this.tracer.trace(createFactAddedEvent({
+            iteration,
+            fact: {
+              id: factEntry.id,
+              category: factEntry.category,
+              fact: factEntry.fact,
+              confidence: factEntry.confidence,
+              source: factEntry.source,
+              merged,
+            },
+            factSheetStats: this.factSheet.getStats(),
+          }));
+        }
+      }
+
+      // 3. Trace archive store
+      if (this.tracer) {
+        this.tracer.trace(createArchiveStoreEvent({
+          iteration,
+          entry: {
+            id: archiveEntry.id,
+            toolName: archiveEntry.toolName,
+            filePath: archiveEntry.filePath,
+            outputLength: archiveEntry.outputLength,
+            estimatedTokens: archiveEntry.estimatedTokens,
+            keyFactsExtracted: heuristicFacts.length,
+          },
+          archiveStats: {
+            ...this.archiveMemory.getStats(),
+            evicted,
+          },
+        }));
+      }
+    } catch (err) {
+      // Two-tier memory errors must not break agent execution
+      this.log(`[TwoTierMemory] processToolResult error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
@@ -3319,15 +3513,6 @@ ${input.toolRows || '(none)'}`;
     }
   }
 
-  /**
-   * Record trace entry
-   */
-  private recordTrace(entry: TraceEntry): void {
-    this.trace.push(entry);
-    if (this.tracer) {
-      this.tracer.trace(entry);
-    }
-  }
 
   /**
    * Get file change history for this agent session
