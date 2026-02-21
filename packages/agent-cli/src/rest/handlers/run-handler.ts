@@ -7,7 +7,7 @@
 import { defineHandler, useAnalytics, useCache, useConfig, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
 import { Agent, SessionManager, FileMemory, IncrementalTraceWriter } from '@kb-labs/agent-core';
 import { createToolRegistry } from '@kb-labs/agent-tools';
-import type { RunRequest, RunResponse, AgentsPluginConfig } from '@kb-labs/agent-contracts';
+import type { RunRequest, RunResponse, AgentsPluginConfig, FileChangeSummary } from '@kb-labs/agent-contracts';
 import path from 'node:path';
 import fs from 'node:fs';
 import {
@@ -263,6 +263,9 @@ export default defineHandler({
       toolRegistry
     );
 
+    // Tag all file changes from this run with the runId (enables per-turn rollback)
+    agent.setRunId(runId);
+
     // Register run (pass sessionManager and sessionId so session-level WS listeners receive events)
     const run = await RunManager.register(runId, body.task, agent, sessionManager, finalSessionId);
     await RunManager.updateStatus(runId, 'running');
@@ -277,6 +280,23 @@ export default defineHandler({
 
         if (detailedTrace.length > 0) {
           await sessionManager.storeTraceArtifacts(finalSessionId, runId, detailedTrace);
+        }
+
+        // Attach file change summaries to the turn so the UI can show rollback/approve panel
+        const fileHistory = agent.getFileHistory().filter((c) => c.runId === runId);
+        if (fileHistory.length > 0) {
+          const fileChanges: FileChangeSummary[] = fileHistory.map((c) => ({
+            changeId: c.id,
+            filePath: c.filePath,
+            operation: c.operation,
+            timestamp: c.timestamp,
+            linesAdded: c.metadata?.linesAdded,
+            linesRemoved: c.metadata?.linesRemoved,
+            isNew: !c.before,
+            sizeAfter: c.after.size,
+            approved: c.approved,
+          }));
+          await sessionManager.attachFileChangesToTurn(finalSessionId, runId, fileChanges);
         }
 
         await RunManager.updateStatus(runId, result.success ? 'completed' : 'failed', {
