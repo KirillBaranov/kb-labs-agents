@@ -34,7 +34,11 @@ export interface TaskInput {
     files?: string[]; // Relevant file paths
     links?: string[]; // Related URLs
     relatedTasks?: string[]; // IDs of related tasks
-    metadata?: Record<string, unknown>; // Source-specific metadata
+    /**
+     * Source-specific metadata (open-ended: ClickUp fields, GitHub PR data, Jira issue, etc.)
+     * Intentionally untyped — adapters own the schema, TaskRunner treats as opaque.
+     */
+    metadata?: Record<string, unknown>;
   };
 
   /**

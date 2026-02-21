@@ -13,6 +13,7 @@
  * Agent execution modes - extensible for future modes
  */
 export type AgentMode = 'execute' | 'plan' | 'edit' | 'debug';
+export const AGENT_MODES = ['execute', 'plan', 'edit', 'debug'] as const satisfies AgentMode[];
 
 /**
  * Mode-specific configuration
@@ -96,18 +97,6 @@ export interface AgentSmartTieringConfig {
 export type AgentResponseMode = 'auto' | 'brief' | 'deep';
 
 /**
- * Task complexity classification
- *
- * - simple: Single lookup, one action (e.g., "What is X?")
- * - research: Information gathering + synthesis (e.g., "Explain architecture")
- * - complex: Multi-step task with actions (e.g., "Implement feature X")
- *
- * @deprecated No longer used after orchestrator simplification (2026-02-18).
- * All tasks now execute with single-agent mode. This type is kept for backward compatibility.
- */
-export type TaskComplexity = 'simple' | 'research' | 'complex';
-
-/**
  * Task type for decomposition decision (Phase 0: Smart Decomposition)
  *
  * - research: Parallel exploration of different aspects (easy to parallelize)
@@ -146,6 +135,7 @@ export type ExecutionMode = 'single-agent' | 'sequential' | 'parallel' | 'mixed'
  * Task execution status
  */
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped';
+export const TASK_STATUSES = ['pending', 'in_progress', 'completed', 'failed', 'skipped'] as const satisfies TaskStatus[];
 
 /**
  * Plan update action (Phase 3: Orchestrator Observation)
@@ -505,11 +495,13 @@ export interface SessionMemory {
  * TODO item status
  */
 export type TodoStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
+export const TODO_STATUSES = ['pending', 'in-progress', 'completed', 'blocked'] as const satisfies TodoStatus[];
 
 /**
  * TODO item priority
  */
 export type TodoPriority = 'low' | 'medium' | 'high';
+export const TODO_PRIORITIES = ['low', 'medium', 'high'] as const satisfies TodoPriority[];
 
 /**
  * TODO item
