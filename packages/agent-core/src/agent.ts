@@ -3515,6 +3515,15 @@ ${input.toolRows || '(none)'}`;
 
 
   /**
+   * Set the run ID on the FileChangeTracker so all subsequent file changes
+   * are tagged with this runId (enabling per-run filtering and rollback).
+   * Call this immediately after the Agent is created, before execute().
+   */
+  setRunId(runId: string): void {
+    this.fileChangeTracker?.setRunId(runId);
+  }
+
+  /**
    * Get file change history for this agent session
    * Returns all file modifications tracked by FileChangeTracker
    */
