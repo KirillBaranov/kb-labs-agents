@@ -110,7 +110,7 @@ import { discoverWorkspace, type WorkspaceDiscoveryResult } from './execution/wo
 /**
  * Default instruction file names to scan (in order of priority)
  */
-const INSTRUCTION_FILE_NAMES = ['CLAUDE.md', 'AGENT.md', 'KB_AGENT.md', '.agent.md'];
+const INSTRUCTION_FILE_NAMES = ['AGENT.md', 'KB_AGENT.md', '.agent.md', 'CLAUDE.md'];
 
 /**
  * Generate unique agent ID
@@ -164,6 +164,14 @@ export class Agent {
   /** Unique ID for this agent instance (for event correlation) */
   public readonly agentId: string;
 
+  /** AbortController for graceful stop — signal is propagated to child agents */
+  private readonly abortController: AbortController;
+
+  /** Request graceful stop. Agent finishes current tool call then exits between iterations. */
+  public requestStop(): void {
+    this.abortController.abort();
+  }
+
   /**
    * User context injected during execution (corrections, feedback)
    * Will be included in the next LLM call
@@ -205,6 +213,7 @@ export class Agent {
   private lastSignalIteration = 0;
   private iterationBudgetExtensions = 0;
   private taskIntent: 'action' | 'discovery' | 'analysis' | null = null;
+  private taskBudget: number | null = null;
   private lastReflectionIteration = 0;
   private reflectionCount = 0;
   private hypothesisSwitches = 0;
@@ -284,6 +293,12 @@ export class Agent {
 
     // Generate unique ID for this agent instance
     this.agentId = config.agentId || generateAgentId();
+
+    // AbortController — new one per agent; if parent passes a signal, abort when it fires
+    this.abortController = new AbortController();
+    if (config.abortSignal) {
+      config.abortSignal.addEventListener('abort', () => this.abortController.abort(), { once: true });
+    }
 
     // Use shared file tracking from tool context if available (for edit protection)
     const context = toolRegistry.getContext();
@@ -370,6 +385,7 @@ export class Agent {
             tracer: config.tracer,
             memory: config.memory,
             onEvent: config.onEvent,
+            abortSignal: this.abortController.signal,
           };
 
           // Create fresh toolRegistry WITHOUT spawnAgent → sub-agent can't spawn further
@@ -710,84 +726,100 @@ Call select_scope with your choice.`;
   }
 
   private async inferTaskIntent(task: string): Promise<'action' | 'discovery' | 'analysis'> {
-    const hasDiscoveryCue = /(find|search|locate|where|which|usage|symbol|definition|найди|поиск|где|экспорт|используется|определение|покажи)/i.test(task);
-    const hasActionCue = /(create|implement|fix|patch|write|edit|add|remove|rename|refactor|удали|создай|исправ|добав|переимен|рефактор)/i.test(task);
-    if (hasDiscoveryCue && !hasActionCue) {
-      return 'discovery';
-    }
+    const result = await this.classifyTaskWithLLM(task);
+    this.taskBudget = result.budget;
+    return result.intent;
+  }
 
-    const llm = useLLM({
-      tier: this.chooseSmartTier('intentInference', {
-        task,
-        hasDiscoveryCue,
-        hasActionCue,
-      }),
-    });
+  /**
+   * LLM-based task classification. Returns intent + initial iteration budget.
+   * Called once at execution start; replaces all regex-based heuristics.
+   */
+  private async classifyTaskWithLLM(
+    task: string,
+  ): Promise<{ intent: 'action' | 'discovery' | 'analysis'; budget: number }> {
+    const configured = this.config.maxIterations || 25;
+    const cap = Math.min(configured, 20);
+
+    const llm = useLLM({ tier: 'small' });
+
     if (llm?.chatWithTools) {
       try {
         const response = await llm.chatWithTools(
           [
             {
               role: 'user',
-              content: `Classify task intent:\n${task}`,
+              content: `You are a task planner. Analyze the user task and return:
+1. intent — what kind of task it is
+2. budget — how many agent iterations (tool calls) are needed to complete it
+
+Intent options:
+- "action": task requires making changes (implement, fix, add, refactor, delete, write)
+- "discovery": task requires finding/locating something (where is X, what is Y, show me Z)
+- "analysis": task requires understanding/explaining/analyzing
+
+Budget guidelines (these are starting values; more may be granted if progress is made):
+- discovery (simple lookup): 6–8
+- analysis (explain/summarize): 8–12
+- action (small change, 1-2 files): 10–14
+- action (medium feature/fix, 3-10 files): 14–18
+- action (large refactor/architecture, many files): 18–${cap}
+
+User task:
+${task}`,
             },
           ],
           {
             temperature: 0,
             tools: [
               {
-                name: 'set_intent',
-                description: 'Set normalized task intent category.',
+                name: 'classify_task',
+                description: 'Classify the task and set initial iteration budget.',
                 inputSchema: {
                   type: 'object',
                   properties: {
                     intent: {
                       type: 'string',
                       enum: ['action', 'discovery', 'analysis'],
+                      description: 'Task intent category',
+                    },
+                    budget: {
+                      type: 'number',
+                      description: 'Initial iteration budget (number of steps)',
+                    },
+                    reasoning: {
+                      type: 'string',
+                      description: 'One sentence explaining the classification',
                     },
                   },
-                  required: ['intent'],
+                  required: ['intent', 'budget'],
                 },
               },
             ],
-          }
+          },
         );
-        const call = response.toolCalls?.find((tc) => tc.name === 'set_intent');
-        const input = (call?.input ?? {}) as { intent?: string };
-        if (input.intent === 'action' || input.intent === 'discovery' || input.intent === 'analysis') {
-          return input.intent;
+
+        const call = response.toolCalls?.find((tc) => tc.name === 'classify_task');
+        const input = (call?.input ?? {}) as { intent?: string; budget?: number; reasoning?: string };
+        const intent = input.intent === 'action' || input.intent === 'discovery' || input.intent === 'analysis'
+          ? input.intent
+          : null;
+        const budget = typeof input.budget === 'number' && input.budget > 0
+          ? Math.min(Math.max(input.budget, 4), cap)
+          : null;
+
+        if (intent && budget) {
+          this.log(`🧠 Task classified: intent=${intent} budget=${budget} — ${input.reasoning ?? ''}`);
+          return { intent, budget };
         }
-        const content = (response.content || '').toLowerCase();
-        if (content.includes('action')) {return 'action';}
-        if (content.includes('discovery')) {return 'discovery';}
-        if (content.includes('analysis')) {return 'analysis';}
       } catch {
-        // Fall through to lightweight fallback.
+        // Fall through to defaults.
       }
     }
 
-    if (llm?.complete) {
-      try {
-        const response = await llm.complete(
-          `Classify task intent as one of: action, discovery, analysis.\nTask: ${task}\nReturn only one word.`,
-          { temperature: 0 }
-        );
-        const raw = (response.content || '').toLowerCase();
-        if (raw.includes('action')) {return 'action';}
-        if (raw.includes('discovery')) {return 'discovery';}
-        if (raw.includes('analysis')) {return 'analysis';}
-      } catch {
-        // Fall through to lightweight fallback.
-      }
-    }
-
-    if (/(create|implement|fix|patch|write|edit|add|remove|rename|refactor|удали|создай|исправ|добав|переимен|рефактор)/i.test(task)) {
-      return 'action';
-    }
-    if (/(find|search|locate|where|which|usage|symbol|definition|найди|поиск|где|экспорт|используется|определение)/i.test(task)) {
-      return 'discovery';
-    }
-    return 'analysis';
+    // Fallback: sensible defaults without regex
+    this.log('⚠️ LLM classification failed, using default budget');
+    return { intent: 'action', budget: Math.min(configured, 12) };
   }
 
   private async assessSearchSignalWithLLM(
@@ -1135,6 +1167,11 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     });
 
     for (let iteration = 1; iteration <= effectiveMaxIterations; iteration++) {
+      // Check stop signal between iterations — never interrupts a running tool call
+      if (this.abortController.signal.aborted) {
+        return this.createStoppedResult(iteration, effectiveMaxIterations);
+      }
+
       this.logIterationHeader(iteration, effectiveMaxIterations);
 
       const iterationStartTimestamp = new Date().toISOString();
@@ -1246,125 +1283,32 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
           this.tokenConvergenceNudgeSent = true;
         }
 
+        if (isLastIteration && response.toolCalls && response.toolCalls.length > 0) {
+          this.transitionPhase('verifying', 'last iteration reached with pending tool calls');
+          this.log(`🧩 Last iteration requested ${response.toolCalls.length} tool call(s); forcing synthesis from collected evidence.`);
+          return await this.forceSynthesisFromHistory({
+            iteration,
+            llm,
+            messages,
+            reason: 'Last iteration reached with pending tool calls',
+            reasonCode: 'max_iterations',
+            iterationStartTimestamp,
+          });
+        }
+
         // Check if done
         if (!response.toolCalls || response.toolCalls.length === 0) {
           this.transitionPhase('verifying', 'no more tool calls from model');
           // On last iteration, FORCE synthesis if LLM didn't call report
           if (isLastIteration) {
-            // Emit forced synthesis event
-            this.emit({
-              type: 'synthesis:forced',
-              timestamp: new Date().toISOString(),
-              sessionId: this.config.sessionId,
-              data: {
-                iteration,
-                reason: 'Last iteration reached without tool call',
-                messagesCount: messages.length,
-              },
-            } as AgentEvent);
-
-            // Synthesize answer from conversation history using LLM
-            const synthesisPrompt = `You are on the LAST iteration of your research task. Based on all the information you gathered through tool calls, provide a comprehensive synthesized answer.
-
-Review what you found and create a detailed response that includes:
-1. Specific file references (e.g., "In packages/runtime/index.ts...")
-2. Code snippets or interface definitions you discovered
-3. Architecture patterns you identified
-4. Key components and how they work together
-
-DO NOT say "I couldn't find" or "No information available" - synthesize what you DID find from your research.
-
-Your answer should be detailed, specific, and reference actual files and code you read.`;
-
-            messages.push({
-              role: 'user',
-              content: synthesisPrompt,
+            return await this.forceSynthesisFromHistory({
+              iteration,
+              llm,
+              messages,
+              reason: 'Last iteration reached without tool call',
+              reasonCode: 'no_tool_call',
+              iterationStartTimestamp,
             });
-
-            // Emit synthesis start event
-            this.emit({
-              type: 'synthesis:start',
-              timestamp: new Date().toISOString(),
-              sessionId: this.config.sessionId,
-              data: {
-                iteration,
-                promptLength: synthesisPrompt.length,
-              },
-            } as AgentEvent);
-
-            // Call LLM for synthesis (no tools needed)
-            // IMPORTANT: Use lean context instead of full messages to save tokens
-            const leanContext = await this.buildLeanContext(
-              this.cachedSystemPrompt!,
-              this.cachedTaskMessage!,
-              iteration
-            );
-
-            const synthesisStartTime = Date.now();
-            // Sequential LLM call required - part of agent iteration loop
-
-            const synthesisResponse = await llm.chatWithTools(leanContext, {
-              tools: [], // No tools needed for synthesis
-              toolChoice: 'none', // Explicitly disable tool calling
-              temperature: this.config.temperature || 0.1,
-            });
-            const synthesisDurationMs = Date.now() - synthesisStartTime;
-
-            const synthesizedAnswer = synthesisResponse.content || 'Unable to synthesize findings';
-
-            // Trace detailed synthesis:forced event
-            if (this.tracer) {
-              this.tracer.trace(
-                createSynthesisForcedEvent({
-                  iteration,
-                  reason: 'last_iteration',
-                  lastIteration: iteration,
-                  lastToolCall: this.lastToolCall?.name,
-                  synthesisPrompt,
-                  synthesisResponse: {
-                    content: synthesizedAnswer,
-                    tokens: synthesisResponse.usage?.completionTokens || 0,
-                    durationMs: synthesisDurationMs,
-                  },
-                })
-              );
-            }
-
-            // Emit synthesis result event
-            this.emit({
-              type: 'synthesis:complete',
-              timestamp: new Date().toISOString(),
-              sessionId: this.config.sessionId,
-              data: {
-                iteration,
-                contentLength: synthesisResponse.content?.length ?? 0,
-                hasContent: !!synthesisResponse.content,
-                tokensUsed: synthesisResponse.usage?.completionTokens ?? 0,
-                previewFirst200: synthesisResponse.content?.substring(0, 200) ?? '',
-              },
-            } as AgentEvent);
-
-            // Emit iteration:end
-            this.emit({
-              type: 'iteration:end',
-              timestamp: new Date().toISOString(),
-              sessionId: this.config.sessionId,
-              startedAt: iterationStartTimestamp,
-              data: {
-                iteration,
-                hadToolCalls: false,
-                toolCallCount: 0,
-                cumulativeTokens: this.totalTokens,
-              },
-            } as AgentEvent);
-
-            // Return with synthesized answer
-            // This await in return breaks the loop, not a sequential operation
-            this.transitionPhase('reporting', 'forced synthesis result');
-            return await this.createSuccessResult({
-              success: true,
-              summary: synthesizedAnswer,
-            }, iteration);
           }
 
           // Emit iteration:end (no tool calls = done) with startedAt
@@ -1774,6 +1718,7 @@ Your answer should be detailed, specific, and reference actual files and code yo
     this.touchedDomains.clear();
     this.currentIterationBudget = 0;
     this.currentTokenBudget = 0;
+    this.taskBudget = null;
     this.tokenConvergenceNudgeSent = false;
     this.consecutiveNoSignalSearchIterations = 0;
     this.smallReadWindowByPath.clear();
@@ -2649,19 +2594,13 @@ Your answer should be detailed, specific, and reference actual files and code yo
     return likelyMultiStep;
   }
 
-  private computeIterationBudget(task: string): number {
+  private computeIterationBudget(_task: string): number {
     const configured = this.config.maxIterations || 25;
-    const normalized = task.toLowerCase();
-    const complexTask = /(architecture|tradeoff|migration|refactor|root cause|multi-agent|расплан|архитектур|миграц|рефактор|сложн)/i.test(normalized);
-    const simpleTask = /(коротко|brief|one phrase|одной фразой|2 пункта|список|list|where|what|как|что)/i.test(normalized);
-
-    if (complexTask) {
-      return Math.min(configured, 18);
+    // Budget is set by LLM classification in inferTaskIntent (called before this).
+    if (this.taskBudget !== null) {
+      return Math.min(this.taskBudget, configured);
     }
-    if (simpleTask) {
-      return Math.min(configured, 8);
-    }
-    return Math.min(configured, 10);
+    return Math.min(configured, 12);
   }
 
   private async computeTokenBudget(_task: string): Promise<number> {
@@ -2786,6 +2725,120 @@ Your answer should be detailed, specific, and reference actual files and code yo
     const sorted = [...values].sort((a, b) => a - b);
     const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * percentile) - 1));
     return sorted[index] || 0;
+  }
+
+  private async forceSynthesisFromHistory(input: {
+    iteration: number;
+    llm: ILLM;
+    messages: LLMMessage[];
+    reason: string;
+    reasonCode: 'max_iterations' | 'no_tool_call';
+    iterationStartTimestamp: string;
+  }): Promise<TaskResult> {
+    const { iteration, llm, messages, reason, reasonCode, iterationStartTimestamp } = input;
+    if (!llm?.chatWithTools) {
+      return this.createFailureResult('LLM unavailable for final synthesis', iteration);
+    }
+    this.emit({
+      type: 'synthesis:forced',
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      data: {
+        iteration,
+        reason,
+        messagesCount: messages.length,
+      },
+    } as AgentEvent);
+
+    const synthesisPrompt = `You are at the final synthesis step. Do not call tools.
+Using only already collected evidence from prior tool results, produce the best final answer now.
+
+Include:
+1. Concrete file references and paths
+2. Exact findings that are confirmed
+3. Any uncertainty as explicit "unknown / not yet verified"
+4. Clear conclusion for the original task
+
+Do not continue exploration. Finalize with current evidence.`;
+
+    messages.push({
+      role: 'user',
+      content: synthesisPrompt,
+    });
+
+    this.emit({
+      type: 'synthesis:start',
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      data: {
+        iteration,
+        promptLength: synthesisPrompt.length,
+      },
+    } as AgentEvent);
+
+    const leanContext = await this.buildLeanContext(
+      this.cachedSystemPrompt!,
+      this.cachedTaskMessage!,
+      iteration
+    );
+
+    const synthesisStartTime = Date.now();
+    const synthesisResponse = await llm.chatWithTools(leanContext, {
+      tools: [],
+      toolChoice: 'none',
+      temperature: this.config.temperature || 0.1,
+    });
+    const synthesisDurationMs = Date.now() - synthesisStartTime;
+    const synthesizedAnswer = synthesisResponse.content || 'Unable to synthesize findings';
+
+    if (this.tracer) {
+      this.tracer.trace(
+        createSynthesisForcedEvent({
+          iteration,
+          reason: reasonCode,
+          lastIteration: iteration,
+          lastToolCall: this.lastToolCall?.name,
+          synthesisPrompt,
+          synthesisResponse: {
+            content: synthesizedAnswer,
+            tokens: synthesisResponse.usage?.completionTokens || 0,
+            durationMs: synthesisDurationMs,
+          },
+        })
+      );
+    }
+
+    this.emit({
+      type: 'synthesis:complete',
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      data: {
+        iteration,
+        contentLength: synthesisResponse.content?.length ?? 0,
+        hasContent: !!synthesisResponse.content,
+        tokensUsed: synthesisResponse.usage?.completionTokens ?? 0,
+        previewFirst200: synthesisResponse.content?.substring(0, 200) ?? '',
+      },
+    } as AgentEvent);
+
+    this.emit({
+      type: 'iteration:end',
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      startedAt: iterationStartTimestamp,
+      data: {
+        iteration,
+        hadToolCalls: false,
+        toolCallCount: 0,
+        cumulativeTokens: this.totalTokens,
+      },
+    } as AgentEvent);
+
+    this.transitionPhase('reporting', 'forced synthesis result');
+    return await this.createSuccessResult({
+      success: true,
+      summary: synthesizedAnswer,
+    }, iteration);
   }
 
   private shouldNudgeConvergence(iteration: number, maxIterations: number, task: string): boolean {
@@ -3616,6 +3669,78 @@ ${nextChecks.map((item) => `  - ${item}`).join('\n')}`;
     };
   }
 
+  /**
+   * Create result when agent is stopped by user via requestStop().
+   * Waits for the current tool call to finish (never interrupts mid-flight),
+   * then saves partial trace and emits agent:end with stopped=true.
+   */
+  private async createStoppedResult(iteration: number, maxIterations: number): Promise<TaskResult> {
+    try {
+      this.executionStateMachine.transition('failed', 'stopped by user');
+    } catch {
+      // ignore state machine errors
+    }
+    const durationMs = Date.now() - this.startTime;
+    const summary = `Stopped by user after ${iteration - 1} iteration(s)`;
+
+    this.emit({
+      type: 'agent:end',
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      startedAt: this.startTimestamp,
+      data: {
+        success: false,
+        stopped: true,
+        summary,
+        iterations: iteration - 1,
+        tokensUsed: this.totalTokens,
+        durationMs,
+        filesCreated: Array.from(this.filesCreated),
+        filesModified: Array.from(this.filesModified),
+      },
+    } as AgentEvent);
+
+    this.emit({
+      type: EVENT_TYPE_STATUS_CHANGE,
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      data: { status: 'done', message: summary },
+    });
+
+    this.recordTrace({
+      iteration,
+      timestamp: new Date().toISOString(),
+      type: 'task_end',
+      data: {
+        success: false,
+        stopped: true,
+        summary,
+        filesCreated: Array.from(this.filesCreated),
+        filesModified: Array.from(this.filesModified),
+        filesRead: Array.from(this.filesRead),
+        totalIterations: iteration - 1,
+        totalTokens: this.totalTokens,
+        maxIterations,
+      },
+      durationMs,
+    });
+
+    await this.finalizeTodoSyncOnCompletion(false, summary);
+    await this.emitRunKpis(false, summary, iteration - 1, durationMs, summary);
+
+    return {
+      success: false,
+      summary,
+      filesCreated: Array.from(this.filesCreated),
+      filesModified: Array.from(this.filesModified),
+      filesRead: Array.from(this.filesRead),
+      iterations: iteration - 1,
+      tokensUsed: this.totalTokens,
+      error: summary,
+      trace: this.trace,
+    };
+  }
+
   private async emitRunKpis(
     success: boolean,
     summary: string,
@@ -4299,22 +4424,16 @@ ${toolRows.join('\n') || '(none)'}`;
   }
 
   private maybeExtendIterationBudget(currentIteration: number, currentBudget: number): number {
-    if (this.currentTier === 'large') {
-      return currentBudget;
-    }
-    if (!this.isLikelyDiscoveryTask(this.currentTask || '')) {
-      return currentBudget;
-    }
-
-    const nearLimit = currentIteration >= currentBudget - 1;
-    if (!nearLimit) {
+    // Only check when approaching the limit
+    const remainingIterations = Math.max(0, currentBudget - currentIteration);
+    if (remainingIterations > 2) {
       return currentBudget;
     }
 
+    // Extend only if agent is making progress toward the goal — no hard ceiling
     const hasRecentSignal = this.lastSignalIteration > 0 && (currentIteration - this.lastSignalIteration) <= 3;
     const hasRecentProgress = this.progressTracker.lastProgressIteration > 0
       && (currentIteration - this.progressTracker.lastProgressIteration) <= 2;
-    const hasLargeFile = Array.from(this.fileTotalLinesByPath.values()).some((lines) => lines >= 2000);
     const hasProgress = this.progressTracker.iterationsSinceProgress < this.progressTracker.stuckThreshold
       || hasRecentSignal
       || hasRecentProgress;
@@ -4323,15 +4442,7 @@ ${toolRows.join('\n') || '(none)'}`;
       return currentBudget;
     }
 
-    const baseConfigured = this.config.maxIterations || currentBudget;
-    const dynamicCeiling = hasLargeFile ? 18 : 14;
-    const extensionDelta = hasLargeFile ? 3 : 2;
-    const cap = Math.min(baseConfigured + 6, dynamicCeiling);
-    if (currentBudget >= cap) {
-      return currentBudget;
-    }
-
-    return Math.min(cap, currentBudget + extensionDelta);
+    return currentBudget + 5;
   }
 
   private buildNoResultConclusionSummary(): string {
