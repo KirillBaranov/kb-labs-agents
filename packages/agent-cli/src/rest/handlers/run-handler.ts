@@ -237,6 +237,7 @@ export default defineHandler({
         tier: body.tier ?? 'medium',
         enableEscalation: body.enableEscalation ?? true,
         smartTiering,
+        tokenBudget: agentsConfig?.tokenBudget,
         responseMode: body.responseMode ?? 'auto',
         memory, // Enable memory for context persistence and last answer tracking
         tracer: traceWriter,
