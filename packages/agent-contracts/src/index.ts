@@ -26,4 +26,7 @@ export type * from './trace-command-response.js';
 // ═══════════════════════════════════════════════════════════════════════
 
 export type * from './config-types.js';
-export { DEFAULT_FILE_HISTORY_CONFIG } from './config-types.js';
+export {
+  DEFAULT_FILE_HISTORY_CONFIG,
+  DEFAULT_AGENT_TOKEN_BUDGET_CONFIG,
+} from './config-types.js';

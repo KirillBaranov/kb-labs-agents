@@ -89,6 +89,50 @@ export interface AgentSmartTieringConfig {
 }
 
 /**
+ * Token budget policy for long-running agent tasks.
+ * All fields are optional and should be resolved with defaults by agent-core.
+ */
+export interface AgentTokenBudgetConfig {
+  /** Enables token-budget policy. When false, current behavior is preserved. */
+  enabled?: boolean;
+  /** Optional absolute token cap. If omitted, KPI-derived budget is used. */
+  maxTokens?: number;
+  /** Soft-limit ratio for convergence nudges (default: 0.7). */
+  softLimitRatio?: number;
+  /** Hard-limit ratio for stop/synthesis (default: 1.0). */
+  hardLimitRatio?: number;
+  /** Enforce hard limit when reached (default: false). */
+  hardStop?: boolean;
+  /** On hard limit, synthesize from collected evidence (default: true). */
+  forceSynthesisOnHardLimit?: boolean;
+  /** Disable broad exploration at soft limit (default: true). */
+  restrictBroadExplorationAtSoftLimit?: boolean;
+  /** Allow dynamic iteration-budget extension near limits (default: true). */
+  allowIterationBudgetExtension?: boolean;
+  /** Spec-generation specific budget strategy. */
+  spec?: AgentSpecBudgetConfig;
+}
+
+/**
+ * Budget strategy for spec generation.
+ * Spec budget is derived from plan size, then clamped by floor/ceiling.
+ */
+export interface AgentSpecBudgetConfig {
+  /** Enable dynamic spec budget strategy (default: true). */
+  enabled?: boolean;
+  /** Target spec budget multiplier from plan tokens (default: 4.0). */
+  multiplier?: number;
+  /** Minimum token budget for spec generation (default: 100000). */
+  floorTokens?: number;
+  /** Maximum token budget for spec generation (default: 250000). */
+  ceilingTokens?: number;
+  /** Reserve this share of total budget for final synthesis/verification (default: 0.2). */
+  synthesisReserveRatio?: number;
+  /** Save partial spec instead of hard-failing when quality gate is not passed (default: true). */
+  partialOnFailure?: boolean;
+}
+
+/**
  * Response verbosity/rigor mode for final answers.
  * - auto: adapt format by question complexity (default)
  * - brief: concise output for simple questions
@@ -265,6 +309,8 @@ export interface AgentConfig {
   responseMode?: AgentResponseMode;
   enableEscalation?: boolean;
   smartTiering?: AgentSmartTieringConfig;
+  /** Token budget policy (usually loaded from kb.config.json -> agents.tokenBudget). */
+  tokenBudget?: AgentTokenBudgetConfig;
   /** Mode configuration (execute/plan/edit/debug) */
   mode?: ModeConfig;
   /** Tracer for recording execution (optional) */
@@ -321,6 +367,9 @@ export interface AgentConfig {
     action?: 'continue' | 'skip' | 'retry_with_hint';
     hint?: string;
   }>;
+
+  /** Override for the forced synthesis prompt when agent exhausts iteration budget */
+  forcedSynthesisPrompt?: string;
 }
 
 /**
@@ -346,6 +395,8 @@ export interface TaskResult {
   sessionId?: string;
   /** Generated plan (only in plan mode) */
   plan?: TaskPlan;
+  /** Generated spec (only in spec stage of plan flow) */
+  spec?: TaskSpec;
   /** Plan ID (if executing from plan) */
   planId?: string;
 
@@ -905,7 +956,74 @@ export interface TaskPlan {
   /** Last update time */
   updatedAt: string;
   /** Plan status */
-  status: 'draft' | 'approved' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+  status: 'draft' | 'approved' | 'spec_ready' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+  /** Human-readable plan markdown (optional canonical draft body) */
+  markdown?: string;
+  /** Optional timestamp when plan was approved */
+  approvedAt?: string;
+  /** Optional approval comment */
+  approvalComment?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Spec Types (detailed specification from approved plan)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Detailed specification generated from an approved plan.
+ * Contains exact before/after diffs for each plan step.
+ */
+export interface TaskSpec {
+  /** Unique spec identifier */
+  id: string;
+  /** Plan this spec was generated from */
+  planId: string;
+  /** Session this spec belongs to */
+  sessionId: string;
+  /** Original task description */
+  task: string;
+  /** Spec sections (one per plan phase/step) */
+  sections: SpecSection[];
+  /** Spec status */
+  status: 'generating' | 'draft' | 'partial' | 'approved' | 'failed';
+  /** Full markdown text of the spec */
+  markdown?: string;
+  /** When spec was created */
+  createdAt: string;
+  /** Last update time */
+  updatedAt: string;
+}
+
+/**
+ * One section of the spec — corresponds to a plan phase/step
+ */
+export interface SpecSection {
+  /** Reference to phase.id from the plan */
+  planPhaseId: string;
+  /** Reference to step.id (if granular) */
+  planStepId?: string;
+  /** Section title */
+  title: string;
+  /** What we're doing and why (from plan) */
+  description: string;
+  /** Exact code changes */
+  changes: SpecChange[];
+}
+
+/**
+ * A concrete change in one file — exact before/after diff
+ */
+export interface SpecChange {
+  /** Full file path from project root */
+  file: string;
+  /** Line range, e.g. "3510-3514" */
+  lineRange: string;
+  /** Current code (verified — read by the agent) */
+  before: string;
+  /** New code after the change */
+  after: string;
+  /** Explanation of why this change is needed */
+  explanation: string;
 }
 
 /**
@@ -930,6 +1048,8 @@ export interface Phase {
   completedAt?: string;
   /** Error if failed */
   error?: string;
+  /** Stable anchor for cross-document referencing (e.g. plan-abc:phase-1) */
+  anchor?: string;
 }
 
 /**
@@ -952,6 +1072,8 @@ export interface Step {
   result?: string;
   /** Error (if failed) */
   error?: string;
+  /** Stable anchor for cross-document referencing (e.g. plan-abc:phase-1:step-2) */
+  anchor?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1088,4 +1210,110 @@ export interface CreateSessionRequest {
 export interface CreateSessionResponse {
   /** Created session */
   session: AgentSessionInfo;
+}
+
+/**
+ * Response with session plan details
+ */
+export interface GetSessionPlanResponse {
+  /** Session ID */
+  sessionId: string;
+  /** Current plan (if generated) */
+  plan: TaskPlan | null;
+  /** Canonical markdown plan path (if exists) */
+  planPath?: string;
+}
+
+/**
+ * Request to approve current session plan
+ */
+export interface ApproveSessionPlanRequest {
+  /** Optional approval comment */
+  comment?: string;
+}
+
+/**
+ * Response after approving session plan
+ */
+export interface ApproveSessionPlanResponse {
+  /** Session ID */
+  sessionId: string;
+  /** Approved plan */
+  plan: TaskPlan;
+  /** Timestamp when plan was approved */
+  approvedAt: string;
+}
+
+/**
+ * Request to execute an approved session plan
+ */
+export interface ExecuteSessionPlanRequest {
+  /** Optional LLM tier override */
+  tier?: 'small' | 'medium' | 'large';
+  /** Optional response mode override */
+  responseMode?: AgentResponseMode;
+  /** Optional verbosity flag */
+  verbose?: boolean;
+  /** Optional escalation toggle */
+  enableEscalation?: boolean;
+}
+
+/**
+ * Response after scheduling execution of approved plan
+ */
+export interface ExecuteSessionPlanResponse {
+  /** Session ID */
+  sessionId: string;
+  /** Plan ID */
+  planId: string;
+  /** Run ID */
+  runId: string;
+  /** WS events URL */
+  eventsUrl: string;
+  /** Run status */
+  status: 'started' | 'queued';
+  /** Start timestamp */
+  startedAt: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Spec Generation Request/Response Types
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Request to generate a detailed spec from an approved plan
+ */
+export interface GenerateSpecRequest {
+  /** Optional LLM tier override */
+  tier?: 'small' | 'medium' | 'large';
+  /** Optional verbosity flag */
+  verbose?: boolean;
+}
+
+/**
+ * Response after starting spec generation
+ */
+export interface GenerateSpecResponse {
+  /** Session ID */
+  sessionId: string;
+  /** Plan ID */
+  planId: string;
+  /** Spec ID */
+  specId: string;
+  /** Spec status */
+  status: 'generating' | 'draft' | 'failed';
+  /** Spec (if synchronous completion) */
+  spec?: TaskSpec;
+  /** Start timestamp */
+  startedAt: string;
+}
+
+/**
+ * Response for getting a spec
+ */
+export interface GetSpecResponse {
+  /** Session ID */
+  sessionId: string;
+  /** Spec, or null if not yet generated */
+  spec: TaskSpec | null;
 }

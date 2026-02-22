@@ -1,7 +1,7 @@
 /**
  * Agent configuration types for kb.config.json
  */
-import type { AgentSmartTieringConfig } from './types.js';
+import type { AgentSmartTieringConfig, AgentTokenBudgetConfig } from './types.js';
 
 /**
  * Storage configuration for file history snapshots
@@ -85,6 +85,8 @@ export interface AgentsPluginConfig {
   enabled: boolean;
   /** Adaptive helper-node elevation policy (small -> medium on risk) */
   smartTiering?: AgentSmartTieringConfig;
+  /** Token budget policy for long-running tasks */
+  tokenBudget?: AgentTokenBudgetConfig;
   /** File history tracking configuration */
   fileHistory: FileHistoryConfig;
 }
@@ -124,5 +126,25 @@ export const DEFAULT_FILE_HISTORY_CONFIG: Required<FileHistoryConfig> = {
         autoEscalateAfterMs: 60000,
       },
     },
+  },
+};
+
+export const DEFAULT_AGENT_TOKEN_BUDGET_CONFIG: Required<
+  Omit<AgentTokenBudgetConfig, 'maxTokens'>
+> = {
+  enabled: false,
+  softLimitRatio: 0.7,
+  hardLimitRatio: 1.0,
+  hardStop: false,
+  forceSynthesisOnHardLimit: true,
+  restrictBroadExplorationAtSoftLimit: true,
+  allowIterationBudgetExtension: true,
+  spec: {
+    enabled: true,
+    multiplier: 4.0,
+    floorTokens: 100_000,
+    ceilingTokens: 250_000,
+    synthesisReserveRatio: 0.2,
+    partialOnFailure: true,
   },
 };

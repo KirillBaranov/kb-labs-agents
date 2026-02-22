@@ -58,6 +58,21 @@ export const AGENTS_ROUTES = {
 
   /** POST /sessions/:sessionId/approve - Approve file changes */
   SESSION_APPROVE: '/sessions/:sessionId/approve',
+
+  /** GET /sessions/:sessionId/plan - Get current session plan */
+  SESSION_PLAN_GET: '/sessions/:sessionId/plan',
+
+  /** POST /sessions/:sessionId/plan/approve - Approve current session plan */
+  SESSION_PLAN_APPROVE: '/sessions/:sessionId/plan/approve',
+
+  /** POST /sessions/:sessionId/plan/execute - Execute approved session plan */
+  SESSION_PLAN_EXECUTE: '/sessions/:sessionId/plan/execute',
+
+  /** POST /sessions/:sessionId/plan/spec - Generate detailed spec from approved plan */
+  SESSION_PLAN_SPEC: '/sessions/:sessionId/plan/spec',
+
+  /** GET /sessions/:sessionId/plan/spec - Get generated spec */
+  SESSION_PLAN_SPEC_GET: '/sessions/:sessionId/spec',
 } as const;
 
 /**
