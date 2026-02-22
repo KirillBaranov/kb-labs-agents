@@ -1127,6 +1127,20 @@ export class SessionManager {
   }
 
   /**
+   * Get session spec JSON file path
+   */
+  getSessionSpecPath(sessionId: string): string {
+    return path.join(this.getSessionDir(sessionId), 'spec.json');
+  }
+
+  /**
+   * Get session spec markdown file path
+   */
+  getSessionSpecMdPath(sessionId: string): string {
+    return path.join(this.getSessionDir(sessionId), 'spec.md');
+  }
+
+  /**
    * Get session progress file path
    */
   getSessionProgressPath(sessionId: string): string {

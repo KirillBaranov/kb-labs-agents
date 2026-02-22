@@ -105,6 +105,18 @@ interface ToolResult {
   /** Optional metadata from tool execution (e.g., reflection results, file counts, etc.) */
   metadata?: Record<string, unknown>;
 }
+
+interface ResolvedTokenBudgetPolicy {
+  active: boolean;
+  maxTokens: number;
+  softLimitRatio: number;
+  hardLimitRatio: number;
+  hardStop: boolean;
+  forceSynthesisOnHardLimit: boolean;
+  restrictBroadExplorationAtSoftLimit: boolean;
+  allowIterationBudgetExtension: boolean;
+}
+
 import { createEventEmitter } from './events/event-emitter.js';
 import { SessionManager } from './planning/session-manager.js';
 import {
@@ -129,7 +141,11 @@ import { FactSheet } from './memory/fact-sheet.js';
 import { ArchiveMemory } from './memory/archive-memory.js';
 // context_retrieve tool removed — agents should re-read files instead
 import { FileChangeTracker, SnapshotStorage, ConflictDetector, ConflictResolver } from '@kb-labs/agent-history';
-import { AGENT_ANALYTICS_EVENTS, DEFAULT_FILE_HISTORY_CONFIG } from '@kb-labs/agent-contracts';
+import {
+  AGENT_ANALYTICS_EVENTS,
+  DEFAULT_FILE_HISTORY_CONFIG,
+  DEFAULT_AGENT_TOKEN_BUDGET_CONFIG,
+} from '@kb-labs/agent-contracts';
 import { ExecutionStateMachine } from './execution/state-machine.js';
 import { TaskLedger, mapToolToCapability } from './execution/task-ledger.js';
 import { createDefaultAgentBehaviorPolicy, type AgentBehaviorPolicy } from './execution/policy.js';
@@ -937,6 +953,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     this.currentIterationBudget = effectiveMaxIterations;
     const effectiveTokenBudget = await this.computeTokenBudget(task);
     this.currentTokenBudget = effectiveTokenBudget;
+    const tokenBudgetPolicy = this.resolveTokenBudgetPolicy();
 
     // Emit agent:start event
     this.emit({
@@ -1112,6 +1129,18 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
       });
 
       try {
+        const hardLimitResult = await this.enforceTokenHardLimitIfNeeded({
+          iteration,
+          llm,
+          messages,
+          tokenBudget: effectiveTokenBudget,
+          policy: tokenBudgetPolicy,
+          iterationStartTimestamp,
+        });
+        if (hardLimitResult) {
+          return hardLimitResult;
+        }
+
         if (shouldNudgeTodoDiscipline({
           nudgeSent: this.todoSyncCoordinator.state.nudgeSent,
           iteration,
@@ -1202,7 +1231,8 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
 
         if (
           !this.tokenConvergenceNudgeSent
-          && this.totalTokens >= Math.floor(effectiveTokenBudget * 0.7)
+          && effectiveTokenBudget > 0
+          && this.totalTokens >= Math.floor(effectiveTokenBudget * tokenBudgetPolicy.softLimitRatio)
           && this.hasStrongEvidenceSignal(iteration)
         ) {
           this.transitionPhase('converging', 'token budget convergence checkpoint');
@@ -2237,11 +2267,12 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
       taskBudget: this.taskBudget,
       lastSignalIteration: this.lastSignalIteration,
       progress: { ...this.progressTracker.state },
+      tokenBudgetEnabled: !!this.config.tokenBudget?.enabled,
     });
   }
 
   private async computeTokenBudget(_task: string): Promise<number> {
-    return this.iterationBudget.computeTokenBudget({
+    const learnedBudget = await this.iterationBudget.computeTokenBudget({
       maxIterations: this.config.maxIterations || 25,
       taskBudget: this.taskBudget,
       sessionId: this.config.sessionId,
@@ -2249,6 +2280,17 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
       lastSignalIteration: this.lastSignalIteration,
       progress: { ...this.progressTracker.state },
     });
+
+    const policy = this.resolveTokenBudgetPolicy();
+    if (!policy.active || policy.maxTokens <= 0) {
+      return learnedBudget;
+    }
+
+    if (learnedBudget > 0) {
+      return Math.min(learnedBudget, policy.maxTokens);
+    }
+
+    return policy.maxTokens;
   }
 
   private getCostAwareToolSet(
@@ -2293,7 +2335,11 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     maxIterations: number,
     tokenBudget: number
   ): boolean {
-    if (tokenBudget <= 0 || this.totalTokens < Math.floor(tokenBudget * 0.9)) {
+    const policy = this.resolveTokenBudgetPolicy();
+    if (!policy.restrictBroadExplorationAtSoftLimit) {
+      return false;
+    }
+    if (tokenBudget <= 0 || this.totalTokens < Math.floor(tokenBudget * policy.softLimitRatio)) {
       return false;
     }
     if (iteration < 4 || iteration < Math.floor(maxIterations * 0.4)) {
@@ -2326,7 +2372,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
     llm: ILLM;
     messages: LLMMessage[];
     reason: string;
-    reasonCode: 'max_iterations' | 'no_tool_call';
+    reasonCode: 'max_iterations' | 'no_tool_call' | 'token_budget_hard';
     iterationStartTimestamp: string;
   }): Promise<TaskResult> {
     const { iteration, llm, messages, reason, reasonCode, iterationStartTimestamp } = input;
@@ -2344,7 +2390,7 @@ ${artifacts.map((a, i) => `#${i + 1} ${a.tool}\n${a.content}`).join('\n\n')}`,
       },
     } as AgentEvent);
 
-    const synthesisPrompt = `You are at the final synthesis step. Do not call tools.
+    const synthesisPrompt = this.config.forcedSynthesisPrompt || `You are at the final synthesis step. Do not call tools.
 Using only already collected evidence from prior tool results, produce the best final answer now.
 
 Include:
@@ -2386,10 +2432,14 @@ Do not continue exploration. Finalize with current evidence.`;
     const synthesizedAnswer = synthesisResponse.content || 'Unable to synthesize findings';
 
     if (this.tracer) {
+      const synthesisReason =
+        reasonCode === 'token_budget_hard'
+          ? 'max_iterations'
+          : reasonCode;
       this.tracer.trace(
         createSynthesisForcedEvent({
           iteration,
-          reason: reasonCode,
+          reason: synthesisReason,
           lastIteration: iteration,
           lastToolCall: this.lastToolCall?.name,
           synthesisPrompt,
@@ -3424,16 +3474,117 @@ ${input.toolRows || '(none)'}`;
   }
 
   private maybeExtendIterationBudget(currentIteration: number, currentBudget: number): number {
+    const policy = this.resolveTokenBudgetPolicy();
+    if (!policy.allowIterationBudgetExtension) {
+      return currentBudget;
+    }
     return this.iterationBudget.maybeExtend(currentIteration, currentBudget, {
       maxIterations: this.config.maxIterations || 25,
       taskBudget: this.taskBudget,
       lastSignalIteration: this.lastSignalIteration,
       progress: { ...this.progressTracker.state },
+      tokenBudgetEnabled: !!this.config.tokenBudget?.enabled,
     });
   }
 
   private buildNoResultConclusionSummary(): string {
     return this.searchSignalTracker.buildNoResultConclusionSummary(this.toolsUsedCount);
+  }
+
+  private resolveTokenBudgetPolicy(): ResolvedTokenBudgetPolicy {
+    const defaults = DEFAULT_AGENT_TOKEN_BUDGET_CONFIG;
+    const configured = this.config.tokenBudget;
+    if (configured?.enabled === false) {
+      return {
+        active: false,
+        maxTokens: 0,
+        softLimitRatio: defaults.softLimitRatio,
+        hardLimitRatio: defaults.hardLimitRatio,
+        hardStop: false,
+        forceSynthesisOnHardLimit: defaults.forceSynthesisOnHardLimit,
+        restrictBroadExplorationAtSoftLimit: false,
+        allowIterationBudgetExtension: true,
+      };
+    }
+    const active = !!configured;
+
+    const clampRatio = (value: number | undefined, fallback: number): number => {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return fallback;
+      }
+      return Math.max(0.1, Math.min(1.0, value));
+    };
+
+    const softLimitRatio = clampRatio(configured?.softLimitRatio, defaults.softLimitRatio);
+    const hardLimitRatio = Math.max(
+      softLimitRatio,
+      clampRatio(configured?.hardLimitRatio, defaults.hardLimitRatio)
+    );
+    const maxTokens =
+      typeof configured?.maxTokens === 'number' && Number.isFinite(configured.maxTokens) && configured.maxTokens > 0
+        ? Math.floor(configured.maxTokens)
+        : 0;
+
+    return {
+      active,
+      maxTokens,
+      softLimitRatio,
+      hardLimitRatio,
+      hardStop: configured?.hardStop ?? defaults.hardStop,
+      forceSynthesisOnHardLimit:
+        configured?.forceSynthesisOnHardLimit ?? defaults.forceSynthesisOnHardLimit,
+      restrictBroadExplorationAtSoftLimit:
+        configured?.restrictBroadExplorationAtSoftLimit ?? defaults.restrictBroadExplorationAtSoftLimit,
+      allowIterationBudgetExtension:
+        configured?.allowIterationBudgetExtension ?? defaults.allowIterationBudgetExtension,
+    };
+  }
+
+  private async enforceTokenHardLimitIfNeeded(input: {
+    iteration: number;
+    llm: ILLM;
+    messages: LLMMessage[];
+    tokenBudget: number;
+    policy: ResolvedTokenBudgetPolicy;
+    iterationStartTimestamp: string;
+  }): Promise<TaskResult | null> {
+    const { iteration, llm, messages, tokenBudget, policy, iterationStartTimestamp } = input;
+    if (!policy.active || !policy.hardStop || tokenBudget <= 0) {
+      return null;
+    }
+
+    const hardLimit = Math.floor(tokenBudget * policy.hardLimitRatio);
+    if (hardLimit <= 0 || this.totalTokens < hardLimit) {
+      return null;
+    }
+
+    this.transitionPhase('verifying', 'token budget hard limit reached');
+    this.emit({
+      type: EVENT_TYPE_STATUS_CHANGE,
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      data: {
+        status: 'thinking',
+        message: `Token hard limit reached (${this.totalTokens}/${hardLimit}), forcing synthesis`,
+      },
+    });
+
+    if (policy.forceSynthesisOnHardLimit) {
+      return this.forceSynthesisFromHistory({
+        iteration,
+        llm,
+        messages,
+        reason: `Token hard limit reached (${this.totalTokens}/${hardLimit})`,
+        reasonCode: 'token_budget_hard',
+        iterationStartTimestamp,
+      });
+    }
+
+    return this.createFailureResult(
+      `Token hard limit reached (${this.totalTokens}/${hardLimit})`,
+      iteration,
+      'token_budget_hard'
+    );
   }
 
   private detectStuck(): boolean {
