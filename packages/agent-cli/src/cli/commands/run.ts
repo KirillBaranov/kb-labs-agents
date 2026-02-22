@@ -11,10 +11,14 @@ import {
   MetricsCollectorProcessor,
   FileMemory,
   SessionManager,
+  PlanDocumentService,
+  SpecModeHandler,
 } from '@kb-labs/agent-core';
 import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 import { createToolRegistry } from '@kb-labs/agent-tools';
 import type { AgentConfig, ModeConfig, AgentMode, AgentEvent, AgentsPluginConfig } from '@kb-labs/agent-contracts';
+import type { TaskPlan } from '@kb-labs/agent-contracts';
+import { promises as fs } from 'node:fs';
 import { createEventRenderer, createMinimalRenderer, createDetailedRenderer } from '../ui/index.js';
 
 type RunInput = {
@@ -32,6 +36,8 @@ type RunInput = {
   complexity?: 'simple' | 'medium' | 'complex';
   files?: string[];
   trace?: string;
+  approve?: boolean;
+  spec?: boolean;
   'dry-run'?: boolean;
   argv?: string[];
 };
@@ -49,6 +55,21 @@ type RunResult = {
   };
 };
 
+function parseBooleanFlag(value: unknown, defaultValue: boolean): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  return defaultValue;
+}
+
 export default defineCommand({
   id: 'agent:run',
   description: 'Execute a task with autonomous agent (orchestrator + child agents)',
@@ -63,18 +84,28 @@ export default defineCommand({
         workingDir = ctx.cwd || process.cwd(),
         maxIterations = 25,
         temperature = 0.1,
-        verbose = true,
-        quiet = false,
-        detailed = false,
+        verbose: verboseRaw = true,
+        quiet: quietRaw = false,
+        detailed: detailedRaw = false,
         sessionId,
         tier = 'medium',
-        escalate = true,
+        escalate: escalateRaw = true,
         mode = 'execute',
         complexity,
         files,
         trace,
-        'dry-run': dryRun = false,
+        approve: approveRaw = false,
+        spec: specRaw = false,
+        'dry-run': dryRunRaw = false,
       } = flags;
+
+      const verbose = parseBooleanFlag(verboseRaw, true);
+      const quiet = parseBooleanFlag(quietRaw, false);
+      const detailed = parseBooleanFlag(detailedRaw, false);
+      const escalate = parseBooleanFlag(escalateRaw, true);
+      const approve = parseBooleanFlag(approveRaw, false);
+      const spec = parseBooleanFlag(specRaw, false);
+      const dryRun = parseBooleanFlag(dryRunRaw, false);
 
       if (!task) {
         ctx.ui?.error?.('Error: --task is required');
@@ -118,7 +149,7 @@ export default defineCommand({
         // Ensure session exists for consistent history/memory behavior in CLI path.
         if (!effectiveSessionId) {
           const createdSession = await sessionManager.createSession({
-            mode: 'execute',
+            mode,
             task,
             agentId: 'cli-agent',
           });
@@ -127,7 +158,7 @@ export default defineCommand({
           const existing = await sessionManager.loadSession(effectiveSessionId);
           if (!existing) {
             const createdSession = await sessionManager.createSession({
-              mode: 'execute',
+              mode,
               task,
               agentId: 'cli-agent',
               sessionId: effectiveSessionId,
@@ -152,10 +183,82 @@ export default defineCommand({
           filesRead,
           filesReadHash,
         });
-
-        // Create tracer (incremental NDJSON tracer)
+        const agentsConfig = await useConfig<AgentsPluginConfig>();
         const taskId = `task-${Date.now()}`;
         const tracer = new IncrementalTraceWriter(taskId);
+
+        // Spec-only fast path: skip plan mode, generate spec from existing approved plan
+        if (spec && effectiveSessionId && sessionId) {
+          const planPath = sessionManager.getSessionPlanPath(effectiveSessionId);
+          try {
+            const planData = JSON.parse(await fs.readFile(planPath, 'utf-8')) as TaskPlan;
+            if (planData.status === 'approved' || planData.status === 'spec_ready') {
+              ctx.ui?.info?.(`Found approved plan: ${planData.id} (${planData.phases.length} phases). Generating spec directly...`);
+              let pendingSessionWrite: Promise<void> = Promise.resolve();
+              const specEventCallback = (event: AgentEvent) => {
+                tracer.trace(event);
+                eventRenderer(event);
+                pendingSessionWrite = pendingSessionWrite
+                  .then(async () => {
+                    await sessionManager.addEvent(effectiveSessionId!, {
+                      ...event,
+                      sessionId: effectiveSessionId,
+                      runId,
+                      metadata: {
+                        ...(event as Record<string, unknown>).metadata as Record<string, unknown> | undefined,
+                        sessionId: effectiveSessionId,
+                        runId,
+                        workingDir,
+                      },
+                    } as AgentEvent);
+                  })
+                  .catch((error) => {
+                    const message = error instanceof Error ? error.message : String(error);
+                    console.warn(`[agent:run] Failed to persist spec event: ${message}`);
+                  });
+              };
+              const specConfig: AgentConfig = {
+                workingDir,
+                maxIterations: 40,
+                temperature: 0.1,
+                verbose: false,
+                sessionId: effectiveSessionId,
+                tier,
+                enableEscalation: false,
+                tokenBudget: agentsConfig?.tokenBudget,
+                tracer,
+                onEvent: specEventCallback,
+              };
+              const specHandler = new SpecModeHandler();
+              const specResult = await specHandler.execute(planData, specConfig, toolRegistry);
+              await pendingSessionWrite;
+              await tracer.finalize();
+              const detailedTrace = tracer.getEntries() as Array<Record<string, unknown>>;
+              if (detailedTrace.length > 0) {
+                await sessionManager.storeTraceArtifacts(effectiveSessionId, runId, detailedTrace);
+              }
+              if (specResult.success) {
+                ctx.ui?.success?.(`Spec generated: ${specResult.spec?.id} (${specResult.spec?.sections.length || 0} sections, ${specResult.spec?.sections.reduce((s, sec) => s + sec.changes.length, 0) || 0} changes)`);
+              } else {
+                ctx.ui?.warn?.(`Spec generation failed: ${specResult.summary}`);
+              }
+              return {
+                exitCode: specResult.success ? 0 : 1,
+                result: {
+                  success: specResult.success,
+                  summary: specResult.summary,
+                  filesCreated: specResult.filesCreated,
+                  filesModified: specResult.filesModified,
+                  filesRead: specResult.filesRead,
+                  iterations: specResult.iterations,
+                  tokensUsed: specResult.tokensUsed,
+                },
+              };
+            }
+          } catch {
+            // No plan.json or unreadable — fall through to normal flow
+          }
+        }
 
         // Create memory system
         const memory = new FileMemory({
@@ -204,7 +307,6 @@ export default defineCommand({
         };
 
         // Create agent config with event callback
-        const agentsConfig = await useConfig<AgentsPluginConfig>();
         const smartTiering = agentsConfig?.smartTiering;
         const config: AgentConfig = {
           workingDir,
@@ -215,6 +317,7 @@ export default defineCommand({
           tier,
           enableEscalation: escalate,
           smartTiering,
+          tokenBudget: agentsConfig?.tokenBudget,
           tracer,
           resultProcessors,
           memory,
@@ -277,6 +380,49 @@ export default defineCommand({
         const detailedTrace = tracer.getEntries() as Array<Record<string, unknown>>;
         if (detailedTrace.length > 0) {
           await sessionManager.storeTraceArtifacts(effectiveSessionId, runId, detailedTrace);
+        }
+
+        // Optional: auto-approve generated plan in plan mode
+        if (approve) {
+          if (mode !== 'plan') {
+            ctx.ui?.warn?.('--approve is currently supported only with --mode=plan');
+          } else if (!result.plan) {
+            ctx.ui?.warn?.('No plan produced by plan mode, nothing to approve');
+          } else {
+            const approvedAt = new Date().toISOString();
+            const approvedPlan = {
+              ...result.plan,
+              status: 'approved' as const,
+              approvedAt,
+              approvalComment: 'Approved via CLI --approve',
+              updatedAt: approvedAt,
+            };
+
+            const sessionPlanPath = sessionManager.getSessionPlanPath(effectiveSessionId);
+            await fs.writeFile(sessionPlanPath, JSON.stringify(approvedPlan, null, 2), 'utf-8');
+
+            const planDocumentService = new PlanDocumentService(workingDir);
+            const planDocPath = planDocumentService.getPlanPath(result.plan);
+            await planDocumentService.appendExecutionLog(
+              planDocPath,
+              `- ${approvedAt}: Plan approved via CLI (--approve).`
+            );
+
+            ctx.ui?.success?.(`Plan approved: ${approvedPlan.id}`);
+
+            // Optional: generate spec after auto-approve
+            if (spec && approvedPlan) {
+              ctx.ui?.info?.('Generating detailed specification from approved plan...');
+              const specHandler = new SpecModeHandler();
+              const specResult = await specHandler.execute(approvedPlan, config, toolRegistry);
+
+              if (specResult.success) {
+                ctx.ui?.success?.(`Spec generated: ${specResult.spec?.id} (${specResult.spec?.sections.length || 0} sections)`);
+              } else {
+                ctx.ui?.warn?.(`Spec generation failed: ${specResult.summary}`);
+              }
+            }
+          }
         }
 
         // Finalize tracer: generate index with memory stats, cleanup old traces

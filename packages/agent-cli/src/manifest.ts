@@ -35,6 +35,11 @@ const runFlags = {
     type: 'string',
     description: 'Task complexity (for plan mode): simple, medium, complex',
   },
+  approve: {
+    type: 'boolean',
+    description: 'Auto-approve generated plan (supported with --mode=plan)',
+    default: false,
+  },
   files: {
     type: 'array',
     description: 'Target files (for edit mode)',
@@ -116,6 +121,7 @@ export const manifest = {
         examples: [
           'kb agent run --task="Create analytics system"',
           'kb agent run --mode=plan --task="Add auth" --complexity=complex',
+          'kb agent run --mode=plan --task="Add auth" --approve',
           'kb agent run --mode=edit --task="Fix bug" --files src/auth.ts',
           'kb agent run --mode=debug --task="Why crash?" --trace .kb/traces/trace-123.json',
         ],
@@ -409,6 +415,41 @@ export const manifest = {
         path: AGENTS_ROUTES.SESSION_TURNS,
         description: 'Get session turns (turn-based UI)',
         handler: './rest/handlers/get-session-turns-handler.js',
+        security: ['none'],
+      },
+      {
+        method: 'GET',
+        path: AGENTS_ROUTES.SESSION_PLAN_GET,
+        description: 'Get current session plan',
+        handler: './rest/handlers/get-session-plan-handler.js',
+        security: ['none'],
+      },
+      {
+        method: 'POST',
+        path: AGENTS_ROUTES.SESSION_PLAN_APPROVE,
+        description: 'Approve current session plan',
+        handler: './rest/handlers/approve-session-plan-handler.js',
+        security: ['none'],
+      },
+      {
+        method: 'POST',
+        path: AGENTS_ROUTES.SESSION_PLAN_EXECUTE,
+        description: 'Execute approved session plan',
+        handler: './rest/handlers/execute-session-plan-handler.js',
+        security: ['none'],
+      },
+      {
+        method: 'POST',
+        path: AGENTS_ROUTES.SESSION_PLAN_SPEC,
+        description: 'Generate detailed spec from approved plan',
+        handler: './rest/handlers/generate-spec-handler.js',
+        security: ['none'],
+      },
+      {
+        method: 'GET',
+        path: AGENTS_ROUTES.SESSION_PLAN_SPEC_GET,
+        description: 'Get current session spec',
+        handler: './rest/handlers/get-spec-handler.js',
         security: ['none'],
       },
       // File change history routes (rollback & approve)
