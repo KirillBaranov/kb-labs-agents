@@ -30,6 +30,17 @@ describe('IterationBudget', () => {
       expect(budget.computeIterationBudget(makeCtx({ maxIterations: 8 }))).toBe(8);
     });
 
+    it('honors configured budget when token budget policy is enabled', () => {
+      expect(
+        budget.computeIterationBudget(
+          makeCtx({
+            maxIterations: 60,
+            tokenBudgetEnabled: true,
+          })
+        )
+      ).toBe(60);
+    });
+
     it('handles zero maxIterations gracefully', () => {
       // 0 || 25 = 25, min(25, 12) = 12
       expect(budget.computeIterationBudget(makeCtx({ maxIterations: 0 }))).toBe(12);

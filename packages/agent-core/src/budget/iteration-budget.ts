@@ -26,6 +26,8 @@ export interface BudgetContext {
     iterationsSinceProgress: number;
     stuckThreshold: number;
   };
+  /** When true, honor configured maxIterations (token budget controls runtime). */
+  tokenBudgetEnabled?: boolean;
 }
 
 export class IterationBudget {
@@ -36,6 +38,9 @@ export class IterationBudget {
     const configured = ctx.maxIterations || 25;
     if (ctx.taskBudget !== null) {
       return Math.min(ctx.taskBudget, configured);
+    }
+    if (ctx.tokenBudgetEnabled) {
+      return configured;
     }
     return Math.min(configured, 12);
   }
