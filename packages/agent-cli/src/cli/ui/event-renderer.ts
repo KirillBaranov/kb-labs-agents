@@ -86,6 +86,22 @@ function formatPath(path: string, maxLen = 40): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
+function formatBudget(event: AgentEvent): string | null {
+  const data = event.data as {
+    budgetUsedTokens?: unknown;
+    budgetRemainingTokens?: unknown;
+    budgetTotalTokens?: unknown;
+  };
+  const used = typeof data.budgetUsedTokens === 'number' ? data.budgetUsedTokens : null;
+  const remaining = typeof data.budgetRemainingTokens === 'number' ? data.budgetRemainingTokens : null;
+  const total = typeof data.budgetTotalTokens === 'number' ? data.budgetTotalTokens : null;
+  if (used === null && remaining === null && total === null) {
+    return null;
+  }
+  const fmt = (value: number | null): string => (value === null ? '?' : value.toLocaleString('en-US'));
+  return `Budget ${fmt(used)} used / ${fmt(total)} total (${fmt(remaining)} left)`;
+}
+
 function indent(level: number): string {
   return '  '.repeat(level);
 }
@@ -420,13 +436,45 @@ export function createEventRenderer(options: {
         break;
       }
 
+      case 'progress:update': {
+        const budgetLine = formatBudget(event);
+        const phase = event.data.phase || 'progress';
+        const progress = Math.max(0, Math.min(100, Math.round(event.data.progress || 0)));
+        const message = event.data.message || '';
+
+        if (verbose) {
+          const linePrefix = getLinePrefix(state);
+          const main = `[${phase}] ${progress}%${message ? ` - ${message}` : ''}`;
+          console.log(linePrefix + renderBoxLine(color.info(main), color.primary));
+          if (budgetLine) {
+            console.log(linePrefix + renderBoxLine(color.dim(`    ${budgetLine}`), color.primary));
+          }
+        } else if (message && (phase === 'plan' || phase === 'spec') && (progress === 100 || progress === 5)) {
+          const budgetSuffix = budgetLine ? ` | ${budgetLine}` : '';
+          console.log(`${color.info(`[${phase}]`)} ${message}${budgetSuffix}`);
+        }
+        break;
+      }
+
       case 'status:change': {
+        const budgetLine = formatBudget(event);
+        if (verbose && event.data.message) {
+          const linePrefix = getLinePrefix(state);
+          console.log(linePrefix + renderBoxLine(
+            color.info(`Status: ${event.data.status}${event.data.message ? ` - ${event.data.message}` : ''}`),
+            color.primary
+          ));
+          if (budgetLine) {
+            console.log(linePrefix + renderBoxLine(color.dim(`    ${budgetLine}`), color.primary));
+          }
+        }
         // Only show significant status in non-verbose mode
         if (!verbose && (event.data.status === 'done' || event.data.status === 'error')) {
+          const budgetSuffix = budgetLine ? ` (${budgetLine})` : '';
           console.log(
             event.data.status === 'done'
-              ? `${symbols.success} ${event.data.message}`
-              : `${symbols.error} ${event.data.message}`
+              ? `${symbols.success} ${event.data.message}${budgetSuffix}`
+              : `${symbols.error} ${event.data.message}${budgetSuffix}`
           );
         }
         break;

@@ -38,7 +38,7 @@ export interface RunState {
  * Active run with live agent (in-memory only)
  */
 export interface ActiveRun extends RunState {
-  agent: Agent;
+  agent?: Agent;
   sessionManager: SessionManager;
   listeners: Set<AgentEventCallback>;
   /** Monotonic sequence counter for event ordering */
@@ -73,7 +73,7 @@ class RunManagerImpl {
   async register(
     runId: string,
     task: string,
-    agent: Agent,
+    agent: Agent | undefined,
     sessionManager: SessionManager,
     sessionId?: string
   ): Promise<ActiveRun> {
@@ -349,7 +349,7 @@ class RunManagerImpl {
    */
   requestStop(runId: string): boolean {
     const run = this.activeRuns.get(runId);
-    if (!run || run.status !== 'running') {
+    if (!run || run.status !== 'running' || !run.agent) {
       return false;
     }
     run.agent.requestStop();
