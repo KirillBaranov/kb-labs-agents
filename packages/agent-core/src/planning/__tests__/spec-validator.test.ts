@@ -173,5 +173,78 @@ private log(message: string): void {
       const result = validator.validateMarkdown('Just some text without any diffs', plan);
       expect(result.passed).toBe(false);
     });
+
+    it('should fail when step coverage is too low even with diff blocks', () => {
+      const plan = makePlan(3, 2); // 6 steps
+      const markdown = `# Spec: Partial
+
+### [phase-1:step-1] Change A
+
+**File:** \`packages/agent-core/src/agent.ts\`
+**Lines:** 10-20
+
+**Before (current):**
+\`\`\`ts
+const a = 1;
+\`\`\`
+
+**After:**
+\`\`\`ts
+const a = 2;
+\`\`\`
+
+**Why:** Update behavior`;
+
+      const result = validator.validateMarkdown(markdown, plan);
+      expect(result.passed).toBe(false);
+      expect(result.metrics.stepCoverage).toBeLessThan(0.5);
+      expect(result.issues.some((i) => i.dimension === 'coverage' && i.severity === 'error')).toBe(true);
+    });
+
+    it('should expose uncovered step metrics', () => {
+      const plan = makePlan(2, 2); // 4 steps
+      const markdown = `# Spec: Mostly complete
+
+### [phase-1:step-1] A
+**File:** \`packages/agent-core/src/agent.ts\`
+**Lines:** 1-2
+**Before (current):**
+\`\`\`ts
+a
+\`\`\`
+**After:**
+\`\`\`ts
+b
+\`\`\`
+
+### [phase-1:step-2] B
+**File:** \`packages/agent-core/src/agent.ts\`
+**Lines:** 3-4
+**Before (current):**
+\`\`\`ts
+c
+\`\`\`
+**After:**
+\`\`\`ts
+d
+\`\`\`
+
+### [phase-2:step-1] C
+**File:** \`packages/agent-core/src/agent.ts\`
+**Lines:** 5-6
+**Before (current):**
+\`\`\`ts
+e
+\`\`\`
+**After:**
+\`\`\`ts
+f
+\`\`\``;
+
+      const result = validator.validateMarkdown(markdown, plan);
+      expect(result.metrics.planStepCount).toBe(4);
+      expect(result.metrics.coveredStepRefs).toBe(3);
+      expect(result.metrics.uncoveredStepCount).toBe(1);
+    });
   });
 });
