@@ -425,6 +425,9 @@ export interface ProgressUpdateEvent extends AgentEventBase {
     phase: string;
     progress: number; // 0-100
     message?: string;
+    budgetUsedTokens?: number;
+    budgetRemainingTokens?: number;
+    budgetTotalTokens?: number;
   };
 }
 
@@ -434,6 +437,9 @@ export interface StatusChangeEvent extends AgentEventBase {
     status: 'idle' | 'thinking' | 'executing' | 'waiting' | 'done' | 'error' | 'analyzing' | 'planning' | 'researching' | 'finalizing';
     message?: string;
     toolName?: string; // For 'executing' status with specific tool
+    budgetUsedTokens?: number;
+    budgetRemainingTokens?: number;
+    budgetTotalTokens?: number;
   };
 }
 
