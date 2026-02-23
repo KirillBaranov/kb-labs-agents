@@ -71,6 +71,8 @@ import type { CompletionEvaluationContext } from './task-completion/index.js';
  */
 const EVENT_TYPE_STATUS_CHANGE = 'status:change';
 const DEFAULT_EXECUTION_TIER: LLMTier = 'medium';
+const DEFAULT_SYNTHESIS_TIMEOUT_MS = 90_000;
+const SYNTHESIS_HEARTBEAT_INTERVAL_MS = 10_000;
 
 class TierEscalationSignal extends Error {
   public readonly reason: string;
@@ -2415,6 +2417,25 @@ Do not continue exploration. Finalize with current evidence.`;
         promptLength: synthesisPrompt.length,
       },
     } as AgentEvent);
+    this.emit({
+      type: EVENT_TYPE_STATUS_CHANGE,
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      data: {
+        status: 'finalizing',
+        message: 'Synthesizing final answer from collected evidence. This can take up to ~1-2 minutes.',
+      },
+    } as AgentEvent);
+    this.emit({
+      type: 'progress:update',
+      timestamp: new Date().toISOString(),
+      sessionId: this.config.sessionId,
+      data: {
+        phase: 'finalizing',
+        progress: 95,
+        message: 'Synthesizing final answer...',
+      },
+    } as AgentEvent);
 
     const leanContext = await this.buildLeanContext(
       this.cachedSystemPrompt!,
@@ -2423,11 +2444,89 @@ Do not continue exploration. Finalize with current evidence.`;
     );
 
     const synthesisStartTime = Date.now();
-    const synthesisResponse = await llm.chatWithTools(leanContext, {
-      tools: [],
-      toolChoice: 'none',
-      temperature: this.config.temperature || 0.1,
-    });
+    const synthesisTimeoutMs = this.resolveSynthesisTimeoutMs();
+    const heartbeat = setInterval(() => {
+      const elapsedSec = Math.floor((Date.now() - synthesisStartTime) / 1000);
+      this.emit({
+        type: EVENT_TYPE_STATUS_CHANGE,
+        timestamp: new Date().toISOString(),
+        sessionId: this.config.sessionId,
+        data: {
+          status: 'finalizing',
+          message: `Synthesizing final answer... ${elapsedSec}s elapsed`,
+        },
+      } as AgentEvent);
+      this.emit({
+        type: 'progress:update',
+        timestamp: new Date().toISOString(),
+        sessionId: this.config.sessionId,
+        data: {
+          phase: 'finalizing',
+          progress: 95,
+          message: `Synthesizing final answer... ${elapsedSec}s elapsed`,
+        },
+      } as AgentEvent);
+    }, SYNTHESIS_HEARTBEAT_INTERVAL_MS);
+
+    let synthesisResponse: LLMToolCallResponse;
+    try {
+      synthesisResponse = await this.withTimeout(
+        llm.chatWithTools(leanContext, {
+          tools: [],
+          toolChoice: 'none',
+          temperature: this.config.temperature || 0.1,
+        }),
+        synthesisTimeoutMs,
+        `Final synthesis exceeded timeout (${synthesisTimeoutMs}ms)`,
+      );
+    } catch (error) {
+      clearInterval(heartbeat);
+      const fallbackSummary = this.buildSynthesisTimeoutFallback(reason, synthesisTimeoutMs);
+      this.emit({
+        type: EVENT_TYPE_STATUS_CHANGE,
+        timestamp: new Date().toISOString(),
+        sessionId: this.config.sessionId,
+        data: {
+          status: 'finalizing',
+          message: 'Synthesis timed out, returning graceful fallback summary.',
+        },
+      } as AgentEvent);
+      this.emit({
+        type: 'synthesis:complete',
+        timestamp: new Date().toISOString(),
+        sessionId: this.config.sessionId,
+        data: {
+          iteration,
+          contentLength: fallbackSummary.length,
+          hasContent: true,
+          tokensUsed: 0,
+          previewFirst200: fallbackSummary.substring(0, 200),
+        },
+      } as AgentEvent);
+      this.emit({
+        type: 'iteration:end',
+        timestamp: new Date().toISOString(),
+        sessionId: this.config.sessionId,
+        startedAt: iterationStartTimestamp,
+        data: {
+          iteration,
+          hadToolCalls: false,
+          toolCallCount: 0,
+          cumulativeTokens: this.totalTokens,
+        },
+      } as AgentEvent);
+      this.transitionPhase('reporting', 'forced synthesis timeout fallback');
+      return this.createSuccessResult(
+        {
+          success: true,
+          summary: fallbackSummary,
+        },
+        iteration
+      );
+    } finally {
+      clearInterval(heartbeat);
+    }
+
     const synthesisDurationMs = Date.now() - synthesisStartTime;
     const synthesizedAnswer = synthesisResponse.content || 'Unable to synthesize findings';
 
@@ -2483,6 +2582,67 @@ Do not continue exploration. Finalize with current evidence.`;
       success: true,
       summary: synthesizedAnswer,
     }, iteration);
+  }
+
+  private resolveSynthesisTimeoutMs(): number {
+    const raw = process.env.KB_AGENT_SYNTHESIS_TIMEOUT_MS;
+    if (!raw) {
+      return DEFAULT_SYNTHESIS_TIMEOUT_MS;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 15_000) {
+      return DEFAULT_SYNTHESIS_TIMEOUT_MS;
+    }
+    return Math.min(parsed, 300_000);
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+    return await new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      promise
+        .then((value) => {
+          clearTimeout(timer);
+          resolve(value);
+        })
+        .catch((error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+    });
+  }
+
+  private buildSynthesisTimeoutFallback(reason: string, timeoutMs: number): string {
+    const topFiles = Array.from(this.filesRead).slice(0, 12);
+    const filesBlock = topFiles.length > 0
+      ? topFiles.map((file) => `- \`${file}\``).join('\n')
+      : '- (no files captured)';
+    const ledgerSummary = this.taskLedger.getSummary();
+    const hints: string[] = [
+      `- Completed steps: ${ledgerSummary.completedSteps}`,
+      `- Failed steps: ${ledgerSummary.failedSteps}`,
+      `- Pending steps: ${ledgerSummary.pendingSteps}`,
+    ];
+    if (this.lastToolCall?.name) {
+      hints.push(`- Last tool call: ${this.lastToolCall.name}`);
+    }
+    const hintsBlock = hints.join('\n');
+
+    return [
+      '# Partial Result (Synthesis Timeout)',
+      '',
+      `Final synthesis timed out after ${Math.floor(timeoutMs / 1000)}s.`,
+      `Reason: ${reason}`,
+      '',
+      '## What Was Collected',
+      filesBlock,
+      '',
+      '## Recent Completed Steps',
+      hintsBlock,
+      '',
+      '## Recommended Next Action',
+      '- Re-run with a narrower scope or higher synthesis timeout (`KB_AGENT_SYNTHESIS_TIMEOUT_MS`).',
+      '- Use current evidence to continue from this point.',
+    ].join('\n');
   }
 
   private shouldNudgeConvergence(iteration: number, maxIterations: number, task: string): boolean {

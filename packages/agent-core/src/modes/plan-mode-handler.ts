@@ -40,9 +40,38 @@ const PLAN_READ_ONLY_TOOLS = new Set<string>([
   'todo_update',
   'todo_get',
   'ask_user',
-  'spawn_agent',
   'report',
 ]);
+
+interface DelegatedPlanResearchPack {
+  title: string;
+  prompt: string;
+}
+
+class SharedTokenBudget {
+  private consumed = 0;
+
+  constructor(private readonly total: number) {}
+
+  get remaining(): number {
+    return Math.max(0, this.total - this.consumed);
+  }
+
+  get used(): number {
+    return Math.max(0, this.consumed);
+  }
+
+  allocate(requested: number, minimum = 3000): number {
+    const requestedSafe = Number.isFinite(requested) ? Math.max(minimum, Math.floor(requested)) : minimum;
+    if (this.remaining <= 0) return 0;
+    return Math.min(this.remaining, requestedSafe);
+  }
+
+  consume(tokensUsed: number): void {
+    if (!Number.isFinite(tokensUsed) || tokensUsed <= 0) return;
+    this.consumed += Math.floor(tokensUsed);
+  }
+}
 
 class ReadOnlyPlanToolRegistry {
   constructor(
@@ -94,7 +123,19 @@ export class PlanModeHandler implements ModeHandler {
     const existingPlanPath = sessionManager.getSessionPlanPath(sessionId);
     const existingPlan = config.sessionId ? await this.loadPlan(existingPlanPath) : null;
     const effectiveMaxIterations = Math.max(6, Math.min(config.maxIterations || 10, 12));
-    const planTaskPrompt = this.buildPlanPrompt(task, existingPlan?.markdown, effectiveMaxIterations);
+    const totalPlanBudget = Math.max(
+      10_000,
+      Math.floor(config.tokenBudget?.maxTokens ?? 60_000),
+    );
+    const sharedBudget = new SharedTokenBudget(totalPlanBudget);
+    const planTaskPrompt = this.buildPlanPrompt(
+      task,
+      existingPlan?.markdown,
+      effectiveMaxIterations,
+      sharedBudget.remaining,
+      totalPlanBudget,
+    );
+    const budgetSnapshot = () => this.buildBudgetSnapshot(sharedBudget, totalPlanBudget);
 
     this.emit(config, {
       type: 'status:change',
@@ -103,6 +144,7 @@ export class PlanModeHandler implements ModeHandler {
       data: {
         status: 'planning',
         message: 'Plan mode enabled: read-only exploration + markdown plan drafting',
+        ...budgetSnapshot(),
       },
     });
     this.emit(config, {
@@ -113,12 +155,28 @@ export class PlanModeHandler implements ModeHandler {
         phase: 'plan',
         progress: 10,
         message: existingPlan ? 'Revising existing plan draft' : 'Generating new plan draft',
+        ...budgetSnapshot(),
       },
     });
 
     try {
       const readOnlyRegistry = new ReadOnlyPlanToolRegistry(toolRegistry, PLAN_READ_ONLY_TOOLS) as unknown as ToolRegistry;
       const { Agent } = await import('../agent');
+      const delegatedResearch = await this.runDelegatedResearchPacks(
+        task,
+        complexity,
+        existingPlan?.markdown,
+        config,
+        sessionId,
+        Agent,
+        readOnlyRegistry,
+        sharedBudget,
+        totalPlanBudget,
+      );
+      const enrichedTaskPrompt = delegatedResearch
+        ? `${planTaskPrompt}\n\nDELEGATED RESEARCH SNAPSHOT:\n${delegatedResearch}\n`
+        : planTaskPrompt;
+      const budgetAwarePrompt = `${enrichedTaskPrompt}\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalPlanBudget} tokens remaining. Be concise, avoid redundant exploration, and prioritize executable plan output.`;
       let reportedPlanText = '';
       const childOnEvent: AgentConfig['onEvent'] = (event) => {
         if (event.type === 'tool:end' && event.data?.toolName === 'report') {
@@ -145,6 +203,18 @@ export class PlanModeHandler implements ModeHandler {
           mode: undefined,
           maxIterations: effectiveMaxIterations,
           enableEscalation: false,
+          tokenBudget: {
+            ...config.tokenBudget,
+            enabled: true,
+            maxTokens: sharedBudget.allocate(Math.max(8_000, Math.floor(sharedBudget.remaining * 0.7)), 8000),
+            softLimitRatio: config.tokenBudget?.softLimitRatio ?? 0.75,
+            hardLimitRatio: config.tokenBudget?.hardLimitRatio ?? 0.95,
+            hardStop: config.tokenBudget?.hardStop ?? true,
+            forceSynthesisOnHardLimit: config.tokenBudget?.forceSynthesisOnHardLimit ?? true,
+            restrictBroadExplorationAtSoftLimit:
+              config.tokenBudget?.restrictBroadExplorationAtSoftLimit ?? true,
+            allowIterationBudgetExtension: false,
+          },
           onEvent: childOnEvent,
           forcedSynthesisPrompt: `Budget exhausted. Write a plan NOW using what you found.
 REQUIRED sections: # Plan title, ## Task (current state A → target state B), ## Steps (with REAL file paths from your research), ## Risks, ## Verification (runnable commands like pnpm test), ## Approval.
@@ -154,7 +224,8 @@ Call the report tool with the full markdown plan as the main content.`,
         readOnlyRegistry,
       );
 
-      const planningResult = await planAgent.execute(planTaskPrompt);
+      const planningResult = await planAgent.execute(budgetAwarePrompt);
+      sharedBudget.consume(planningResult.tokensUsed);
       const { markdown, incomplete } = this.extractMarkdownPlan(
         reportedPlanText || planningResult.summary,
         task,
@@ -189,6 +260,7 @@ Call the report tool with the full markdown plan as the main content.`,
           message: planFailed
             ? `Plan quality insufficient (score: ${validation.score.toFixed(2)})`
             : 'Plan draft ready, persisting artifacts',
+          ...budgetSnapshot(),
         },
       });
 
@@ -214,6 +286,7 @@ Call the report tool with the full markdown plan as the main content.`,
           data: {
             status: 'error',
             message: `Plan generation incomplete — quality score ${validation.score.toFixed(2)}`,
+            ...budgetSnapshot(),
           },
         });
         this.emit(config, {
@@ -224,6 +297,7 @@ Call the report tool with the full markdown plan as the main content.`,
             phase: 'plan',
             progress: 100,
             message: 'Plan mode complete (failed quality gate)',
+            ...budgetSnapshot(),
           },
         });
 
@@ -247,6 +321,7 @@ Call the report tool with the full markdown plan as the main content.`,
         data: {
           status: 'waiting',
           message: 'Plan ready. Waiting for user approval before execution.',
+          ...budgetSnapshot(),
         },
       });
       this.emit(config, {
@@ -257,6 +332,7 @@ Call the report tool with the full markdown plan as the main content.`,
           phase: 'plan',
           progress: 100,
           message: 'Plan mode complete',
+          ...budgetSnapshot(),
         },
       });
 
@@ -310,9 +386,17 @@ Call the report tool with the full markdown plan as the main content.`,
     }
   }
 
-  private buildPlanPrompt(task: string, existingMarkdown?: string, maxIterations?: number): string {
+  private buildPlanPrompt(
+    task: string,
+    existingMarkdown?: string,
+    maxIterations?: number,
+    remainingTokens?: number,
+    totalTokens?: number,
+  ): string {
     const budget = maxIterations || 10;
     const researchBudget = Math.ceil(budget * 0.6);
+    const remainingText = typeof remainingTokens === 'number' ? remainingTokens.toLocaleString('en-US') : 'unknown';
+    const totalText = typeof totalTokens === 'number' ? totalTokens.toLocaleString('en-US') : 'unknown';
     const revisionSection = existingMarkdown
       ? `\nExisting draft markdown (revise it based on the new request):\n\n${existingMarkdown}\n`
       : '';
@@ -328,6 +412,7 @@ ${task}
 ${revisionSection}
 
 BUDGET: You have ~${budget} iterations total. Use ~${researchBudget} for research, then WRITE the plan.
+TOKEN BUDGET: ${remainingText}/${totalText} tokens remaining. Spend tokens carefully and avoid duplicate scans.
 A partial plan with real file paths is ALWAYS better than no plan. Do NOT spend all iterations on research.
 
 Output requirements:
@@ -508,6 +593,140 @@ When finished, use report tool with the markdown document as the main content.`;
       '- Provide additional context or constraints to guide the agent',
       '- Consider breaking the task into smaller sub-tasks',
     ].join('\n');
+  }
+
+  private async runDelegatedResearchPacks(
+    task: string,
+    complexity: 'simple' | 'medium' | 'complex',
+    existingMarkdown: string | undefined,
+    config: AgentConfig,
+    sessionId: string,
+    AgentCtor: typeof import('../agent').Agent,
+    toolRegistry: ToolRegistry,
+    sharedBudget: SharedTokenBudget,
+    totalBudget: number,
+  ): Promise<string> {
+    const packs = this.buildDelegatedResearchPacks(task, complexity, existingMarkdown);
+    if (packs.length === 0) {
+      return '';
+    }
+
+    const outputs: string[] = [];
+    for (let i = 0; i < packs.length; i++) {
+      const pack = packs[i]!;
+      this.emit(config, {
+        type: 'progress:update',
+        timestamp: new Date().toISOString(),
+        sessionId,
+        data: {
+          phase: 'plan',
+          progress: Math.min(42, 12 + (i * 10)),
+          message: `Delegated research ${i + 1}/${packs.length}: ${pack.title}`,
+          ...this.buildBudgetSnapshot(sharedBudget, totalBudget),
+        },
+      });
+      let reported = '';
+      const researchAgent = new AgentCtor(
+        {
+          ...config,
+          mode: undefined,
+          maxIterations: 5,
+          enableEscalation: false,
+          tokenBudget: {
+            ...config.tokenBudget,
+            enabled: true,
+            maxTokens: sharedBudget.allocate(Math.floor(sharedBudget.remaining * 0.25), 3000),
+            softLimitRatio: config.tokenBudget?.softLimitRatio ?? 0.75,
+            hardLimitRatio: config.tokenBudget?.hardLimitRatio ?? 0.95,
+            hardStop: config.tokenBudget?.hardStop ?? true,
+            forceSynthesisOnHardLimit: config.tokenBudget?.forceSynthesisOnHardLimit ?? true,
+            restrictBroadExplorationAtSoftLimit:
+              config.tokenBudget?.restrictBroadExplorationAtSoftLimit ?? true,
+            allowIterationBudgetExtension: false,
+          },
+          forcedSynthesisPrompt: `Summarize findings with concrete file paths and commands. Use report tool.`,
+          onEvent: (event) => {
+            if (event.type === 'tool:end' && event.data?.toolName === 'report') {
+              const metadataAnswer = (event.data?.metadata as { answer?: unknown } | undefined)?.answer;
+              const output = typeof event.data?.output === 'string' ? event.data.output : '';
+              const answer = typeof metadataAnswer === 'string' ? metadataAnswer : '';
+              const captured = answer.trim() || output.trim();
+              if (captured) {
+                reported = captured;
+              }
+            }
+            config.onEvent?.(event);
+          },
+        },
+        toolRegistry,
+      );
+
+      const budgetAwarePrompt = `${pack.prompt}\n\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalBudget} tokens remaining. Keep output compact and high-signal.`;
+      const result = await researchAgent.execute(budgetAwarePrompt);
+      sharedBudget.consume(result.tokensUsed);
+      const text = (reported || result.summary || '').trim();
+      if (text) {
+        outputs.push(`### ${pack.title}\n${text.slice(0, 2200)}`);
+      }
+    }
+
+    return outputs.join('\n\n');
+  }
+
+  private buildDelegatedResearchPacks(
+    task: string,
+    complexity: 'simple' | 'medium' | 'complex',
+    existingMarkdown?: string,
+  ): DelegatedPlanResearchPack[] {
+    const maxPacks = complexity === 'complex' ? 3 : complexity === 'medium' ? 2 : 1;
+    const packs: DelegatedPlanResearchPack[] = [
+      {
+        title: 'Repository Map',
+        prompt: [
+          'Research the repository structure and identify concrete modules likely related to this task.',
+          `Task: ${task}`,
+          'Return file paths, entry points, and why they matter.',
+          'Be budget-aware: avoid broad scans and prioritize the most relevant files first.',
+          'Use report tool with concise markdown bullets.',
+        ].join('\n'),
+      },
+      {
+        title: 'Change Strategy',
+        prompt: [
+          'Research implementation strategy options.',
+          `Task: ${task}`,
+          existingMarkdown
+            ? `Existing draft hints:\n${existingMarkdown.slice(0, 1800)}`
+            : '',
+          'Return concrete action candidates with file paths and trade-offs.',
+          'Be budget-aware: focus on high-impact decisions and skip low-value exploration.',
+          'Use report tool with concise markdown bullets.',
+        ].join('\n'),
+      },
+      {
+        title: 'Verification & Risks',
+        prompt: [
+          'Research verification commands and high-risk areas for this task.',
+          `Task: ${task}`,
+          'Return runnable commands and key risks/blockers with file references.',
+          'Be budget-aware: list only the most reliable checks and highest-impact risks.',
+          'Use report tool with concise markdown bullets.',
+        ].join('\n'),
+      },
+    ];
+    return packs.slice(0, maxPacks);
+  }
+
+  private buildBudgetSnapshot(sharedBudget: SharedTokenBudget, totalBudget: number): {
+    budgetUsedTokens: number;
+    budgetRemainingTokens: number;
+    budgetTotalTokens: number;
+  } {
+    return {
+      budgetUsedTokens: sharedBudget.used,
+      budgetRemainingTokens: sharedBudget.remaining,
+      budgetTotalTokens: totalBudget,
+    };
   }
 
   private emit(config: AgentConfig, event: AgentEvent): void {

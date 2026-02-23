@@ -45,9 +45,38 @@ const SPEC_READ_ONLY_TOOLS = new Set<string>([
   'todo_update',
   'todo_get',
   'ask_user',
-  'spawn_agent',
   'report',
 ]);
+
+interface DelegatedResearchPack {
+  title: string;
+  prompt: string;
+}
+
+class SharedTokenBudget {
+  private consumed = 0;
+
+  constructor(private readonly total: number) {}
+
+  get remaining(): number {
+    return Math.max(0, this.total - this.consumed);
+  }
+
+  get used(): number {
+    return Math.max(0, this.consumed);
+  }
+
+  allocate(requested: number, minimum = 4000): number {
+    const requestedSafe = Number.isFinite(requested) ? Math.max(minimum, Math.floor(requested)) : minimum;
+    if (this.remaining <= 0) return 0;
+    return Math.min(this.remaining, requestedSafe);
+  }
+
+  consume(tokensUsed: number): void {
+    if (!Number.isFinite(tokensUsed) || tokensUsed <= 0) return;
+    this.consumed += Math.floor(tokensUsed);
+  }
+}
 
 class ReadOnlySpecToolRegistry {
   constructor(
@@ -108,20 +137,14 @@ export class SpecModeHandler {
     const sessionManager = new SessionManager(config.workingDir);
 
     const specBudget = this.resolveSpecBudgetPolicy(config, plan);
+    const sharedBudget = new SharedTokenBudget(specBudget.maxTokens);
+    const budgetSnapshot = () => this.buildBudgetSnapshot(sharedBudget, specBudget.maxTokens);
     const effectiveMaxIterations = this.resolveSpecIterations(plan, specBudget.maxTokens);
     const synthesisReserveIterations = Math.max(
       2,
       Math.floor(effectiveMaxIterations * specBudget.synthesisReserveRatio),
     );
     const researchBudget = Math.max(4, effectiveMaxIterations - synthesisReserveIterations);
-
-    const specPrompt = this.buildSpecPrompt(
-      plan,
-      effectiveMaxIterations,
-      researchBudget,
-      synthesisReserveIterations,
-      specBudget.maxTokens,
-    );
 
     this.emit(config, {
       type: 'status:change',
@@ -130,6 +153,7 @@ export class SpecModeHandler {
       data: {
         status: 'planning',
         message: 'Spec mode: generating detailed specification from approved plan',
+        ...budgetSnapshot(),
       },
     });
     this.emit(config, {
@@ -140,12 +164,30 @@ export class SpecModeHandler {
         phase: 'spec',
         progress: 5,
         message: `Generating spec for ${plan.phases.length} phases (budget: ${effectiveMaxIterations} iterations, ~${specBudget.maxTokens} tokens)`,
+        ...budgetSnapshot(),
       },
     });
 
     try {
       const readOnlyRegistry = new ReadOnlySpecToolRegistry(toolRegistry, SPEC_READ_ONLY_TOOLS) as unknown as ToolRegistry;
       const { Agent } = await import('../agent');
+      const delegatedResearch = await this.runDelegatedResearchPacks(
+        plan,
+        config,
+        Agent,
+        readOnlyRegistry,
+        sharedBudget,
+        specBudget.maxTokens,
+      );
+      const specPrompt = this.buildSpecPrompt(
+        plan,
+        effectiveMaxIterations,
+        researchBudget,
+        synthesisReserveIterations,
+        specBudget.maxTokens,
+        sharedBudget.remaining,
+        delegatedResearch,
+      );
 
       let reportedSpecText = '';
       let lastLongThinking = '';
@@ -185,7 +227,7 @@ export class SpecModeHandler {
           tokenBudget: {
             ...config.tokenBudget,
             enabled: true,
-            maxTokens: specBudget.maxTokens,
+            maxTokens: sharedBudget.allocate(sharedBudget.remaining, 12_000),
             softLimitRatio: config.tokenBudget?.softLimitRatio ?? 0.75,
             hardLimitRatio: config.tokenBudget?.hardLimitRatio ?? 0.95,
             hardStop: config.tokenBudget?.hardStop ?? true,
@@ -218,6 +260,7 @@ Call the report tool with the full spec markdown.`,
       );
 
       const specResult = await specAgent.execute(specPrompt);
+      sharedBudget.consume(specResult.tokensUsed);
       // Priority: report tool output > LLM direct output > last long thinking > summary
       const rawSummary = specResult.summary;
       const isSummaryUseless = !rawSummary || rawSummary === 'No answer provided' || rawSummary.length < 50;
@@ -231,7 +274,26 @@ Call the report tool with the full spec markdown.`,
 
       // Parse and validate
       const validator = new SpecValidator();
-      const validation = validator.validateMarkdown(specMarkdown, plan);
+      let validation = validator.validateMarkdown(specMarkdown, plan);
+      if (!validation.passed && validation.metrics.uncoveredStepCount > 0) {
+        const repaired = await this.tryRepairSpecWithCoverageGaps({
+          plan,
+          currentSpecMarkdown: specMarkdown,
+          uncoveredSteps: this.collectUncoveredPlanSteps(plan, specMarkdown),
+          baseConfig: config,
+          AgentCtor: Agent,
+          toolRegistry: readOnlyRegistry,
+          tokenBudget: sharedBudget.remaining,
+          sharedBudget,
+        });
+        if (repaired) {
+          const repairedValidation = validator.validateMarkdown(repaired, plan);
+          if (repairedValidation.score > validation.score) {
+            specMarkdown = repaired;
+            validation = repairedValidation;
+          }
+        }
+      }
 
       // Build structured spec
       const now = new Date().toISOString();
@@ -296,6 +358,7 @@ Call the report tool with the full spec markdown.`,
           message: spec.status === 'failed'
             ? `Spec quality insufficient (score: ${validation.score.toFixed(2)})`
             : `Spec ready (${sections.length} sections, status: ${spec.status}, score: ${validation.score.toFixed(2)})`,
+          ...budgetSnapshot(),
         },
       });
 
@@ -310,6 +373,7 @@ Call the report tool with the full spec markdown.`,
             : spec.status === 'partial'
               ? 'Partial spec ready. Review gaps before execution.'
               : 'Spec ready. Review before execution.',
+          ...budgetSnapshot(),
         },
       });
 
@@ -371,13 +435,19 @@ Call the report tool with the full spec markdown.`,
     researchBudget: number,
     synthesisReserveIterations: number,
     tokenBudget: number,
+    remainingTokens: number,
+    delegatedResearch?: string,
   ): string {
     const planMarkdown = plan.markdown || this.planToMarkdownFallback(plan);
+    const delegatedResearchSection = delegatedResearch
+      ? `\nDELEGATED RESEARCH SNAPSHOT:\n${delegatedResearch}\n`
+      : '';
 
     return `SPEC MODE ACTIVE — Generating detailed specification from approved plan.
 
 APPROVED PLAN:
 ${planMarkdown}
+${delegatedResearchSection}
 
 YOUR TASK:
 For EACH step in the plan above, produce an exact before/after code diff.
@@ -390,6 +460,7 @@ PROCESS:
 5. Repeat for every step
 
 BUDGET: ${maxIterations} iterations total (~${tokenBudget} tokens).
+CURRENT TOKEN BUDGET: ${remainingTokens}/${tokenBudget} tokens remaining. Work carefully and avoid low-value exploration.
 - Research/read budget: up to ${researchBudget} iterations
 - Reserved for synthesis/verification: ${synthesisReserveIterations} iterations
 - Prefer spending budget on concrete section output over extra exploration near the end.
@@ -424,6 +495,209 @@ RULES:
 LANGUAGE: Match the plan's language for explanations. Code stays in its original language.
 
 When finished, call the report tool with the complete spec markdown.`;
+  }
+
+  private async runDelegatedResearchPacks(
+    plan: TaskPlan,
+    config: AgentConfig,
+    AgentCtor: typeof import('../agent').Agent,
+    toolRegistry: ToolRegistry,
+    sharedBudget: SharedTokenBudget,
+    totalBudget: number,
+  ): Promise<string> {
+    const packs = this.buildResearchPacks(plan);
+    if (packs.length === 0) {
+      return '';
+    }
+
+    const outputs: string[] = [];
+    for (let i = 0; i < packs.length; i++) {
+      const pack = packs[i]!;
+      this.emit(config, {
+        type: 'progress:update',
+        timestamp: new Date().toISOString(),
+        sessionId: plan.sessionId,
+        data: {
+          phase: 'spec',
+          progress: Math.min(45, 12 + (i * 8)),
+          message: `Delegated research ${i + 1}/${packs.length}: ${pack.title}`,
+          ...this.buildBudgetSnapshot(sharedBudget, totalBudget),
+        },
+      });
+      let reported = '';
+      const subAgent = new AgentCtor(
+        {
+          ...config,
+          mode: undefined,
+          maxIterations: 6,
+          enableEscalation: false,
+          tokenBudget: {
+            ...config.tokenBudget,
+            enabled: true,
+            maxTokens: sharedBudget.allocate(Math.floor(sharedBudget.remaining * 0.2), 5000),
+            softLimitRatio: config.tokenBudget?.softLimitRatio ?? 0.75,
+            hardLimitRatio: config.tokenBudget?.hardLimitRatio ?? 0.95,
+            hardStop: config.tokenBudget?.hardStop ?? true,
+            forceSynthesisOnHardLimit: config.tokenBudget?.forceSynthesisOnHardLimit ?? true,
+            restrictBroadExplorationAtSoftLimit:
+              config.tokenBudget?.restrictBroadExplorationAtSoftLimit ?? true,
+            allowIterationBudgetExtension: false,
+          },
+          forcedSynthesisPrompt: `Summarize your findings now with concrete file paths and short rationale.
+Use report tool. Keep under 12 bullets.`,
+          onEvent: (event) => {
+            if (event.type === 'tool:end' && event.data?.toolName === 'report') {
+              const metadataAnswer = (event.data?.metadata as { answer?: unknown } | undefined)?.answer;
+              const output = typeof event.data?.output === 'string' ? event.data.output : '';
+              const answer = typeof metadataAnswer === 'string' ? metadataAnswer : '';
+              const captured = answer.trim() || output.trim();
+              if (captured) {
+                reported = captured;
+              }
+            }
+            config.onEvent?.(event);
+          },
+        },
+        toolRegistry,
+      );
+
+      const budgetAwarePrompt = `${pack.prompt}\n\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalBudget} tokens remaining. Prioritize concrete file evidence.`;
+      const result = await subAgent.execute(budgetAwarePrompt);
+      sharedBudget.consume(result.tokensUsed);
+      const text = (reported || result.summary || '').trim();
+      if (text) {
+        outputs.push(`### ${pack.title}\n${text.slice(0, 2500)}`);
+      }
+    }
+
+    return outputs.join('\n\n');
+  }
+
+  private buildResearchPacks(plan: TaskPlan): DelegatedResearchPack[] {
+    const packs: DelegatedResearchPack[] = [];
+    const phaseChunks = this.chunkArray(plan.phases, Math.max(1, Math.ceil(plan.phases.length / 3)));
+    for (let i = 0; i < phaseChunks.length && packs.length < 3; i++) {
+      const chunk = phaseChunks[i]!;
+      const stepHints = chunk
+        .flatMap((phase) => phase.steps.slice(0, 4).map((step) => `- ${step.action}`))
+        .slice(0, 12)
+        .join('\n');
+      packs.push({
+        title: `Research Pack ${i + 1}`,
+        prompt: [
+          'Research only. Do not propose final spec.',
+          'Analyze these plan steps and gather concrete implementation evidence:',
+          stepHints || '- (no explicit step hints)',
+          '',
+          'Deliverables:',
+          '- file paths and relevant line ranges',
+          '- constraints/dependencies found in code',
+          '- concrete implementation decisions and risks',
+          '',
+          'Return concise markdown bullets and call report tool.',
+        ].join('\n'),
+      });
+    }
+    return packs;
+  }
+
+  private chunkArray<T>(items: T[], chunkSize: number): T[][] {
+    if (chunkSize <= 0) return [items];
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += chunkSize) {
+      chunks.push(items.slice(i, i + chunkSize));
+    }
+    return chunks.length > 0 ? chunks : [items];
+  }
+
+  private collectUncoveredPlanSteps(plan: TaskPlan, markdown: string): string[] {
+    const covered = new Set<string>();
+    const refRegex = /^###\s+\[([^\]]+)\]/gm;
+    let match: RegExpExecArray | null;
+    while ((match = refRegex.exec(markdown)) !== null) {
+      const ref = match[1] || '';
+      if (ref.includes(':')) covered.add(ref.trim());
+    }
+
+    const missing: string[] = [];
+    for (const phase of plan.phases) {
+      for (const step of phase.steps) {
+        const ref = `${phase.id}:${step.id}`;
+        if (!covered.has(ref)) {
+          missing.push(`${ref} — ${step.action}`);
+        }
+      }
+    }
+    return missing;
+  }
+
+  private async tryRepairSpecWithCoverageGaps(input: {
+    plan: TaskPlan;
+    currentSpecMarkdown: string;
+    uncoveredSteps: string[];
+    baseConfig: AgentConfig;
+    AgentCtor: typeof import('../agent').Agent;
+    toolRegistry: ToolRegistry;
+    tokenBudget: number;
+    sharedBudget: SharedTokenBudget;
+  }): Promise<string | null> {
+    if (input.uncoveredSteps.length === 0) {
+      return null;
+    }
+
+    let reported = '';
+    const repairPrompt = [
+      'SPEC REPAIR MODE.',
+      'The current spec is incomplete. Fill ONLY missing steps.',
+      '',
+      'Current spec draft:',
+      input.currentSpecMarkdown,
+      '',
+      'Missing plan steps to cover:',
+      ...input.uncoveredSteps.slice(0, 25).map((step) => `- ${step}`),
+      '',
+      'Rules:',
+      '- Read files before writing each missing step.',
+      '- Output only additional sections in the same format.',
+      '- Keep changes minimal and concrete.',
+      `- Current token budget remaining: ${input.sharedBudget.remaining} tokens. Be concise.`,
+      '- Use report tool with the repaired full spec markdown (updated entire document).',
+    ].join('\n');
+
+    const repairAgent = new input.AgentCtor(
+      {
+        ...input.baseConfig,
+        mode: undefined,
+        maxIterations: 6,
+        enableEscalation: false,
+        tokenBudget: {
+          ...input.baseConfig.tokenBudget,
+          enabled: true,
+          maxTokens: input.sharedBudget.allocate(Math.max(8_000, Math.floor(input.tokenBudget * 0.9)), 5000),
+          hardStop: true,
+          forceSynthesisOnHardLimit: true,
+          allowIterationBudgetExtension: false,
+        },
+        onEvent: (event) => {
+          if (event.type === 'tool:end' && event.data?.toolName === 'report') {
+            const metadataAnswer = (event.data?.metadata as { answer?: unknown } | undefined)?.answer;
+            const output = typeof event.data?.output === 'string' ? event.data.output : '';
+            const answer = typeof metadataAnswer === 'string' ? metadataAnswer : '';
+            const captured = answer.trim() || output.trim();
+            if (captured) {
+              reported = captured;
+            }
+          }
+          input.baseConfig.onEvent?.(event);
+        },
+      },
+      input.toolRegistry,
+    );
+
+    const result = await repairAgent.execute(repairPrompt);
+    input.sharedBudget.consume(result.tokensUsed);
+    const merged = (reported || result.summary || '').trim();
+    return merged.length > 0 ? merged : null;
   }
 
   private resolveSpecBudgetPolicy(planConfig: AgentConfig, plan: TaskPlan): {
@@ -644,5 +918,17 @@ When finished, call the report tool with the complete spec markdown.`;
       agentId: config.agentId,
       parentAgentId: config.parentAgentId,
     });
+  }
+
+  private buildBudgetSnapshot(sharedBudget: SharedTokenBudget, totalBudget: number): {
+    budgetUsedTokens: number;
+    budgetRemainingTokens: number;
+    budgetTotalTokens: number;
+  } {
+    return {
+      budgetUsedTokens: sharedBudget.used,
+      budgetRemainingTokens: sharedBudget.remaining,
+      budgetTotalTokens: totalBudget,
+    };
   }
 }
