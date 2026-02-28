@@ -5,7 +5,8 @@
 import type { TaskResult, AgentConfig, DebugContext } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
 import type { ModeHandler } from './mode-handler';
-import { Agent } from '../agent';
+import { AgentSDK } from '@kb-labs/agent-sdk';
+import { createCoreToolPack } from '../tools/index.js';
 import { promises as fs } from 'node:fs';
 
 /**
@@ -62,9 +63,11 @@ export class DebugModeHandler implements ModeHandler {
     enhancedTask += '3. Suggest or implement fixes\n';
     enhancedTask += '4. Explain what went wrong and why the fix works\n';
 
-    // Execute with standard agent
-    const agent = new Agent(config, toolRegistry);
-    const result = await agent.execute(enhancedTask);
+    // Execute with SDK agent
+    const runner = new AgentSDK()
+      .register(createCoreToolPack(toolRegistry))
+      .createRunner(config);
+    const result = await runner.execute(enhancedTask);
 
     return {
       ...result,

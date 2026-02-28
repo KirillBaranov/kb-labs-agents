@@ -1,28 +1,38 @@
 /**
- * FactSheet - Tier 1: Hot Working Memory
+ * FactSheet — structured working memory for agent runs.
  *
- * Always injected into LLM context. Stores accumulated knowledge as
- * categorized, deduplicated facts with confidence tracking.
+ * Pure data structure: no middleware coupling, no LLM calls, no I/O.
+ * FactSheetMiddleware wires it into the agent lifecycle.
  *
  * Features:
- * - Categorized facts with priority ordering
- * - Deduplication via word overlap (60% threshold)
- * - Token budget enforcement with smart eviction
- * - Never evicts corrections or blockers
- * - Compact markdown rendering for system prompt
+ *   - Categorized facts with priority-based rendering
+ *   - Deduplication via word overlap (60% threshold)
+ *   - Token budget + entry count eviction (never evicts corrections/blockers)
+ *   - Compact markdown render for system prompt injection
+ *   - Serializable (toJSON / fromJSON) for cross-session persistence
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type { FactCategory, FactSheetEntry } from '@kb-labs/agent-contracts';
-import { AGENT_MEMORY } from '../constants.js';
+
+// ─── Config ──────────────────────────────────────────────────────────────────
 
 export interface FactSheetConfig {
+  /** Max estimated tokens for rendered output (~4 chars/token). Default: 5000 */
   maxTokens?: number;
+  /** Max number of facts before eviction. Default: 60 */
   maxEntries?: number;
+  /** Min confidence for auto-extracted facts. Default: 0.5 */
+  minConfidence?: number;
 }
 
-/** Category render/priority order (highest priority first) */
+const DEFAULTS = {
+  maxTokens: 5_000,
+  maxEntries: 60,
+  minConfidence: 0.5,
+} as const;
+
+// ─── Priority order (lower index = higher priority) ──────────────────────────
+
 const CATEGORY_PRIORITY: FactCategory[] = [
   'correction',
   'blocker',
@@ -34,55 +44,62 @@ const CATEGORY_PRIORITY: FactCategory[] = [
   'environment',
 ];
 
+const CATEGORY_HEADERS: Record<FactCategory, string> = {
+  correction: 'Corrections',
+  blocker: 'Blockers',
+  decision: 'Decisions',
+  finding: 'Findings',
+  file_content: 'Files Read',
+  architecture: 'Architecture',
+  tool_result: 'Tool Results',
+  environment: 'Environment',
+};
+
 /** Categories that are never evicted */
-const PROTECTED_CATEGORIES: Set<FactCategory> = new Set(['correction', 'blocker']);
+const PROTECTED: ReadonlySet<FactCategory> = new Set(['correction', 'blocker']);
 
-/** Minimum word overlap ratio to consider facts similar (0.0-1.0) */
-const DEDUP_OVERLAP_THRESHOLD = 0.6;
+/** Categories where dedup uses file path instead of word overlap */
+const PATH_DEDUP: ReadonlySet<FactCategory> = new Set(['file_content']);
 
-/**
- * Categories where dedup is based on exact file path match, not word overlap.
- * "Read /path/to/file.ts (N lines)" facts differ only by path —
- * word overlap is artificially high due to shared path segments.
- */
-const PATH_DEDUP_CATEGORIES: Set<FactCategory> = new Set(['file_content']);
+const DEDUP_THRESHOLD = 0.6;
 
-interface FactSheetJSON {
-  facts: Array<[string, FactSheetEntry]>;
-  nextId: number;
-}
+// ─── FactSheet ───────────────────────────────────────────────────────────────
 
 export class FactSheet {
   private facts = new Map<string, FactSheetEntry>();
   private nextId = 1;
   private readonly maxTokens: number;
   private readonly maxEntries: number;
+  readonly minConfidence: number;
 
   constructor(config: FactSheetConfig = {}) {
-    this.maxTokens = config.maxTokens ?? AGENT_MEMORY.factSheetMaxTokens;
-    this.maxEntries = config.maxEntries ?? AGENT_MEMORY.factSheetMaxEntries;
+    this.maxTokens = config.maxTokens ?? DEFAULTS.maxTokens;
+    this.maxEntries = config.maxEntries ?? DEFAULTS.maxEntries;
+    this.minConfidence = config.minConfidence ?? DEFAULTS.minConfidence;
   }
 
+  // ── Write ──────────────────────────────────────────────────────────────────
+
   /**
-   * Add a fact to the sheet. Returns the added/merged entry and whether it was merged.
+   * Add or merge a fact. Returns the entry and whether it was merged.
+   * Skips facts below minConfidence.
    */
-  addFact(params: {
+  add(params: {
     category: FactCategory;
     fact: string;
     confidence: number;
     source: string;
     iteration: number;
     supersedes?: string;
-  }): { entry: FactSheetEntry; merged: boolean } {
-    // Handle supersedes — remove the old fact
-    if (params.supersedes && this.facts.has(params.supersedes)) {
-      this.facts.delete(params.supersedes);
-    }
+  }): { entry: FactSheetEntry; merged: boolean } | null {
+    if (params.confidence < this.minConfidence) {return null;}
 
-    // Check for similar existing fact (dedup)
-    const similar = this.findSimilarFact(params.category, params.fact);
+    // Supersede: remove the old fact
+    if (params.supersedes) {this.facts.delete(params.supersedes);}
+
+    // Dedup: merge if similar fact exists
+    const similar = this.findSimilar(params.category, params.fact);
     if (similar) {
-      // Merge: keep longer text, bump confidence, increment confirmations
       similar.fact = params.fact.length > similar.fact.length ? params.fact : similar.fact;
       similar.confidence = Math.min(1.0, Math.max(similar.confidence, params.confidence));
       similar.confirmations += 1;
@@ -93,7 +110,7 @@ export class FactSheet {
       return { entry: similar, merged: true };
     }
 
-    // Create new fact
+    // New fact
     const id = `fact_${this.nextId++}`;
     const entry: FactSheetEntry = {
       id,
@@ -112,50 +129,42 @@ export class FactSheet {
     return { entry, merged: false };
   }
 
-  /**
-   * Remove a fact by ID
-   */
-  removeFact(id: string): boolean {
+  remove(id: string): boolean {
     return this.facts.delete(id);
   }
 
-  /**
-   * Get all facts sorted by category priority, then recency (newest first)
-   */
-  getAllFacts(): FactSheetEntry[] {
-    const all = Array.from(this.facts.values());
-    return all.sort((a, b) => {
-      const priorityA = CATEGORY_PRIORITY.indexOf(a.category);
-      const priorityB = CATEGORY_PRIORITY.indexOf(b.category);
-      if (priorityA !== priorityB) return priorityA - priorityB;
-      return b.iteration - a.iteration; // newest first within category
+  // ── Read ───────────────────────────────────────────────────────────────────
+
+  getAll(): FactSheetEntry[] {
+    return [...this.facts.values()].sort((a, b) => {
+      const pa = CATEGORY_PRIORITY.indexOf(a.category);
+      const pb = CATEGORY_PRIORITY.indexOf(b.category);
+      if (pa !== pb) {return pa - pb;}
+      return b.iteration - a.iteration;
     });
   }
 
-  /**
-   * Get facts by category
-   */
-  getByCategory(category: FactCategory): FactSheetEntry[] {
-    return Array.from(this.facts.values())
-      .filter((f) => f.category === category)
-      .sort((a, b) => b.iteration - a.iteration);
+  get size(): number {
+    return this.facts.size;
   }
 
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   /**
-   * Render facts as compact markdown for system prompt injection.
+   * Compact markdown for system prompt injection.
    * Returns empty string if no facts.
    */
   render(): string {
-    if (this.facts.size === 0) return '';
+    if (this.facts.size === 0) {return '';}
 
-    const sorted = this.getAllFacts();
-    const lines: string[] = ['# Accumulated Knowledge (FactSheet)'];
-
+    const sorted = this.getAll();
+    const lines: string[] = [];
     let currentCategory: FactCategory | null = null;
+
     for (const fact of sorted) {
       if (fact.category !== currentCategory) {
         currentCategory = fact.category;
-        lines.push(`\n## ${formatCategoryHeader(currentCategory)}`);
+        lines.push(`\n## ${CATEGORY_HEADERS[currentCategory] ?? currentCategory}`);
       }
       const conf = fact.confidence >= 0.8 ? '' : ` [conf:${fact.confidence.toFixed(1)}]`;
       lines.push(`- ${fact.fact}${conf}`);
@@ -164,40 +173,30 @@ export class FactSheet {
     return lines.join('\n');
   }
 
-  /**
-   * Get stats for tracing
-   */
-  getStats(): {
-    totalFacts: number;
-    estimatedTokens: number;
-    byCategory: Record<string, number>;
-  } {
+  // ── Stats ──────────────────────────────────────────────────────────────────
+
+  getStats(): { totalFacts: number; estimatedTokens: number; byCategory: Record<string, number> } {
     const byCategory: Record<string, number> = {};
-    for (const fact of this.facts.values()) {
-      byCategory[fact.category] = (byCategory[fact.category] || 0) + 1;
+    for (const f of this.facts.values()) {
+      byCategory[f.category] = (byCategory[f.category] || 0) + 1;
     }
-    const rendered = this.render();
     return {
       totalFacts: this.facts.size,
-      estimatedTokens: Math.ceil(rendered.length / 4),
+      estimatedTokens: Math.ceil(this.render().length / 4),
       byCategory,
     };
   }
 
-  /**
-   * Serialize for persistence
-   */
-  toJSON(): FactSheetJSON {
-    return {
-      facts: Array.from(this.facts.entries()),
-      nextId: this.nextId,
-    };
+  // ── Serialization ──────────────────────────────────────────────────────────
+
+  toJSON(): { facts: Array<[string, FactSheetEntry]>; nextId: number } {
+    return { facts: [...this.facts.entries()], nextId: this.nextId };
   }
 
-  /**
-   * Deserialize from persistence
-   */
-  static fromJSON(data: FactSheetJSON, config?: FactSheetConfig): FactSheet {
+  static fromJSON(
+    data: { facts: Array<[string, FactSheetEntry]>; nextId: number },
+    config?: FactSheetConfig,
+  ): FactSheet {
     const sheet = new FactSheet(config);
     for (const [key, value] of data.facts) {
       sheet.facts.set(key, value);
@@ -206,170 +205,77 @@ export class FactSheet {
     return sheet;
   }
 
-  /**
-   * Persist fact sheet to disk (non-critical)
-   */
-  async persist(persistDir: string): Promise<void> {
-    try {
-      fs.mkdirSync(persistDir, { recursive: true });
-      const filePath = path.join(persistDir, 'fact-sheet.json');
-      fs.writeFileSync(filePath, JSON.stringify(this.toJSON()), 'utf-8');
-    } catch {
-      console.error('[FactSheet] Failed to persist fact sheet');
-    }
-  }
+  // ── Private ────────────────────────────────────────────────────────────────
 
-  /**
-   * Load fact sheet from disk. Returns empty sheet if not found.
-   */
-  static async load(persistDir: string, config?: FactSheetConfig): Promise<FactSheet> {
-    const filePath = path.join(persistDir, 'fact-sheet.json');
-    try {
-      if (!fs.existsSync(filePath)) return new FactSheet(config);
-      const raw = fs.readFileSync(filePath, 'utf-8');
-      const data = JSON.parse(raw) as FactSheetJSON;
-      return FactSheet.fromJSON(data, config);
-    } catch {
-      return new FactSheet(config);
-    }
-  }
-
-  /**
-   * Find a similar fact within the same category.
-   *
-   * For file_content: dedup by extracted file path (exact match).
-   * For other categories: 60% word overlap threshold.
-   */
-  private findSimilarFact(
-    category: FactCategory,
-    text: string
-  ): FactSheetEntry | undefined {
-    if (PATH_DEDUP_CATEGORIES.has(category)) {
-      // Extract file path from "Read /path/to/file.ts (...)" pattern
+  private findSimilar(category: FactCategory, text: string): FactSheetEntry | undefined {
+    if (PATH_DEDUP.has(category)) {
       const inputPath = extractFilePath(text);
-      if (!inputPath) return undefined;
-
-      for (const fact of this.facts.values()) {
-        if (fact.category !== category) continue;
-        const factPath = extractFilePath(fact.fact);
-        if (factPath && factPath === inputPath) return fact;
+      if (!inputPath) {return undefined;}
+      for (const f of this.facts.values()) {
+        if (f.category !== category) {continue;}
+        if (extractFilePath(f.fact) === inputPath) {return f;}
       }
       return undefined;
     }
 
-    const inputWords = extractWords(text);
-    if (inputWords.size === 0) return undefined;
+    const inputWords = words(text);
+    if (inputWords.size === 0) {return undefined;}
 
-    for (const fact of this.facts.values()) {
-      if (fact.category !== category) continue;
-
-      const factWords = extractWords(fact.fact);
-      if (factWords.size === 0) continue;
-
-      const overlap = wordOverlap(inputWords, factWords);
-      if (overlap >= DEDUP_OVERLAP_THRESHOLD) {
-        return fact;
-      }
+    for (const f of this.facts.values()) {
+      if (f.category !== category) {continue;}
+      const fw = words(f.fact);
+      if (fw.size === 0) {continue;}
+      if (overlap(inputWords, fw) >= DEDUP_THRESHOLD) {return f;}
     }
     return undefined;
   }
 
-  /**
-   * Enforce entry count and token budget limits via eviction
-   */
   private enforceLimit(): void {
-    // Evict by entry count
-    while (this.facts.size > this.maxEntries) {
-      this.evictLowestPriority();
-    }
+    while (this.facts.size > this.maxEntries) {this.evictOne();}
 
-    // Evict by token budget
     while (this.facts.size > 0) {
-      const rendered = this.render();
-      const estimatedTokens = Math.ceil(rendered.length / 4);
-      if (estimatedTokens <= this.maxTokens) break;
-      this.evictLowestPriority();
+      const tokens = Math.ceil(this.render().length / 4);
+      if (tokens <= this.maxTokens) {break;}
+      this.evictOne();
     }
   }
 
-  /**
-   * Evict one fact with lowest priority.
-   * Priority: lowest confidence → fewest confirmations → oldest iteration.
-   * Never evicts corrections or blockers.
-   */
-  private evictLowestPriority(): void {
+  private evictOne(): void {
     let candidate: FactSheetEntry | null = null;
 
-    for (const fact of this.facts.values()) {
-      // Never evict protected categories
-      if (PROTECTED_CATEGORIES.has(fact.category)) continue;
+    for (const f of this.facts.values()) {
+      if (PROTECTED.has(f.category)) {continue;}
+      if (!candidate) { candidate = f; continue; }
 
-      if (!candidate) {
-        candidate = fact;
-        continue;
-      }
-
-      // Compare: lower confidence → fewer confirmations → older iteration
+      // Lowest confidence → fewest confirmations → oldest iteration
       if (
-        fact.confidence < candidate.confidence ||
-        (fact.confidence === candidate.confidence &&
-          fact.confirmations < candidate.confirmations) ||
-        (fact.confidence === candidate.confidence &&
-          fact.confirmations === candidate.confirmations &&
-          fact.iteration < candidate.iteration)
+        f.confidence < candidate.confidence
+        || (f.confidence === candidate.confidence && f.confirmations < candidate.confirmations)
+        || (f.confidence === candidate.confidence && f.confirmations === candidate.confirmations && f.iteration < candidate.iteration)
       ) {
-        candidate = fact;
+        candidate = f;
       }
     }
 
-    if (candidate) {
-      this.facts.delete(candidate.id);
-    }
+    if (candidate) {this.facts.delete(candidate.id);}
   }
 }
 
-// ── helpers ──────────────────────────────────────────────────────────
+// ─── Pure helpers ────────────────────────────────────────────────────────────
 
-/**
- * Extract file path from heuristic file_content facts.
- * Handles patterns like:
- *   "Read /abs/path/file.ts (N lines)..."
- *   "Read relative/path/file.ts (N lines)..."
- */
 function extractFilePath(text: string): string | null {
-  const match = text.match(/^Read\s+(\S+)\s*\(/i);
-  return match?.[1] ?? null;
+  return text.match(/^Read\s+(\S+)\s*\(/i)?.[1] ?? null;
 }
 
-function extractWords(text: string): Set<string> {
+function words(text: string): Set<string> {
   return new Set(
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9а-яё\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 2)
+    text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2),
   );
 }
 
-function wordOverlap(a: Set<string>, b: Set<string>): number {
-  let intersect = 0;
-  for (const word of a) {
-    if (b.has(word)) intersect++;
-  }
-  const minSize = Math.min(a.size, b.size);
-  return minSize === 0 ? 0 : intersect / minSize;
-}
-
-function formatCategoryHeader(category: FactCategory): string {
-  const headers: Record<FactCategory, string> = {
-    correction: 'Corrections',
-    blocker: 'Blockers',
-    decision: 'Decisions',
-    finding: 'Findings',
-    file_content: 'Files Read',
-    architecture: 'Architecture',
-    tool_result: 'Tool Results',
-    environment: 'Environment',
-  };
-  return headers[category] || category;
+function overlap(a: Set<string>, b: Set<string>): number {
+  let count = 0;
+  for (const w of a) {if (b.has(w)) {count++;}}
+  const min = Math.min(a.size, b.size);
+  return min === 0 ? 0 : count / min;
 }

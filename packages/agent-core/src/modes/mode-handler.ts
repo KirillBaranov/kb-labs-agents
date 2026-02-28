@@ -16,28 +16,11 @@ export interface ModeHandler {
 }
 
 /**
- * Get mode handler for specified mode (async for dynamic imports)
+ * Get mode handler for specified mode.
+ * Delegates to ModeRegistry — supports built-in and custom modes.
  */
 export async function getModeHandler(modeConfig?: ModeConfig): Promise<ModeHandler> {
   const mode = modeConfig?.mode || 'execute';
-
-  switch (mode) {
-    case 'plan': {
-      const { PlanModeHandler } = await import('./plan-mode-handler');
-      return new PlanModeHandler();
-    }
-    case 'edit': {
-      const { EditModeHandler } = await import('./edit-mode-handler');
-      return new EditModeHandler();
-    }
-    case 'debug': {
-      const { DebugModeHandler } = await import('./debug-mode-handler');
-      return new DebugModeHandler();
-    }
-    case 'execute':
-    default: {
-      const { ExecuteModeHandler } = await import('./execute-mode-handler');
-      return new ExecuteModeHandler();
-    }
-  }
+  const { modeRegistry } = await import('./mode-registry.js');
+  return modeRegistry.get(mode);
 }

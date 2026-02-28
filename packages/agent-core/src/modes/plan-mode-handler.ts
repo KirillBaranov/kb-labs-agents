@@ -19,6 +19,8 @@ import type {
 } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
 import type { ModeHandler } from './mode-handler';
+import { AgentSDK, type IAgentRunner } from '@kb-labs/agent-sdk';
+import { createCoreToolPack } from '../tools/index.js';
 import { SessionManager } from '../planning/session-manager';
 import { PlanDocumentService } from '../planning/plan-document-service';
 import { PlanValidator } from '../planning/plan-validator';
@@ -63,12 +65,12 @@ class SharedTokenBudget {
 
   allocate(requested: number, minimum = 3000): number {
     const requestedSafe = Number.isFinite(requested) ? Math.max(minimum, Math.floor(requested)) : minimum;
-    if (this.remaining <= 0) return 0;
+    if (this.remaining <= 0) {return 0;}
     return Math.min(this.remaining, requestedSafe);
   }
 
   consume(tokensUsed: number): void {
-    if (!Number.isFinite(tokensUsed) || tokensUsed <= 0) return;
+    if (!Number.isFinite(tokensUsed) || tokensUsed <= 0) {return;}
     this.consumed += Math.floor(tokensUsed);
   }
 }
@@ -80,7 +82,7 @@ class ReadOnlyPlanToolRegistry {
   ) {}
 
   get(name: string) {
-    if (!this.allowedNames.has(name)) return undefined;
+    if (!this.allowedNames.has(name)) {return undefined;}
     return this.base.get(name);
   }
 
@@ -161,14 +163,12 @@ export class PlanModeHandler implements ModeHandler {
 
     try {
       const readOnlyRegistry = new ReadOnlyPlanToolRegistry(toolRegistry, PLAN_READ_ONLY_TOOLS) as unknown as ToolRegistry;
-      const { Agent } = await import('../agent');
       const delegatedResearch = await this.runDelegatedResearchPacks(
         task,
         complexity,
         existingPlan?.markdown,
         config,
         sessionId,
-        Agent,
         readOnlyRegistry,
         sharedBudget,
         totalPlanBudget,
@@ -196,13 +196,12 @@ export class PlanModeHandler implements ModeHandler {
         }
         config.onEvent?.(event);
       };
-      const planAgent = new Agent(
+      const planRunner = this.createSubRunner(
         {
           ...config,
           sessionId,
           mode: undefined,
           maxIterations: effectiveMaxIterations,
-          enableEscalation: false,
           tokenBudget: {
             ...config.tokenBudget,
             enabled: true,
@@ -216,15 +215,11 @@ export class PlanModeHandler implements ModeHandler {
             allowIterationBudgetExtension: false,
           },
           onEvent: childOnEvent,
-          forcedSynthesisPrompt: `Budget exhausted. Write a plan NOW using what you found.
-REQUIRED sections: # Plan title, ## Task (current state A → target state B), ## Steps (with REAL file paths from your research), ## Risks, ## Verification (runnable commands like pnpm test), ## Approval.
-Reference ACTUAL files you discovered during research. A partial plan is better than no plan.
-Call the report tool with the full markdown plan as the main content.`,
         },
         readOnlyRegistry,
       );
 
-      const planningResult = await planAgent.execute(budgetAwarePrompt);
+      const planningResult = await planRunner.execute(budgetAwarePrompt);
       sharedBudget.consume(planningResult.tokensUsed);
       const { markdown, incomplete } = this.extractMarkdownPlan(
         reportedPlanText || planningResult.summary,
@@ -509,7 +504,7 @@ When finished, use report tool with the markdown document as the main content.`;
       chunk
         .map((line) => {
           const bullet = /^\s*[-*]\s+(.+)\s*$/.exec(line);
-          if (bullet?.[1]) return bullet[1].trim();
+          if (bullet?.[1]) {return bullet[1].trim();}
           const numbered = /^\s*\d+\.\s+(.+)\s*$/.exec(line);
           return numbered?.[1]?.trim() || '';
         })
@@ -601,7 +596,6 @@ When finished, use report tool with the markdown document as the main content.`;
     existingMarkdown: string | undefined,
     config: AgentConfig,
     sessionId: string,
-    AgentCtor: typeof import('../agent').Agent,
     toolRegistry: ToolRegistry,
     sharedBudget: SharedTokenBudget,
     totalBudget: number,
@@ -626,12 +620,11 @@ When finished, use report tool with the markdown document as the main content.`;
         },
       });
       let reported = '';
-      const researchAgent = new AgentCtor(
+      const researchRunner = this.createSubRunner(
         {
           ...config,
           mode: undefined,
           maxIterations: 5,
-          enableEscalation: false,
           tokenBudget: {
             ...config.tokenBudget,
             enabled: true,
@@ -644,8 +637,7 @@ When finished, use report tool with the markdown document as the main content.`;
               config.tokenBudget?.restrictBroadExplorationAtSoftLimit ?? true,
             allowIterationBudgetExtension: false,
           },
-          forcedSynthesisPrompt: `Summarize findings with concrete file paths and commands. Use report tool.`,
-          onEvent: (event) => {
+          onEvent: (event: AgentEvent) => {
             if (event.type === 'tool:end' && event.data?.toolName === 'report') {
               const metadataAnswer = (event.data?.metadata as { answer?: unknown } | undefined)?.answer;
               const output = typeof event.data?.output === 'string' ? event.data.output : '';
@@ -662,7 +654,7 @@ When finished, use report tool with the markdown document as the main content.`;
       );
 
       const budgetAwarePrompt = `${pack.prompt}\n\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalBudget} tokens remaining. Keep output compact and high-signal.`;
-      const result = await researchAgent.execute(budgetAwarePrompt);
+      const result = await researchRunner.execute(budgetAwarePrompt);
       sharedBudget.consume(result.tokensUsed);
       const text = (reported || result.summary || '').trim();
       if (text) {
@@ -717,6 +709,12 @@ When finished, use report tool with the markdown document as the main content.`;
     return packs.slice(0, maxPacks);
   }
 
+  private createSubRunner(config: AgentConfig, toolRegistry: ToolRegistry): IAgentRunner {
+    return new AgentSDK()
+      .register(createCoreToolPack(toolRegistry))
+      .createRunner(config);
+  }
+
   private buildBudgetSnapshot(sharedBudget: SharedTokenBudget, totalBudget: number): {
     budgetUsedTokens: number;
     budgetRemainingTokens: number;
@@ -730,7 +728,7 @@ When finished, use report tool with the markdown document as the main content.`;
   }
 
   private emit(config: AgentConfig, event: AgentEvent): void {
-    if (!config.onEvent) return;
+    if (!config.onEvent) {return;}
     config.onEvent({
       ...event,
       agentId: config.agentId,

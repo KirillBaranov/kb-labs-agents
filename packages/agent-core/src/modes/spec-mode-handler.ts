@@ -21,6 +21,8 @@ import type {
 } from '@kb-labs/agent-contracts';
 import { DEFAULT_AGENT_TOKEN_BUDGET_CONFIG } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
+import { AgentSDK, type IAgentRunner } from '@kb-labs/agent-sdk';
+import { createCoreToolPack } from '../tools/index.js';
 import { SessionManager } from '../planning/session-manager';
 import { SpecValidator } from '../planning/spec-validator';
 import { promises as fs } from 'node:fs';
@@ -68,12 +70,12 @@ class SharedTokenBudget {
 
   allocate(requested: number, minimum = 4000): number {
     const requestedSafe = Number.isFinite(requested) ? Math.max(minimum, Math.floor(requested)) : minimum;
-    if (this.remaining <= 0) return 0;
+    if (this.remaining <= 0) {return 0;}
     return Math.min(this.remaining, requestedSafe);
   }
 
   consume(tokensUsed: number): void {
-    if (!Number.isFinite(tokensUsed) || tokensUsed <= 0) return;
+    if (!Number.isFinite(tokensUsed) || tokensUsed <= 0) {return;}
     this.consumed += Math.floor(tokensUsed);
   }
 }
@@ -85,7 +87,7 @@ class ReadOnlySpecToolRegistry {
   ) {}
 
   get(name: string) {
-    if (!this.allowedNames.has(name)) return undefined;
+    if (!this.allowedNames.has(name)) {return undefined;}
     return this.base.get(name);
   }
 
@@ -170,11 +172,9 @@ export class SpecModeHandler {
 
     try {
       const readOnlyRegistry = new ReadOnlySpecToolRegistry(toolRegistry, SPEC_READ_ONLY_TOOLS) as unknown as ToolRegistry;
-      const { Agent } = await import('../agent');
       const delegatedResearch = await this.runDelegatedResearchPacks(
         plan,
         config,
-        Agent,
         readOnlyRegistry,
         sharedBudget,
         specBudget.maxTokens,
@@ -217,13 +217,12 @@ export class SpecModeHandler {
         config.onEvent?.(event);
       };
 
-      const specAgent = new Agent(
+      const specRunner = this.createSubRunner(
         {
           ...config,
           sessionId,
           mode: undefined,
           maxIterations: effectiveMaxIterations,
-          enableEscalation: false,
           tokenBudget: {
             ...config.tokenBudget,
             enabled: true,
@@ -238,28 +237,11 @@ export class SpecModeHandler {
               config.tokenBudget?.allowIterationBudgetExtension ?? false,
           },
           onEvent: childOnEvent,
-          forcedSynthesisPrompt: `Budget exhausted. Write the spec NOW using what you found.
-For each plan step you investigated, output the before/after diff. Use the format:
-### [phase-id:step-id] Title
-**File:** \`path/to/file\`
-**Lines:** start-end
-**Before (current):**
-\`\`\`ts
-<exact current code>
-\`\`\`
-**After:**
-\`\`\`ts
-<new code>
-\`\`\`
-**Why:** explanation
-
-A partial spec with verified diffs is better than nothing.
-Call the report tool with the full spec markdown.`,
         },
         readOnlyRegistry,
       );
 
-      const specResult = await specAgent.execute(specPrompt);
+      const specResult = await specRunner.execute(specPrompt);
       sharedBudget.consume(specResult.tokensUsed);
       // Priority: report tool output > LLM direct output > last long thinking > summary
       const rawSummary = specResult.summary;
@@ -281,7 +263,6 @@ Call the report tool with the full spec markdown.`,
           currentSpecMarkdown: specMarkdown,
           uncoveredSteps: this.collectUncoveredPlanSteps(plan, specMarkdown),
           baseConfig: config,
-          AgentCtor: Agent,
           toolRegistry: readOnlyRegistry,
           tokenBudget: sharedBudget.remaining,
           sharedBudget,
@@ -500,7 +481,6 @@ When finished, call the report tool with the complete spec markdown.`;
   private async runDelegatedResearchPacks(
     plan: TaskPlan,
     config: AgentConfig,
-    AgentCtor: typeof import('../agent').Agent,
     toolRegistry: ToolRegistry,
     sharedBudget: SharedTokenBudget,
     totalBudget: number,
@@ -525,12 +505,11 @@ When finished, call the report tool with the complete spec markdown.`;
         },
       });
       let reported = '';
-      const subAgent = new AgentCtor(
+      const subRunner = this.createSubRunner(
         {
           ...config,
           mode: undefined,
           maxIterations: 6,
-          enableEscalation: false,
           tokenBudget: {
             ...config.tokenBudget,
             enabled: true,
@@ -543,9 +522,7 @@ When finished, call the report tool with the complete spec markdown.`;
               config.tokenBudget?.restrictBroadExplorationAtSoftLimit ?? true,
             allowIterationBudgetExtension: false,
           },
-          forcedSynthesisPrompt: `Summarize your findings now with concrete file paths and short rationale.
-Use report tool. Keep under 12 bullets.`,
-          onEvent: (event) => {
+          onEvent: (event: AgentEvent) => {
             if (event.type === 'tool:end' && event.data?.toolName === 'report') {
               const metadataAnswer = (event.data?.metadata as { answer?: unknown } | undefined)?.answer;
               const output = typeof event.data?.output === 'string' ? event.data.output : '';
@@ -562,7 +539,7 @@ Use report tool. Keep under 12 bullets.`,
       );
 
       const budgetAwarePrompt = `${pack.prompt}\n\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalBudget} tokens remaining. Prioritize concrete file evidence.`;
-      const result = await subAgent.execute(budgetAwarePrompt);
+      const result = await subRunner.execute(budgetAwarePrompt);
       sharedBudget.consume(result.tokensUsed);
       const text = (reported || result.summary || '').trim();
       if (text) {
@@ -602,7 +579,7 @@ Use report tool. Keep under 12 bullets.`,
   }
 
   private chunkArray<T>(items: T[], chunkSize: number): T[][] {
-    if (chunkSize <= 0) return [items];
+    if (chunkSize <= 0) {return [items];}
     const chunks: T[][] = [];
     for (let i = 0; i < items.length; i += chunkSize) {
       chunks.push(items.slice(i, i + chunkSize));
@@ -616,7 +593,7 @@ Use report tool. Keep under 12 bullets.`,
     let match: RegExpExecArray | null;
     while ((match = refRegex.exec(markdown)) !== null) {
       const ref = match[1] || '';
-      if (ref.includes(':')) covered.add(ref.trim());
+      if (ref.includes(':')) {covered.add(ref.trim());}
     }
 
     const missing: string[] = [];
@@ -636,7 +613,6 @@ Use report tool. Keep under 12 bullets.`,
     currentSpecMarkdown: string;
     uncoveredSteps: string[];
     baseConfig: AgentConfig;
-    AgentCtor: typeof import('../agent').Agent;
     toolRegistry: ToolRegistry;
     tokenBudget: number;
     sharedBudget: SharedTokenBudget;
@@ -664,12 +640,11 @@ Use report tool. Keep under 12 bullets.`,
       '- Use report tool with the repaired full spec markdown (updated entire document).',
     ].join('\n');
 
-    const repairAgent = new input.AgentCtor(
+    const repairRunner = this.createSubRunner(
       {
         ...input.baseConfig,
         mode: undefined,
         maxIterations: 6,
-        enableEscalation: false,
         tokenBudget: {
           ...input.baseConfig.tokenBudget,
           enabled: true,
@@ -678,7 +653,7 @@ Use report tool. Keep under 12 bullets.`,
           forceSynthesisOnHardLimit: true,
           allowIterationBudgetExtension: false,
         },
-        onEvent: (event) => {
+        onEvent: (event: AgentEvent) => {
           if (event.type === 'tool:end' && event.data?.toolName === 'report') {
             const metadataAnswer = (event.data?.metadata as { answer?: unknown } | undefined)?.answer;
             const output = typeof event.data?.output === 'string' ? event.data.output : '';
@@ -694,7 +669,7 @@ Use report tool. Keep under 12 bullets.`,
       input.toolRegistry,
     );
 
-    const result = await repairAgent.execute(repairPrompt);
+    const result = await repairRunner.execute(repairPrompt);
     input.sharedBudget.consume(result.tokensUsed);
     const merged = (reported || result.summary || '').trim();
     return merged.length > 0 ? merged : null;
@@ -827,7 +802,7 @@ Use report tool. Keep under 12 bullets.`,
 
   parseSpecSections(markdown: string, plan: TaskPlan): SpecSection[] {
     const text = (markdown || '').trim();
-    if (!text) return [];
+    if (!text) {return [];}
 
     const sections: SpecSection[] = [];
     // Match ### [phase-id:step-id] or ### [phase-id] headers
@@ -847,7 +822,7 @@ Use report tool. Keep under 12 bullets.`,
       });
     }
 
-    if (matches.length === 0) return [];
+    if (matches.length === 0) {return [];}
 
     // Group changes by planPhaseId
     const phaseMap = new Map<string, SpecSection>();
@@ -858,7 +833,7 @@ Use report tool. Keep under 12 bullets.`,
       const block = text.slice(m.index, nextIdx);
 
       const change = this.parseChangeBlock(block);
-      if (!change) continue;
+      if (!change) {continue;}
 
       let section = phaseMap.get(m.phaseId);
       if (!section) {
@@ -882,7 +857,7 @@ Use report tool. Keep under 12 bullets.`,
   private parseChangeBlock(block: string): SpecChange | null {
     // Extract file path
     const fileMatch = /\*\*File:\*\*\s*`([^`]+)`/.exec(block);
-    if (!fileMatch?.[1]) return null;
+    if (!fileMatch?.[1]) {return null;}
     const file = fileMatch[1];
 
     // Extract line range
@@ -908,11 +883,21 @@ Use report tool. Keep under 12 bullets.`,
   }
 
   // -------------------------------------------------------------------------
+  // SDK runner factory
+  // -------------------------------------------------------------------------
+
+  private createSubRunner(config: AgentConfig, toolRegistry: ToolRegistry): IAgentRunner {
+    return new AgentSDK()
+      .register(createCoreToolPack(toolRegistry))
+      .createRunner(config);
+  }
+
+  // -------------------------------------------------------------------------
   // Event emitter helper
   // -------------------------------------------------------------------------
 
   private emit(config: AgentConfig, event: AgentEvent): void {
-    if (!config.onEvent) return;
+    if (!config.onEvent) {return;}
     config.onEvent({
       ...event,
       agentId: config.agentId,

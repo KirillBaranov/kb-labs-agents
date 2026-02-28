@@ -5,7 +5,8 @@
 import type { TaskResult, AgentConfig, EditContext } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
 import type { ModeHandler } from './mode-handler';
-import { Agent } from '../agent';
+import { AgentSDK } from '@kb-labs/agent-sdk';
+import { createCoreToolPack } from '../tools/index.js';
 
 /**
  * Edit mode - focus on modifying existing files
@@ -34,9 +35,11 @@ export class EditModeHandler implements ModeHandler {
 
     enhancedTask += '\n\nPrefer editing existing files over creating new ones.';
 
-    // Execute with standard agent
-    const agent = new Agent(config, toolRegistry);
-    const result = await agent.execute(enhancedTask);
+    // Execute with SDK agent
+    const runner = new AgentSDK()
+      .register(createCoreToolPack(toolRegistry))
+      .createRunner(config);
+    const result = await runner.execute(enhancedTask);
 
     // Add edit mode context to result
     return {
