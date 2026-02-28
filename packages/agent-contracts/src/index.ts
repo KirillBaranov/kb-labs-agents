@@ -22,6 +22,16 @@ export type * from './detailed-trace-types.js';
 export type * from './trace-command-response.js';
 
 // ═══════════════════════════════════════════════════════════════════════
+// Control Flow (Agent v2)
+// ═══════════════════════════════════════════════════════════════════════
+
+export type * from './control.js';
+export {
+  StopPriority,
+  DEFAULT_FEATURE_FLAGS,
+} from './control.js';
+
+// ═══════════════════════════════════════════════════════════════════════
 // Configuration (File History)
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -30,3 +40,9 @@ export {
   DEFAULT_FILE_HISTORY_CONFIG,
   DEFAULT_AGENT_TOKEN_BUDGET_CONFIG,
 } from './config-types.js';
+
+// ═══════════════════════════════════════════════════════════════════════
+// Tool Packs (Agent v2)
+// ═══════════════════════════════════════════════════════════════════════
+
+export type * from './tool-pack.js';

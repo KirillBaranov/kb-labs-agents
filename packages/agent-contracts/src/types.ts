@@ -303,38 +303,14 @@ export interface AgentConfig {
   workingDir: string;
   maxIterations: number;
   temperature: number;
-  verbose: boolean;
   sessionId?: string;
   tier?: LLMTier;
-  responseMode?: AgentResponseMode;
-  enableEscalation?: boolean;
-  smartTiering?: AgentSmartTieringConfig;
   /** Token budget policy (usually loaded from kb.config.json -> agents.tokenBudget). */
   tokenBudget?: AgentTokenBudgetConfig;
   /** Mode configuration (execute/plan/edit/debug) */
   mode?: ModeConfig;
-  /** Tracer for recording execution (optional) */
-  tracer?: Tracer;
-  /** Memory system for context management (optional) */
-  memory?: AgentMemory;
-  /** Result processors for post-processing (optional) */
-  resultProcessors?: ResultProcessor[];
   /** Event callback for streaming agent execution events to UI (optional) */
   onEvent?: import('./events.js').AgentEventCallback;
-  /** Two-tier memory configuration (FactSheet + ArchiveMemory, always active) */
-  twoTierMemory?: TwoTierMemoryConfig;
-  /**
-   * Pre-loaded conversation history from previous runs in this session.
-   * When provided, agent skips disk read to avoid race condition with
-   * async write queue from previous run's session manager.
-   */
-  conversationHistory?: {
-    recent: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
-    midTerm: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
-    old: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
-  };
-  /** Pre-loaded trace artifacts context string (companion to conversationHistory). */
-  traceArtifactsContext?: string;
 
   // ═══════════════════════════════════════════════════════════════════════
   // Hierarchical Event Correlation
@@ -346,30 +322,6 @@ export interface AgentConfig {
   parentAgentId?: string;
   /** Abort signal from parent — when aborted, this agent stops between iterations */
   abortSignal?: AbortSignal;
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // Phase 1: Agent → Orchestrator Communication
-  // ═══════════════════════════════════════════════════════════════════════
-
-  /**
-   * Callback for ask_parent tool calls.
-   * When sub-agent calls ask_parent, this callback is invoked.
-   * The parent agent can provide guidance, hints, or alter execution.
-   */
-  onAskParent?: (request: {
-    question: string;
-    reason: 'stuck' | 'uncertain' | 'blocker' | 'clarification';
-    context?: Record<string, unknown>;
-    iteration: number;
-    subtask?: string;
-  }) => Promise<{
-    answer: string;
-    action?: 'continue' | 'skip' | 'retry_with_hint';
-    hint?: string;
-  }>;
-
-  /** Override for the forced synthesis prompt when agent exhausts iteration budget */
-  forcedSynthesisPrompt?: string;
 }
 
 /**
