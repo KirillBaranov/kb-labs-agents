@@ -4,59 +4,29 @@
  * Core agent implementation and orchestration
  */
 
-export { Agent } from './agent.js';
-export * from './constants.js';
-
-// Tracer
-export * from './tracer/index.js';
-
-// Result processors
-export * from './processors/index.js';
-
-// Memory
-export * from './memory/index.js';
-
 // Planning
 export * from './planning/index.js';
 
 // Modes
 export * from './modes/index.js';
 
-// Events - event streaming for UI
-export * from './events/index.js';
-
-// File history - change tracking and rollback
-export * from './history/index.js';
-
-// Execution primitives - state machine and ledger
+// Execution primitives
 export * from './execution/index.js';
-
-// Budget management - iteration budget, quality gate, tier selection
-export * from './budget/index.js';
 
 // Prompt construction
 export * from './prompt/index.js';
 
-// Tool input normalization
-export * from './tool-input/index.js';
-
-// Progress tracking
-export * from './progress/index.js';
-
-// Search signal tracking
-export * from './search-signal/index.js';
-
 // Analytics and run metrics
 export * from './analytics/index.js';
 
-// Reflection engine
-export * from './reflection/index.js';
+// Middleware pipeline
+export * from './middleware/index.js';
 
-// Todo sync coordination
-export * from './todo-sync/index.js';
+// Tool management
+export * from './tools/index.js';
 
-// Task classification
-export * from './task-classifier/index.js';
+// Sub-agent system
+export * from './agents/index.js';
 
-// Task completion evaluation
-export * from './task-completion/index.js';
+// SDK-native agent runner
+export * from './core/index.js';

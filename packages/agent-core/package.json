@@ -32,15 +32,16 @@
   },
   "dependencies": {
     "@kb-labs/agent-contracts": "workspace:*",
+    "@kb-labs/agent-sdk": "workspace:*",
     "@kb-labs/agent-tools": "workspace:*",
     "@kb-labs/agent-history": "workspace:*",
     "@kb-labs/agent-tracing": "workspace:*",
-    "@kb-labs/sdk": "link:../../../kb-labs-sdk/packages/sdk",
+    "@kb-labs/sdk": "^1.0.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@kb-labs/devkit": "link:../../../kb-labs-devkit",
-    "@kb-labs/shared-testing": "link:../../../kb-labs-shared/packages/shared-testing",
+    "@kb-labs/shared-testing": "^1.0.0",
     "@types/node": "^24.3.3",
     "eslint": "^9",
     "rimraf": "^6.0.1",

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Agent } from '../agent.js';
+import { Agent } from '../_archived/agent.js';
 import type { AgentConfig } from '@kb-labs/agent-contracts';
 import { mockLLM, setupTestPlatform } from '@kb-labs/sdk/testing';
 

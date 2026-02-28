@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { IncrementalTraceWriter } from '../../src/tracer/index.js';
+import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 import type { IterationDetailEvent } from '@kb-labs/agent-contracts';
 
 describe('IncrementalTraceWriter', () => {
