@@ -152,11 +152,11 @@ export class SpecValidator {
     let match: RegExpExecArray | null;
     while ((match = headerRe.exec(text)) !== null) {
       const ref = (match[1] || '').trim();
-      if (!ref) continue;
+      if (!ref) {continue;}
       if (ref.includes(':')) {
         const [phaseId, stepId] = ref.split(':');
-        if (phaseId) phaseRefs.add(phaseId.trim());
-        if (stepId) stepRefs.add(`${phaseId?.trim()}:${stepId.trim()}`);
+        if (phaseId) {phaseRefs.add(phaseId.trim());}
+        if (stepId) {stepRefs.add(`${phaseId?.trim()}:${stepId.trim()}`);}
       } else {
         phaseRefs.add(ref);
       }

@@ -748,7 +748,7 @@ export class SessionManager {
     const turnIndex = turns.findIndex(
       (t) => t.type === 'assistant' && t.metadata?.runId === runId
     );
-    if (turnIndex < 0) return;
+    if (turnIndex < 0) {return;}
 
     const existing = turns[turnIndex]!.metadata.fileChanges ?? [];
     const patchMap = new Map(updatedChanges.map((c) => [c.changeId, c]));

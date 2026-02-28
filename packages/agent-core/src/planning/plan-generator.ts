@@ -5,7 +5,7 @@
 import { useLLM, type LLMTool, type LLMToolCallResponse } from '@kb-labs/sdk';
 import type { TaskPlan, Phase, AgentMode, AgentEvent, AgentEventCallback, Tracer, LLMTier } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
-import { createLLMCallEvent } from '../tracer/index.js';
+import { createLLMCallEvent } from '@kb-labs/agent-tracing';
 import { PlanValidator } from './plan-validator.js';
 
 interface GeneratedPlanData {
@@ -413,7 +413,6 @@ export class PlanGenerator {
         onEvent: config.onEvent,
         agentId: config.agentId,
         parentAgentId: config.parentAgentId,
-        tracer: config.tracer,
         tier: planningTier,
       });
     }
@@ -1608,8 +1607,8 @@ You MUST fix these issues and return a concrete implementation/refactoring plan.
   }
 
   private clamp01(value: number): number {
-    if (value < 0) return 0;
-    if (value > 1) return 1;
+    if (value < 0) {return 0;}
+    if (value > 1) {return 1;}
     return Number(value.toFixed(3));
   }
 
@@ -2053,7 +2052,7 @@ You MUST fix these issues and return a concrete implementation/refactoring plan.
     const headingMeta: Array<{ index: number; level: 2 | 3; text: string }> = [];
     for (let i = 0; i < lines.length; i++) {
       const match = /^(##|###)\s+(.+?)\s*$/.exec(lines[i] || '');
-      if (!match) continue;
+      if (!match) {continue;}
       headingMeta.push({
         index: i,
         level: match[1] === '###' ? 3 : 2,
@@ -2078,17 +2077,17 @@ You MUST fix these issues and return a concrete implementation/refactoring plan.
     const extractStepBullets = (body: string[]): string[] => body
       .map((line) => {
         const bullet = /^\s*[-*]\s+(.+)\s*$/.exec(line);
-        if (bullet?.[1]) return bullet[1].trim();
+        if (bullet?.[1]) {return bullet[1].trim();}
         const numbered = /^\s*\d+\.\s+(.+)\s*$/.exec(line);
         return numbered?.[1]?.trim() || '';
       })
       .filter(Boolean);
 
     if (phaseHeadingIndexes.length === 0) {
-      if (sectionStart < 0) return [];
+      if (sectionStart < 0) {return [];}
       const stepSection = lines.slice(sectionStart + 1, sectionEnd >= 0 ? sectionEnd : lines.length);
       const bullets = extractStepBullets(stepSection);
-      if (bullets.length === 0) return [];
+      if (bullets.length === 0) {return [];}
       return [{
         id: 'phase-1',
         name: 'Implementation Steps',
@@ -2292,10 +2291,10 @@ You MUST fix these issues and return a concrete implementation/refactoring plan.
       || /^change set \d+$/i.test(name);
     if (!name || genericName) {
       const candidateFromDescription = this.extractHumanLabel(description);
-      if (candidateFromDescription) return candidateFromDescription;
+      if (candidateFromDescription) {return candidateFromDescription;}
       const firstAction = typeof steps[0]?.action === 'string' ? steps[0].action : '';
       const candidateFromAction = this.extractHumanLabel(firstAction);
-      if (candidateFromAction) return candidateFromAction;
+      if (candidateFromAction) {return candidateFromAction;}
       return 'Key Changes';
     }
     return name;
@@ -2340,9 +2339,9 @@ You MUST fix these issues and return a concrete implementation/refactoring plan.
       .replace(/^run validation for\s*/i, 'Validation: ')
       .replace(/\s+/g, ' ')
       .trim();
-    if (!compact) return '';
+    if (!compact) {return '';}
     const firstChunk = compact.split(';')[0]?.trim() || '';
-    if (!firstChunk) return '';
+    if (!firstChunk) {return '';}
     return firstChunk.length > 64 ? `${firstChunk.slice(0, 61)}...` : firstChunk;
   }
 
@@ -2523,13 +2522,13 @@ Return updated markdown in the "markdown" field (mandatory).`;
 
     const capabilities = new Set<string>();
     for (const tool of availableTools) {
-      if (/^fs_|^glob_search$|^grep_search$|^find_definition$/.test(tool)) capabilities.add('filesystem-analysis');
-      if (/^fs_patch$|^fs_write$|^mass_replace$/.test(tool)) capabilities.add('code-modification');
-      if (/^shell_exec$/.test(tool)) capabilities.add('command-execution');
-      if (/^browser_/.test(tool)) capabilities.add('browser-automation');
-      if (/^mcp_/.test(tool)) capabilities.add('mcp-integration');
-      if (/^mind/.test(tool)) capabilities.add('semantic-search');
-      if (/^ask_user$/.test(tool)) capabilities.add('clarification');
+      if (/^fs_|^glob_search$|^grep_search$|^find_definition$/.test(tool)) {capabilities.add('filesystem-analysis');}
+      if (/^fs_patch$|^fs_write$|^mass_replace$/.test(tool)) {capabilities.add('code-modification');}
+      if (/^shell_exec$/.test(tool)) {capabilities.add('command-execution');}
+      if (/^browser_/.test(tool)) {capabilities.add('browser-automation');}
+      if (/^mcp_/.test(tool)) {capabilities.add('mcp-integration');}
+      if (/^mind/.test(tool)) {capabilities.add('semantic-search');}
+      if (/^ask_user$/.test(tool)) {capabilities.add('clarification');}
     }
 
     const preferredByDomain: Record<PlanningProfile['domain'], string[]> = {

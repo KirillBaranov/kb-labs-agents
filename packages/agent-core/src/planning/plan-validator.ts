@@ -78,8 +78,8 @@ function getSectionBody(text: string, headingRe: RegExp): string {
       capturing = true;
       continue;
     }
-    if (capturing && /^##\s+/.test(line)) break;
-    if (capturing) result.push(line);
+    if (capturing && /^##\s+/.test(line)) {break;}
+    if (capturing) {result.push(line);}
   }
   return result.join('\n');
 }
@@ -189,7 +189,7 @@ export class PlanValidator {
       FILE_PATH_RE.lastIndex = 0;
       const hasCmd = COMMAND_RE.test(bullet);
       COMMAND_RE.lastIndex = 0;
-      if (hasPath || hasCmd) actionable++;
+      if (hasPath || hasCmd) {actionable++;}
     }
 
     const ratio = actionable / bullets.length;

@@ -10,7 +10,10 @@
  */
 
 import type { ToolResult } from '@kb-labs/agent-contracts';
-import { AGENT_TOOL_CACHE } from '../constants.js';
+
+const TOOL_CACHE_TTL_MS = 60_000;
+const LOOP_DETECTION_WINDOW_SIZE = 6;
+const LOOP_DETECTION_MIN_REPEATS = 3;
 
 export class ToolResultCache {
   private readonly cache = new Map<string, { result: ToolResult; timestamp: number }>();
@@ -45,7 +48,7 @@ export class ToolResultCache {
     }
 
     const age = Date.now() - cached.timestamp;
-    if (age > AGENT_TOOL_CACHE.ttlMs) {
+    if (age > TOOL_CACHE_TTL_MS) {
       this.cache.delete(cacheKey);
       return null;
     }
@@ -93,12 +96,12 @@ export class ToolResultCache {
     const sig = toolCalls.map(tc => `${tc.name}:${tc.arguments}`).sort().join('|');
     this.recentIterationSignatures.push(sig);
 
-    if (this.recentIterationSignatures.length > AGENT_TOOL_CACHE.loopDetectionWindowSize) {
+    if (this.recentIterationSignatures.length > LOOP_DETECTION_WINDOW_SIZE) {
       this.recentIterationSignatures.shift();
     }
 
-    if (this.recentIterationSignatures.length >= AGENT_TOOL_CACHE.loopDetectionMinRepeats) {
-      const tail = this.recentIterationSignatures.slice(-AGENT_TOOL_CACHE.loopDetectionMinRepeats);
+    if (this.recentIterationSignatures.length >= LOOP_DETECTION_MIN_REPEATS) {
+      const tail = this.recentIterationSignatures.slice(-LOOP_DETECTION_MIN_REPEATS);
       return tail.every(s => s === tail[0]);
     }
 

@@ -7,7 +7,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { AgentMemory } from '@kb-labs/agent-contracts';
-import { AGENT_CONTEXT } from '../constants.js';
+const MAX_INSTRUCTIONS_CHARS = 12_000;
 import type { WorkspaceDiscoveryResult } from '../execution/workspace-discovery.js';
 
 /**
@@ -44,8 +44,8 @@ export class SystemPromptBuilder {
     const projectInstructions = loadProjectInstructions(input.workingDir);
     if (projectInstructions) {
       const truncated =
-        projectInstructions.length > AGENT_CONTEXT.maxInstructionsChars
-          ? projectInstructions.slice(0, AGENT_CONTEXT.maxInstructionsChars) +
+        projectInstructions.length > MAX_INSTRUCTIONS_CHARS
+          ? projectInstructions.slice(0, MAX_INSTRUCTIONS_CHARS) +
             '\n\n[...instructions truncated...]'
           : projectInstructions;
       prompt += `\n\n**Project Instructions:**\n${truncated}`;
