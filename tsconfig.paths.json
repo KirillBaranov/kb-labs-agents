@@ -21,6 +21,12 @@
       "@kb-labs/agent-history/*": [
         "packages/agent-history/src/*"
       ],
+      "@kb-labs/agent-sdk": [
+        "packages/agent-sdk/src/index.ts"
+      ],
+      "@kb-labs/agent-sdk/*": [
+        "packages/agent-sdk/src/*"
+      ],
       "@kb-labs/agent-tools": [
         "packages/agent-tools/src/index.ts"
       ],

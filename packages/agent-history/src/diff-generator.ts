@@ -28,8 +28,8 @@ function lineDiff(oldText: string, newText: string): DiffOp[] {
   const newLines = newText ? newText.split('\n') : [];
 
   // Remove trailing empty line from split if original had no trailing newline
-  if (oldLines[oldLines.length - 1] === '') oldLines.pop();
-  if (newLines[newLines.length - 1] === '') newLines.pop();
+  if (oldLines[oldLines.length - 1] === '') {oldLines.pop();}
+  if (newLines[newLines.length - 1] === '') {newLines.pop();}
 
   const dp = lcsTable(oldLines, newLines);
 
@@ -68,7 +68,7 @@ export function generateUnifiedDiff(
 ): string {
   if (operation === 'delete') {
     const lines = (beforeContent ?? '').split('\n');
-    if (lines[lines.length - 1] === '') lines.pop();
+    if (lines[lines.length - 1] === '') {lines.pop();}
     const header = `--- ${filePath}\t(before)\n+++ /dev/null\t(deleted)\n`;
     const hunk = lines.length > 0
       ? `@@ -1,${lines.length} +0,0 @@\n${lines.map((l) => `-${l}`).join('\n')}\n`
@@ -87,8 +87,8 @@ export function generateUnifiedDiff(
   type Hunk = { oldStart: number; oldCount: number; newStart: number; newCount: number; lines: string[] };
   const hunks: Hunk[] = [];
 
-  let oldLine = 1;
-  let newLine = 1;
+  const oldLine = 1;
+  const newLine = 1;
 
   // Identify change ranges (with context)
   type ChangeRange = { start: number; end: number };
@@ -125,8 +125,8 @@ export function generateUnifiedDiff(
   for (const op of ops) {
     opOldLine.push(ol);
     opNewLine.push(nl);
-    if (op.op === ' ' || op.op === '-') ol++;
-    if (op.op === ' ' || op.op === '+') nl++;
+    if (op.op === ' ' || op.op === '-') {ol++;}
+    if (op.op === ' ' || op.op === '+') {nl++;}
   }
 
   if (merged.length === 0) {
@@ -178,8 +178,8 @@ export function countDiffLines(diff: string): { added: number; removed: number }
   let added = 0;
   let removed = 0;
   for (const line of lines) {
-    if (line.startsWith('+') && !line.startsWith('+++')) added++;
-    if (line.startsWith('-') && !line.startsWith('---')) removed++;
+    if (line.startsWith('+') && !line.startsWith('+++')) {added++;}
+    if (line.startsWith('-') && !line.startsWith('---')) {removed++;}
   }
   return { added, removed };
 }

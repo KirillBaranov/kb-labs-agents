@@ -44,8 +44,7 @@ describe('ToolRegistry', () => {
     const defs = registry.getDefinitions();
 
     expect(defs).toHaveLength(2);
-    expect(defs[0].function.name).toBe('alpha');
-    expect(defs[1].function.name).toBe('beta');
+    expect(defs.map((def) => def.function.name)).toEqual(['alpha', 'beta']);
   });
 
   it('should return sorted tool names', () => {

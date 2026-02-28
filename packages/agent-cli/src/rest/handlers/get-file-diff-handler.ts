@@ -29,8 +29,8 @@ export default defineHandler({
     const sessionId = params?.sessionId;
     const changeId = params?.changeId;
 
-    if (!sessionId) throw new Error('Session ID is required');
-    if (!changeId) throw new Error('Change ID is required');
+    if (!sessionId) {throw new Error('Session ID is required');}
+    if (!changeId) {throw new Error('Change ID is required');}
 
     // Resolve session's own workingDir for snapshot lookup
     const sessionManager = new SessionManager(ctx.cwd);

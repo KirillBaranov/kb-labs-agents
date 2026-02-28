@@ -36,7 +36,7 @@ export default defineHandler({
     const params = input.params as Record<string, string> | undefined;
     const sessionId = params?.sessionId;
 
-    if (!sessionId) throw new Error('Session ID is required');
+    if (!sessionId) {throw new Error('Session ID is required');}
 
     const body = (input.body ?? {}) as RollbackRequest;
 
@@ -108,7 +108,7 @@ export default defineHandler({
         } else {
           // File was newly created by agent — delete it
           await fs.unlink(fullPath).catch((err: NodeJS.ErrnoException) => {
-            if (err.code !== 'ENOENT') throw err;
+            if (err.code !== 'ENOENT') {throw err;}
           });
         }
 

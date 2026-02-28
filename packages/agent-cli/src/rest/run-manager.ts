@@ -6,7 +6,7 @@
  * Uses platform eventBus for cross-process event broadcasting.
  */
 
-import type { Agent } from '@kb-labs/agent-core';
+import type { IAgentRunner } from '@kb-labs/agent-sdk';
 import type { SessionManager } from '@kb-labs/agent-core';
 import type { AgentEvent, AgentEventCallback } from '@kb-labs/agent-contracts';
 import { useCache, usePlatform } from '@kb-labs/sdk';
@@ -38,7 +38,7 @@ export interface RunState {
  * Active run with live agent (in-memory only)
  */
 export interface ActiveRun extends RunState {
-  agent?: Agent;
+  agent?: IAgentRunner;
   sessionManager: SessionManager;
   listeners: Set<AgentEventCallback>;
   /** Monotonic sequence counter for event ordering */
@@ -73,7 +73,7 @@ class RunManagerImpl {
   async register(
     runId: string,
     task: string,
-    agent: Agent | undefined,
+    agent: IAgentRunner | undefined,
     sessionManager: SessionManager,
     sessionId?: string
   ): Promise<ActiveRun> {

@@ -28,9 +28,9 @@ export class TaskQueue {
       try {
         await Promise.race([
           task.fn(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`Task ${task.id} timed out`)), this.options.timeoutMs)
-          ),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`Task ${task.id} timed out`)), this.options.timeoutMs);
+          }),
         ]);
       } finally {
         this.running--;

@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@kb-labs/agent-contracts": "workspace:*",
-    "@kb-labs/core-platform": "link:../../../kb-labs-core/packages/core-platform",
+    "@kb-labs/core-platform": "^1.0.0",
     "glob": "^11.0.2"
   },
   "devDependencies": {

@@ -6,20 +6,22 @@
 
 import { defineCommand, useCache, useConfig, type PluginContextV3 } from '@kb-labs/sdk';
 import {
-  Agent,
-  TraceSaverProcessor,
-  MetricsCollectorProcessor,
-  FileMemory,
   SessionManager,
   PlanDocumentService,
   SpecModeHandler,
+  bootstrapAgentSDK,
+  createCoreToolPack,
 } from '@kb-labs/agent-core';
+import { AgentSDK } from '@kb-labs/agent-sdk';
 import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 import { createToolRegistry } from '@kb-labs/agent-tools';
 import type { AgentConfig, ModeConfig, AgentMode, AgentEvent, AgentsPluginConfig } from '@kb-labs/agent-contracts';
 import type { TaskPlan } from '@kb-labs/agent-contracts';
 import { promises as fs } from 'node:fs';
 import { createEventRenderer, createMinimalRenderer, createDetailedRenderer } from '../ui/index.js';
+
+// Register SDKAgentRunner as the RunnerFactory (idempotent — runs once per process)
+bootstrapAgentSDK();
 
 type RunInput = {
   task: string;
@@ -61,8 +63,8 @@ function parseBooleanFlag(value: unknown, defaultValue: boolean): boolean {
   }
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase();
-    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
-    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {return true;}
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {return false;}
   }
   if (typeof value === 'number') {
     return value !== 0;
@@ -89,7 +91,6 @@ export default defineCommand({
         detailed: detailedRaw = false,
         sessionId,
         tier = 'medium',
-        escalate: escalateRaw = true,
         mode = 'execute',
         complexity,
         files,
@@ -102,7 +103,6 @@ export default defineCommand({
       const verbose = parseBooleanFlag(verboseRaw, true);
       const quiet = parseBooleanFlag(quietRaw, false);
       const detailed = parseBooleanFlag(detailedRaw, false);
-      const escalate = parseBooleanFlag(escalateRaw, true);
       const approve = parseBooleanFlag(approveRaw, false);
       const spec = parseBooleanFlag(specRaw, false);
       const dryRun = parseBooleanFlag(dryRunRaw, false);
@@ -221,12 +221,9 @@ export default defineCommand({
                 workingDir,
                 maxIterations: 40,
                 temperature: 0.1,
-                verbose: false,
                 sessionId: effectiveSessionId,
                 tier,
-                enableEscalation: false,
                 tokenBudget: agentsConfig?.tokenBudget,
-                tracer,
                 onEvent: specEventCallback,
               };
               const specHandler = new SpecModeHandler();
@@ -259,20 +256,6 @@ export default defineCommand({
             // No plan.json or unreadable — fall through to normal flow
           }
         }
-
-        // Create memory system
-        const memory = new FileMemory({
-          workingDir,
-          sessionId: effectiveSessionId,
-          maxShortTermMemories: 50,
-          maxContextTokens: 4000,
-        });
-
-        // Create result processors
-        const resultProcessors = [
-          new TraceSaverProcessor(workingDir),
-          new MetricsCollectorProcessor(),
-        ];
 
         // Track pending session writes so we can flush before exit
         let pendingSessionWrite: Promise<void> = Promise.resolve();
@@ -307,27 +290,22 @@ export default defineCommand({
         };
 
         // Create agent config with event callback
-        const smartTiering = agentsConfig?.smartTiering;
         const config: AgentConfig = {
           workingDir,
           maxIterations,
           temperature,
-          verbose: false, // Disable internal verbose logging - we use events now
           sessionId: effectiveSessionId,
           tier,
-          enableEscalation: escalate,
-          smartTiering,
           tokenBudget: agentsConfig?.tokenBudget,
-          tracer,
-          resultProcessors,
-          memory,
           mode: modeConfig,
-          onEvent: compositeEventCallback, // Composite: tracer + UI rendering
+          onEvent: compositeEventCallback,
         };
 
-        // Create and execute agent
-        const agent = new Agent(config, toolRegistry);
-        const result = await agent.execute(task);
+        // Create and execute agent via SDK
+        const runner = new AgentSDK()
+          .register(createCoreToolPack(toolRegistry))
+          .createRunner(config);
+        const result = await runner.execute(task);
 
         // Flush pending session writes (ensures agent:end is persisted before exit)
         await pendingSessionWrite;
@@ -356,6 +334,8 @@ export default defineCommand({
             data: {
               content: result.summary,
               hasToolCalls: false,
+              tokensUsed: 0,
+              durationMs: 0,
             },
             metadata: baseMetadata,
           } as AgentEvent);
@@ -370,6 +350,7 @@ export default defineCommand({
               summary: result.summary,
               iterations: result.iterations,
               tokensUsed: result.tokensUsed,
+              durationMs: 0,
               filesCreated: result.filesCreated,
               filesModified: result.filesModified,
             },

@@ -5,7 +5,9 @@
  */
 
 import { defineHandler, useAnalytics, useCache, useConfig, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
-import { Agent, SessionManager, FileMemory, IncrementalTraceWriter } from '@kb-labs/agent-core';
+import { SessionManager, createCoreToolPack } from '@kb-labs/agent-core';
+import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
+import { AgentSDK } from '@kb-labs/agent-sdk';
 import { createToolRegistry } from '@kb-labs/agent-tools';
 import type { RunRequest, RunResponse, AgentsPluginConfig, FileChangeSummary } from '@kb-labs/agent-contracts';
 import path from 'node:path';
@@ -191,58 +193,21 @@ export default defineHandler({
       cache: useCache(),
     });
     const agentsConfig = await useConfig<AgentsPluginConfig>();
-    const smartTiering = body.smartTiering ?? agentsConfig?.smartTiering;
 
-    // Create memory system for context persistence
     const finalSessionId = sessionId; // Capture for closure
     const traceDir = path.join(workingDir, '.kb', 'traces', 'incremental');
     const traceWriter = new IncrementalTraceWriter(runId, {}, traceDir);
-    const memory = new FileMemory({
-      workingDir,
-      sessionId: finalSessionId,
-      maxShortTermMemories: 50,
-      maxContextTokens: 8000,
-    });
-
-    // Pre-load conversation history BEFORE launching agent in background.
-    // This avoids the race condition where the previous run's fire-and-forget
-    // sessionManager.addEvent() calls may not have flushed turns.json to disk
-    // by the time the new agent creates a fresh SessionManager and reads it.
-    // Using the same sessionManager instance here ensures all pending writes
-    // are chained and visible when we read.
-    let preloadedHistory: {
-      recent: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
-      midTerm: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
-      old: Array<{ userTask: string; agentResponse?: string; timestamp: string }>;
-    } | undefined;
-    let preloadedTraceArtifactsContext: string | undefined;
-
-    try {
-      preloadedHistory = await sessionManager.getConversationHistoryWithSummarization(finalSessionId);
-      preloadedTraceArtifactsContext = await sessionManager.getTraceArtifactsContext(finalSessionId);
-      const totalTurns = preloadedHistory.recent.length + preloadedHistory.midTerm.length + preloadedHistory.old.length;
-      ctx.platform.logger.info(`[run-handler] Pre-loaded ${totalTurns} conversation turns for session ${finalSessionId}`);
-    } catch (err) {
-      ctx.platform.logger.warn(`[run-handler] Failed to pre-load conversation history: ${err instanceof Error ? err.message : String(err)}`);
-    }
 
     // Create agent with event broadcasting and session persistence
-    const agent = new Agent(
-      {
+    const agent = new AgentSDK()
+      .register(createCoreToolPack(toolRegistry))
+      .createRunner({
         sessionId: finalSessionId,
         workingDir,
-        maxIterations: 50, // Default max iterations
-        temperature: 0.1, // Low temperature for deterministic execution
-        verbose: body.verbose ?? false,
+        maxIterations: 50,
+        temperature: 0.1,
         tier: body.tier ?? 'medium',
-        enableEscalation: body.enableEscalation ?? true,
-        smartTiering,
         tokenBudget: agentsConfig?.tokenBudget,
-        responseMode: body.responseMode ?? 'auto',
-        memory, // Enable memory for context persistence and last answer tracking
-        tracer: traceWriter,
-        conversationHistory: preloadedHistory,
-        traceArtifactsContext: preloadedTraceArtifactsContext,
         onEvent: (event) => {
           // Broadcast to all WebSocket listeners (assigns seq)
           const seqEvent = RunManager.broadcast(runId, event);
@@ -260,12 +225,7 @@ export default defineHandler({
             },
           });
         },
-      },
-      toolRegistry
-    );
-
-    // Tag all file changes from this run with the runId (enables per-turn rollback)
-    agent.setRunId(runId);
+      });
 
     // Register run (pass sessionManager and sessionId so session-level WS listeners receive events)
     const run = await RunManager.register(runId, body.task, agent, sessionManager, finalSessionId);
@@ -284,20 +244,25 @@ export default defineHandler({
         }
 
         // Attach file change summaries to the turn so the UI can show rollback/approve panel
-        const fileHistory = agent.getFileHistory().filter((c) => c.runId === runId);
-        if (fileHistory.length > 0) {
-          const fileChanges: FileChangeSummary[] = fileHistory.map((c) => ({
-            changeId: c.id,
-            filePath: c.filePath,
-            operation: c.operation,
-            timestamp: c.timestamp,
-            linesAdded: c.metadata?.linesAdded,
-            linesRemoved: c.metadata?.linesRemoved,
-            isNew: !c.before,
-            sizeAfter: c.after.size,
-            approved: c.approved,
-          }));
-          await sessionManager.attachFileChangesToTurn(finalSessionId, runId, fileChanges);
+        // TODO: restore file history tracking via ObservabilityMiddleware once SDKAgentRunner
+        //       populates run.meta with file changes (tracked by legacy Agent.getFileHistory())
+        const legacyAgent = agent as unknown as { getFileHistory?: () => Array<{ runId: string; id: string; filePath: string; operation: 'write' | 'patch' | 'delete'; timestamp: string; metadata?: { linesAdded?: number; linesRemoved?: number }; before: unknown; after: { size: number }; approved: boolean }> };
+        if (typeof legacyAgent.getFileHistory === 'function') {
+          const fileHistory = legacyAgent.getFileHistory().filter((c) => c.runId === runId);
+          if (fileHistory.length > 0) {
+            const fileChanges: FileChangeSummary[] = fileHistory.map((c) => ({
+              changeId: c.id,
+              filePath: c.filePath,
+              operation: c.operation,
+              timestamp: c.timestamp,
+              linesAdded: c.metadata?.linesAdded,
+              linesRemoved: c.metadata?.linesRemoved,
+              isNew: !c.before,
+              sizeAfter: c.after.size,
+              approved: c.approved,
+            }));
+            await sessionManager.attachFileChangesToTurn(finalSessionId, runId, fileChanges);
+          }
         }
 
         await RunManager.updateStatus(runId, result.success ? 'completed' : 'failed', {

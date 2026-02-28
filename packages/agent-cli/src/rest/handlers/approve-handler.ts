@@ -26,7 +26,7 @@ export default defineHandler({
     const params = input.params as Record<string, string> | undefined;
     const sessionId = params?.sessionId;
 
-    if (!sessionId) throw new Error('Session ID is required');
+    if (!sessionId) {throw new Error('Session ID is required');}
 
     const body = (input.body ?? {}) as ApproveRequest;
 

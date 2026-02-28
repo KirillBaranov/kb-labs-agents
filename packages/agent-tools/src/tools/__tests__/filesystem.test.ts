@@ -218,9 +218,9 @@ describe('fs_list', () => {
     mockExists.mockReturnValue(true);
     mockStat.mockReturnValue(statStub({ isDirectory: true }));
     mockReaddir.mockReturnValue([
-      { name: 'foo.ts', isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false } as unknown as fs.Dirent,
-      { name: 'bar', isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false } as unknown as fs.Dirent,
-    ]);
+      { name: 'foo.ts', isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false },
+      { name: 'bar', isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false },
+    ] as any);
 
     const tool = createFsListTool(ctx());
     const result = await tool.executor({ path: '.' }) as ToolResult;
