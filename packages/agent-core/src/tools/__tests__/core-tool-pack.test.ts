@@ -62,7 +62,7 @@ describe('CoreToolPack', () => {
     const registry = makeLegacyRegistry(['fs_read']);
     const pack = createCoreToolPack(registry);
 
-    const result = await pack.tools[0].execute({ path: '/tmp/test' });
+    const result = await pack.tools[0]!.execute({ path: '/tmp/test' });
     expect(result.success).toBe(true);
     expect(registry.execute).toHaveBeenCalledWith('fs_read', { path: '/tmp/test' });
   });

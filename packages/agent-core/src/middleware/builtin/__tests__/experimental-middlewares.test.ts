@@ -134,7 +134,7 @@ describe('TodoSyncMiddleware', () => {
     const patch2 = mw.beforeLLMCall(makeLLMCtx(makeRunCtx({ iteration: 2 })));
     expect(patch2).toBeDefined();
     expect(patch2?.messages).toHaveLength(2);
-    expect(patch2?.messages?.[1].content).toContain('todo');
+    expect(patch2?.messages?.[1]?.content).toContain('todo');
     expect(onNudge).toHaveBeenCalledWith(2);
     expect(mw.nudgeSent).toBe(true);
   });

@@ -70,7 +70,7 @@ describe('AnalyticsMiddleware', () => {
     mw.onStop(makeRunCtx(), 'report_complete');
 
     expect(onRunComplete).toHaveBeenCalledOnce();
-    const metrics = onRunComplete.mock.calls[0][0];
+    const metrics = onRunComplete.mock.calls[0]![0];
     expect(metrics.toolSuccessCount).toBe(1);
     expect(metrics.stopReason).toBe('report_complete');
     expect(metrics.durationMs).toBeGreaterThanOrEqual(0);

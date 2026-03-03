@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { DEFAULT_FEATURE_FLAGS } from '@kb-labs/agent-contracts';
 import { MiddlewarePipeline } from '../pipeline.js';
-import type { AgentMiddleware, RunContext, LLMCtx, ToolExecCtx, ToolOutput } from '@kb-labs/agent-sdk';
+import type { AgentMiddleware, RunContext, LLMCtx, ToolExecCtx, ToolOutput, ControlAction } from '@kb-labs/agent-sdk';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -68,9 +68,9 @@ describe('MiddlewarePipeline', () => {
 
       const pipeline = new MiddlewarePipeline(
         [
-          makeMiddleware({ name: 'second', order: 20, beforeIteration: async () => { order.push('second'); return 'continue'; } }),
-          makeMiddleware({ name: 'first',  order: 10, beforeIteration: async () => { order.push('first');  return 'continue'; } }),
-          makeMiddleware({ name: 'third',  order: 30, beforeIteration: async () => { order.push('third');  return 'continue'; } }),
+          makeMiddleware({ name: 'second', order: 20, beforeIteration: async (): Promise<ControlAction> => { order.push('second'); return 'continue'; } }),
+          makeMiddleware({ name: 'first',  order: 10, beforeIteration: async (): Promise<ControlAction> => { order.push('first');  return 'continue'; } }),
+          makeMiddleware({ name: 'third',  order: 30, beforeIteration: async (): Promise<ControlAction> => { order.push('third');  return 'continue'; } }),
         ],
         { featureFlags: defaultFlags },
       );
@@ -130,7 +130,7 @@ describe('MiddlewarePipeline', () => {
       const pipeline = new MiddlewarePipeline(
         [
           makeMiddleware({ name: 'crasher',  order: 10, config: { failPolicy: 'fail-open' }, beforeIteration: async () => { throw new Error('boom'); } }),
-          makeMiddleware({ name: 'survivor', order: 20, beforeIteration: async () => { secondCalled(); return 'continue'; } }),
+          makeMiddleware({ name: 'survivor', order: 20, beforeIteration: async (): Promise<ControlAction> => { secondCalled(); return 'continue'; } }),
         ],
         { featureFlags: defaultFlags, onError },
       );
@@ -149,7 +149,7 @@ describe('MiddlewarePipeline', () => {
       const pipeline = new MiddlewarePipeline(
         [
           makeMiddleware({ name: 'critical',     order: 10, config: { failPolicy: 'fail-closed' }, beforeIteration: async () => { throw new Error('critical failure'); } }),
-          makeMiddleware({ name: 'never-reached', order: 20, beforeIteration: async () => { secondCalled(); return 'continue'; } }),
+          makeMiddleware({ name: 'never-reached', order: 20, beforeIteration: async (): Promise<ControlAction> => { secondCalled(); return 'continue'; } }),
         ],
         { featureFlags: defaultFlags },
       );
@@ -164,7 +164,7 @@ describe('MiddlewarePipeline', () => {
       const onError = vi.fn();
 
       const pipeline = new MiddlewarePipeline(
-        [makeMiddleware({ name: 'slow', order: 10, config: { failPolicy: 'fail-open', timeoutMs: 50 }, beforeIteration: async () => { await new Promise((r) => { setTimeout(r, 200); }); return 'stop'; } })],
+        [makeMiddleware({ name: 'slow', order: 10, config: { failPolicy: 'fail-open', timeoutMs: 50 }, beforeIteration: async (): Promise<ControlAction> => { await new Promise((r) => { setTimeout(r, 200); }); return 'stop'; } })],
         { featureFlags: defaultFlags, onError },
       );
 
@@ -175,7 +175,7 @@ describe('MiddlewarePipeline', () => {
 
     it('times out slow middleware with fail-closed', async () => {
       const pipeline = new MiddlewarePipeline(
-        [makeMiddleware({ name: 'slow-critical', order: 10, config: { failPolicy: 'fail-closed', timeoutMs: 50 }, beforeIteration: async () => { await new Promise((r) => { setTimeout(r, 200); }); return 'continue'; } })],
+        [makeMiddleware({ name: 'slow-critical', order: 10, config: { failPolicy: 'fail-closed', timeoutMs: 50 }, beforeIteration: async (): Promise<ControlAction> => { await new Promise((r) => { setTimeout(r, 200); }); return 'continue'; } })],
         { featureFlags: defaultFlags },
       );
 
@@ -187,9 +187,9 @@ describe('MiddlewarePipeline', () => {
     it('returns first non-continue action', async () => {
       const pipeline = new MiddlewarePipeline(
         [
-          makeMiddleware({ name: 'ok',           order: 10, beforeIteration: async () => 'continue' }),
-          makeMiddleware({ name: 'stopper',       order: 20, beforeIteration: async () => 'stop' }),
-          makeMiddleware({ name: 'never-reached', order: 30, beforeIteration: async () => 'escalate' }),
+          makeMiddleware({ name: 'ok',           order: 10, beforeIteration: async (): Promise<ControlAction> => 'continue' }),
+          makeMiddleware({ name: 'stopper',       order: 20, beforeIteration: async (): Promise<ControlAction> => 'stop' }),
+          makeMiddleware({ name: 'never-reached', order: 30, beforeIteration: async (): Promise<ControlAction> => 'escalate' }),
         ],
         { featureFlags: defaultFlags },
       );
@@ -199,7 +199,7 @@ describe('MiddlewarePipeline', () => {
 
     it('returns escalate action', async () => {
       const pipeline = new MiddlewarePipeline(
-        [makeMiddleware({ name: 'escalator', order: 10, beforeIteration: async () => 'escalate' })],
+        [makeMiddleware({ name: 'escalator', order: 10, beforeIteration: async (): Promise<ControlAction> => 'escalate' })],
         { featureFlags: defaultFlags },
       );
 
@@ -220,7 +220,7 @@ describe('MiddlewarePipeline', () => {
       const patch = await pipeline.beforeLLMCall(makeLLMCtx());
       expect(patch.temperature).toBe(0.2);
       expect(patch.messages).toHaveLength(2);
-      expect(patch.messages?.[1].content).toBe('injected');
+      expect(patch.messages?.[1]?.content).toBe('injected');
     });
 
     it('returns empty patch when no middleware modifies', async () => {
@@ -238,8 +238,8 @@ describe('MiddlewarePipeline', () => {
     it('returns skip if any middleware says skip', async () => {
       const pipeline = new MiddlewarePipeline(
         [
-          makeMiddleware({ name: 'allow', order: 10, beforeToolExec: async () => 'execute' }),
-          makeMiddleware({ name: 'deny',  order: 20, beforeToolExec: async () => 'skip' }),
+          makeMiddleware({ name: 'allow', order: 10, beforeToolExec: async (): Promise<'execute' | 'skip'> => 'execute' }),
+          makeMiddleware({ name: 'deny',  order: 20, beforeToolExec: async (): Promise<'execute' | 'skip'> => 'skip' }),
         ],
         { featureFlags: defaultFlags },
       );
@@ -250,8 +250,8 @@ describe('MiddlewarePipeline', () => {
     it('returns execute if all allow', async () => {
       const pipeline = new MiddlewarePipeline(
         [
-          makeMiddleware({ name: 'allow-1', order: 10, beforeToolExec: async () => 'execute' }),
-          makeMiddleware({ name: 'allow-2', order: 20, beforeToolExec: async () => 'execute' }),
+          makeMiddleware({ name: 'allow-1', order: 10, beforeToolExec: async (): Promise<'execute' | 'skip'> => 'execute' }),
+          makeMiddleware({ name: 'allow-2', order: 20, beforeToolExec: async (): Promise<'execute' | 'skip'> => 'execute' }),
         ],
         { featureFlags: defaultFlags },
       );

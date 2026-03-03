@@ -1,7 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LinearExecutionLoop } from '../linear-execution-loop.js';
-import type { LoopContext, LLMCallResult, ToolOutput } from '@kb-labs/agent-sdk';
-import type { RunContext } from '@kb-labs/agent-sdk';
+import type { LoopContext, LLMCallResult, ToolOutput, LoopResult } from '@kb-labs/agent-sdk';
+import type { RunContext, ControlAction } from '@kb-labs/agent-sdk';
+
+/** Narrow LoopResult to the 'complete' variant for easy field access in tests. */
+function asComplete(r: LoopResult) {
+  if (r.outcome !== 'complete') { throw new Error(`Expected outcome 'complete', got '${r.outcome}'`); }
+  return r;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -46,7 +52,7 @@ function makeCtx(runCtx: RunContext, llmResponses: LLMCallResult[]): LoopContext
   let callIndex = 0;
   return {
     run: runCtx,
-    beforeIteration: vi.fn(async () => 'continue'),
+    beforeIteration: vi.fn(async (): Promise<ControlAction> => 'continue'),
     appendMessage: vi.fn(),
     callLLM: vi.fn(async () => {
       const r = llmResponses[callIndex];
@@ -74,9 +80,9 @@ describe('LinearExecutionLoop', () => {
       const result = await loop.run(ctx);
 
       expect(result.outcome).toBe('complete');
-      expect(result.result.answer).toBe('Task complete!');
-      expect(result.result.reasonCode).toBe('report_complete');
-      expect(result.result.success).toBe(true);
+      expect(asComplete(result).result.answer).toBe('Task complete!');
+      expect(asComplete(result).result.reasonCode).toBe('report_complete');
+      expect(asComplete(result).result.success).toBe(true);
     });
 
     it('report wins over other tool calls in same response', async () => {
@@ -92,8 +98,8 @@ describe('LinearExecutionLoop', () => {
       ]);
 
       const result = await loop.run(ctx);
-      expect(result.result.reasonCode).toBe('report_complete');
-      expect(result.result.answer).toBe('Done');
+      expect(asComplete(result).result.reasonCode).toBe('report_complete');
+      expect(asComplete(result).result.answer).toBe('Done');
     });
   });
 
@@ -107,9 +113,9 @@ describe('LinearExecutionLoop', () => {
       const result = await loop.run(ctx);
 
       expect(result.outcome).toBe('complete');
-      expect(result.result.reasonCode).toBe('no_tool_calls');
-      expect(result.result.answer).toBe('Here is the answer');
-      expect(result.result.success).toBe(false); // no_tool_calls priority = 5 > REPORT (1)
+      expect(asComplete(result).result.reasonCode).toBe('no_tool_calls');
+      expect(asComplete(result).result.answer).toBe('Here is the answer');
+      expect(asComplete(result).result.success).toBe(false); // no_tool_calls priority = 5 > REPORT (1)
     });
   });
 
@@ -122,7 +128,7 @@ describe('LinearExecutionLoop', () => {
       const ctx = makeCtx(run, [makeLLMResponse()]);
       const result = await loop.run(ctx);
 
-      expect(result.result.reasonCode).toBe('abort_signal');
+      expect(asComplete(result).result.reasonCode).toBe('abort_signal');
       expect(ctx.callLLM).not.toHaveBeenCalled();
     });
 
@@ -131,7 +137,7 @@ describe('LinearExecutionLoop', () => {
       const ctx = makeCtx(run, [makeLLMResponse()]);
       const result = await loop.run(ctx);
 
-      expect(result.result.reasonCode).toBe('abort_signal');
+      expect(asComplete(result).result.reasonCode).toBe('abort_signal');
     });
   });
 
@@ -145,8 +151,8 @@ describe('LinearExecutionLoop', () => {
       const ctx = makeCtx(run, [makeLLMResponse()]);
       const result = await loop.run(ctx);
 
-      expect(result.result.reasonCode).toBe('hard_budget');
-      expect(result.result.answer).toContain('Token hard limit');
+      expect(asComplete(result).result.reasonCode).toBe('hard_budget');
+      expect(asComplete(result).result.answer).toContain('Token hard limit');
       expect(ctx.callLLM).not.toHaveBeenCalled();
     });
   });
@@ -164,7 +170,7 @@ describe('LinearExecutionLoop', () => {
       const result = await loop.run(ctx);
 
       expect(result.outcome).toBe('escalate');
-      expect(result.reason).toContain('Maximum iterations');
+      expect((result as Extract<typeof result, { outcome: 'escalate' }>).reason).toContain('Maximum iterations');
       expect(ctx.callLLM).toHaveBeenCalledTimes(3);
     });
   });
@@ -182,7 +188,7 @@ describe('LinearExecutionLoop', () => {
       const result = await loop.run(ctx);
 
       expect(result.outcome).toBe('escalate');
-      expect(result.reason).toContain('repeating the same tool calls');
+      expect((result as Extract<typeof result, { outcome: 'escalate' }>).reason).toContain('repeating the same tool calls');
     });
   });
 
@@ -191,7 +197,7 @@ describe('LinearExecutionLoop', () => {
       const run = makeRunCtx();
       const ctx: LoopContext = {
         run,
-        beforeIteration: vi.fn(async () => 'continue'),
+        beforeIteration: vi.fn(async (): Promise<ControlAction> => 'continue'),
         appendMessage: vi.fn(),
         callLLM: vi.fn(async () => { throw new Error('Rate limit exceeded'); }),
         executeTools: vi.fn(async () => []),
@@ -200,9 +206,9 @@ describe('LinearExecutionLoop', () => {
       const result = await loop.run(ctx);
 
       expect(result.outcome).toBe('complete');
-      expect(result.result.reasonCode).toBe('error');
-      expect(result.result.success).toBe(false);
-      expect(result.result.answer).toContain('Rate limit exceeded');
+      expect(asComplete(result).result.reasonCode).toBe('error');
+      expect(asComplete(result).result.success).toBe(false);
+      expect(asComplete(result).result.answer).toContain('Rate limit exceeded');
     });
   });
 
@@ -230,7 +236,7 @@ describe('LinearExecutionLoop', () => {
 
       const ctx: LoopContext = {
         run,
-        beforeIteration: vi.fn(async () => 'continue'),
+        beforeIteration: vi.fn(async (): Promise<ControlAction> => 'continue'),
         appendMessage: vi.fn(),
         callLLM: vi.fn(async () => {
           iterations.push(run.iteration);

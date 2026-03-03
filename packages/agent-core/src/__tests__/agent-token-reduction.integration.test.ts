@@ -77,7 +77,6 @@ describe('Agent Context Optimization - Token Reduction', () => {
       workingDir: process.cwd(),
       maxIterations: 20,
       temperature: 0.1,
-      verbose: false,
     };
 
     agent = new Agent(config, mockToolRegistry);

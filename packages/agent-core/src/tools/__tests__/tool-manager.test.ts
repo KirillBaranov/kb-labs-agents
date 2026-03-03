@@ -195,7 +195,7 @@ describe('ToolManager', () => {
 
       const kbTools = mgr.getTools({ namespace: 'kb' });
       expect(kbTools).toHaveLength(1);
-      expect(kbTools[0].shortName).toBe('search');
+      expect(kbTools[0]!.shortName).toBe('search');
     });
 
     it('getDefinitions returns tool definitions', () => {
@@ -208,7 +208,7 @@ describe('ToolManager', () => {
 
       const defs = mgr.getDefinitions();
       expect(defs).toHaveLength(2);
-      expect(defs[0].function.name).toBeDefined();
+      expect(defs[0]!.function.name).toBeDefined();
     });
 
     it('getToolNames returns sorted names', () => {

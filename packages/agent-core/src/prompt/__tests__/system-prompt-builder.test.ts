@@ -52,8 +52,8 @@ describe('SystemPromptBuilder', () => {
       workspaceDiscovery: {
         rootDir: '/project',
         repos: [
-          { path: '/project/packages/core', reasons: ['tsconfig'] },
-          { path: '/project/packages/cli', reasons: ['package.json'] },
+          { name: 'core', path: '/project/packages/core', reasons: ['tsconfig'] },
+          { name: 'cli', path: '/project/packages/cli', reasons: ['package.json'] },
         ],
       },
     }));
