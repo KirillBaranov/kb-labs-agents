@@ -6,5 +6,5 @@
     "outDir": "dist"
   },
   "include": ["src"],
-  "exclude": ["src/_archived"]
+  "exclude": ["_archived", "**/_archived", "src/_archived", "src/_archived/**", "src/__tests__/agent-token-reduction.integration.test.ts"]
 }
