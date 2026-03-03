@@ -4,14 +4,14 @@
  */
 
 import { defineHandler, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
-import { IncrementalTraceWriter, SessionManager, SpecModeHandler } from '@kb-labs/agent-core';
+import { SessionManager, SpecModeHandler } from '@kb-labs/agent-core';
+import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 import { createToolRegistry } from '@kb-labs/agent-tools';
 import type {
   AgentEvent,
   GenerateSpecRequest,
   GenerateSpecResponse,
   TaskPlan,
-  AgentsPluginConfig,
 } from '@kb-labs/agent-contracts';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -76,7 +76,6 @@ export default defineHandler({
 
     // Start spec generation in background
     const specHandler = new SpecModeHandler();
-    const pluginConfig = ctx.platform.config as unknown as AgentsPluginConfig | undefined;
     const toolRegistry = createToolRegistry({ workingDir });
 
     const specPromise = (async () => {
@@ -87,13 +86,7 @@ export default defineHandler({
           ...seqEvent,
           sessionId,
           runId,
-          metadata: {
-            ...seqEvent.metadata,
-            sessionId,
-            runId,
-            workingDir,
-          },
-        });
+        } as unknown as AgentEvent);
       };
 
       try {
@@ -102,11 +95,8 @@ export default defineHandler({
           sessionId,
           agentId: `spec-${sessionId}`,
           maxIterations: plan.phases.length * 8,
-          provider: pluginConfig?.provider || 'anthropic',
-          model: pluginConfig?.model || 'claude-sonnet-4-20250514',
           tier: body.tier || 'medium',
-          verbose: body.verbose || false,
-          tracer: traceWriter,
+          temperature: 0.1,
           onEvent: configOnEvent,
         }, toolRegistry);
         await RunManager.updateStatus(runId, result.success ? 'completed' : 'failed', {
@@ -140,7 +130,7 @@ export default defineHandler({
       specId: `spec-${runId}`,
       runId,
       eventsUrl: `/ws/agents/sessions/${sessionId}/events`,
-      status: 'started',
+      status: 'generating',
       startedAt,
     };
   },

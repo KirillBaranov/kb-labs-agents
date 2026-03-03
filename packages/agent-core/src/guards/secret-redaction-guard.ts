@@ -11,7 +11,7 @@ import type { ToolGuard, ValidationResult, ToolExecCtx } from '@kb-labs/agent-sd
 interface SecretPattern {
   name: string;
   pattern: RegExp;
-  replacement: string;
+  replacement: string | ((match: string, ...args: string[]) => string);
 }
 
 const SECRET_PATTERNS: SecretPattern[] = [

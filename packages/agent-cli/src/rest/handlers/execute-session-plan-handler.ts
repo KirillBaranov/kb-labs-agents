@@ -122,8 +122,7 @@ export default defineHandler({
     const executionTask = spec?.markdown
       ? buildExecutionTaskWithSpec(plan, spec)
       : buildExecutionTask(plan);
-    const runInput: RestInput<RunRequest> = {
-      ...input,
+    const runInput: RestInput<unknown, RunRequest> = {
       body: {
         task: executionTask,
         sessionId,
@@ -136,7 +135,7 @@ export default defineHandler({
     };
 
     const runResponse = await (runHandler as unknown as {
-      execute: (ctx: PluginContextV3, input: RestInput<RunRequest>) => Promise<RunResponse>;
+      execute: (ctx: PluginContextV3, input: RestInput<unknown, RunRequest>) => Promise<RunResponse>;
     }).execute(ctx, runInput);
 
     const inProgressPlan: TaskPlan = {

@@ -220,7 +220,7 @@ export class ToolInputNormalizer implements InputNormalizer {
 
     // Get file size for adaptive baseline
     const fileLines = this.getFileLineCount(filePath);
-    let baseline = TIER_BASELINES[tier as keyof typeof TIER_BASELINES] ?? TIER_BASELINES.medium;
+    let baseline: number = TIER_BASELINES[tier as keyof typeof TIER_BASELINES] ?? TIER_BASELINES.medium;
 
     if (fileLines !== null) {
       if (fileLines <= SMALL_FILE_THRESHOLD) {

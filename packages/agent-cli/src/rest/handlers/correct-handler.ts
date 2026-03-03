@@ -44,7 +44,7 @@ export default defineHandler({
     }
 
     // Inject correction via orchestrator
-    const result = await run.orchestrator.injectCorrection(
+    const result = await (run as any).orchestrator.injectCorrection(
       body.message,
       body.targetAgentId
     );
