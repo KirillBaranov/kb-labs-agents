@@ -16,12 +16,8 @@ import nodePreset from '@kb-labs/devkit/eslint/node.js';
 export default [
   ...nodePreset,
 
-  // OPTIONAL: Add project-specific ignores only if needed
-  // DevKit preset already ignores: dist/, coverage/, node_modules/, *.d.ts, scripts/, etc.
-  // {
-  //   ignores: [
-  //     // Add ONLY project-specific patterns here
-  //     // Example: '**/*.generated.ts',
-  //   ]
-  // }
+  {
+    // _archived is a reference archive, not active code
+    ignores: ['src/_archived/**'],
+  },
 ];
