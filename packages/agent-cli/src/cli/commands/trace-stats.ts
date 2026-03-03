@@ -12,6 +12,7 @@ import type {
   TraceCommandResponse,
   StatsResponse,
   TraceErrorCode,
+  DetailedTraceEntry,
 } from '@kb-labs/agent-contracts';
 import type { LLMCallEvent, ToolExecutionEvent } from '@kb-labs/agent-contracts';
 import { loadTrace, formatTraceLoadError } from '@kb-labs/agent-tracing';
@@ -55,7 +56,7 @@ export default defineCommand({
       const response: TraceCommandResponse<StatsResponse> = {
         success: true,
         command: 'trace:stats',
-        taskId,
+        taskId: taskId ?? '',
         data: stats,
         summary: {
           message: `${stats.iterations.total} iterations, ${stats.llm.calls} LLM calls, $${stats.cost.total.toFixed(4)} cost`,

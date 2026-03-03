@@ -97,10 +97,10 @@ export default defineCommand({
       const response: TraceCommandResponse<FilterResponse> = {
         success: true,
         command: 'trace:filter',
-        taskId,
+        taskId: taskId ?? '',
         data: {
-          taskId,
-          eventType,
+          taskId: taskId ?? '',
+          eventType: eventType,
           events: filtered,
           count: filtered.length,
         },

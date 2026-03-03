@@ -205,12 +205,12 @@ export default defineCommand({
                       sessionId: effectiveSessionId,
                       runId,
                       metadata: {
-                        ...(event as Record<string, unknown>).metadata as Record<string, unknown> | undefined,
+                        ...(event as unknown as Record<string, unknown>)['metadata'] as Record<string, unknown> | undefined,
                         sessionId: effectiveSessionId,
                         runId,
                         workingDir,
                       },
-                    } as AgentEvent);
+                    } as unknown as AgentEvent);
                   })
                   .catch((error) => {
                     const message = error instanceof Error ? error.message : String(error);
@@ -274,13 +274,7 @@ export default defineCommand({
                 ...event,
                 sessionId: effectiveSessionId,
                 runId,
-                metadata: {
-                  ...(event as Record<string, unknown>).metadata as Record<string, unknown> | undefined,
-                  sessionId: effectiveSessionId,
-                  runId,
-                  workingDir,
-                },
-              } as AgentEvent);
+              } as unknown as AgentEvent);
               persistedEventCount += 1;
             })
             .catch((error) => {

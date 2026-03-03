@@ -71,9 +71,9 @@ export default defineCommand({
       const response: TraceCommandResponse<IterationResponse> = {
         success: true,
         command: 'trace:iteration',
-        taskId,
+        taskId: taskId ?? '',
         data: {
-          taskId,
+          taskId: taskId ?? '',
           iteration,
           events: filtered,
           summary,

@@ -95,7 +95,7 @@ export default defineCommand({
         }
         const events = loaded.events;
 
-        const report = analyzeDiagnostics(taskId, events);
+        const report = analyzeDiagnostics(taskId ?? '', events);
 
         if (flags.json) {
           ctx.ui.write(JSON.stringify({ success: true, report }, null, 2) + '\n');

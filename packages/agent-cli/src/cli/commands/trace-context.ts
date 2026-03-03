@@ -85,19 +85,20 @@ export default defineCommand({
         let currentSnapshot: ContextSnapshot | null = null;
 
         for (const e of events) {
+          const eAny = e as any;
           if (e.type === 'context:snapshot') {
             // Fields are at top level (IncrementalTraceWriter format)
-            currentSnapshot = (e.data || e) as ContextSnapshot;
+            currentSnapshot = (eAny.data || e) as ContextSnapshot;
           }
 
-          if (e.type === 'llm_response' && currentSnapshot) {
+          if (eAny.type === 'llm_response' && currentSnapshot) {
             const llmEnd = events.find((ev: any) =>
               ev.type === 'llm:end' &&
-              Math.abs(new Date(ev.timestamp).getTime() - new Date(e.timestamp).getTime()) < 5000
+              Math.abs(new Date(ev.timestamp).getTime() - new Date(eAny.timestamp).getTime()) < 5000
             );
 
-            const responseData = (e.data || e) as LLMResponseInfo;
-            const endData = llmEnd?.data || llmEnd || {};
+            const responseData = (eAny.data || e) as LLMResponseInfo;
+            const endData = (llmEnd as any)?.data || llmEnd || {};
 
             iterations.push({
               iteration: currentSnapshot.iteration,
