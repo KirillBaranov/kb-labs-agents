@@ -19,7 +19,12 @@ export type AgentEventType =
   // LLM
   | 'llm:start'
   | 'llm:chunk' // For streaming responses
+  | 'llm:stream' // Alias for streaming token
   | 'llm:end'
+  // Thinking (extended reasoning / Claude extended thinking)
+  | 'thinking:start'
+  | 'thinking:chunk'
+  | 'thinking:end'
   // Tools
   | 'tool:start'
   | 'tool:end'
@@ -84,6 +89,9 @@ export interface AgentEventBase {
 
   /** Global monotonic sequence across all runs in a session (assigned by SessionManager on persist) */
   sessionSeq?: number;
+
+  /** Optional extra metadata (e.g., workingDir, agentName) added at persist time */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -159,6 +167,35 @@ export interface LLMChunkEvent extends AgentEventBase {
   data: {
     chunk: string;
     index: number;
+  };
+}
+
+export interface LLMStreamEvent extends AgentEventBase {
+  type: 'llm:stream';
+  data: {
+    chunk: string;
+    index?: number;
+  };
+}
+
+export interface ThinkingStartEvent extends AgentEventBase {
+  type: 'thinking:start';
+  data: {
+    content?: string;
+  };
+}
+
+export interface ThinkingChunkEvent extends AgentEventBase {
+  type: 'thinking:chunk';
+  data: {
+    content: string;
+  };
+}
+
+export interface ThinkingEndEvent extends AgentEventBase {
+  type: 'thinking:end';
+  data: {
+    content?: string;
   };
 }
 
@@ -454,6 +491,10 @@ export type AgentEvent =
   | IterationEndEvent
   | LLMStartEvent
   | LLMChunkEvent
+  | LLMStreamEvent
+  | ThinkingStartEvent
+  | ThinkingChunkEvent
+  | ThinkingEndEvent
   | LLMEndEvent
   | ToolStartEvent
   | ToolEndEvent

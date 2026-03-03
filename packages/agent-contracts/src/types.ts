@@ -1252,12 +1252,16 @@ export interface GenerateSpecResponse {
   planId: string;
   /** Spec ID */
   specId: string;
+  /** Run ID for tracking background execution */
+  runId?: string;
   /** Spec status */
   status: 'generating' | 'draft' | 'failed';
   /** Spec (if synchronous completion) */
   spec?: TaskSpec;
   /** Start timestamp */
   startedAt: string;
+  /** WebSocket URL for event streaming */
+  eventsUrl?: string;
 }
 
 /**

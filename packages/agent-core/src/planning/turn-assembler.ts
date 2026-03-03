@@ -5,6 +5,7 @@
 
 import type {
   AgentEvent,
+  ToolEndEvent,
   Turn,
   ThinkingStep,
   ToolUseStep,
@@ -162,7 +163,7 @@ export class TurnAssembler {
    * Create initial Turn snapshot from agent:start event.
    */
   private createTurn(event: AgentEvent, turnId: string): Turn {
-    const sessionId = (event.metadata?.sessionId as string) ?? 'unknown';
+    const sessionId = event.sessionId ?? 'unknown';
 
     // Use getNextSequence to properly increment counter
     // This ensures user turns and assistant turns have correct sequence order
@@ -177,9 +178,9 @@ export class TurnAssembler {
       status: 'streaming',
       steps: [],
       metadata: {
-        agentId: event.agentId,
-        agentName: (event.metadata?.agentName as string | undefined),
-        taskId: (event.metadata?.taskId as string | undefined),
+        agentId: event.agentId ?? 'unknown',
+        agentName: undefined,
+        taskId: event.taskId,
       },
     };
   }
@@ -192,7 +193,7 @@ export class TurnAssembler {
     turnId: string,
     getSequence: (sessionId: string) => Promise<number>
   ): Promise<Turn> {
-    const sessionId = (event.metadata?.sessionId as string) ?? 'unknown';
+    const sessionId = event.sessionId ?? 'unknown';
 
     // Get sequence from external source (file system)
     const sequence = await getSequence(sessionId);
@@ -206,9 +207,9 @@ export class TurnAssembler {
       status: 'streaming',
       steps: [],
       metadata: {
-        agentId: event.agentId,
-        agentName: (event.metadata?.agentName as string | undefined),
-        taskId: (event.metadata?.taskId as string | undefined),
+        agentId: event.agentId ?? 'unknown',
+        agentName: undefined,
+        taskId: event.taskId,
       },
     };
   }
@@ -270,8 +271,8 @@ export class TurnAssembler {
 
       case 'tool:start': {
         const startMeta = event.data?.metadata;
-        const toolCallId = (event.data?.toolCallId as string | undefined);
-        const toolName = (event.data?.toolName as string) ?? 'unknown';
+        const toolCallId = event.toolCallId;
+        const toolName = event.data?.toolName ?? 'unknown';
         const step: ToolUseStep = {
           type: 'tool_use',
           id: `step-${turn.steps.length + 1}`,
@@ -298,8 +299,8 @@ export class TurnAssembler {
       }
 
       case 'tool:end': {
-        const toolCallId = event.data?.toolCallId as string | undefined;
-        const toolName = (event.data?.toolName as string) ?? 'unknown';
+        const toolCallId = event.toolCallId;
+        const toolName = event.data?.toolName ?? 'unknown';
         const existing = turn.steps.find(
           (s): s is ToolUseStep =>
             s.type === 'tool_use' &&
@@ -316,8 +317,8 @@ export class TurnAssembler {
       }
 
       case 'tool:error': {
-        const toolCallId = event.data?.toolCallId as string | undefined;
-        const toolName = (event.data?.toolName as string) ?? 'unknown';
+        const toolCallId = event.toolCallId;
+        const toolName = event.data?.toolName ?? 'unknown';
         const existing = turn.steps.find(
           (s): s is ToolUseStep =>
             s.type === 'tool_use' &&
@@ -360,9 +361,8 @@ export class TurnAssembler {
           }
 
           // Update metadata
-          if (event.data?.usage) {
-            const usage = event.data.usage as { total_tokens?: number };
-            turn.metadata.totalTokens = (turn.metadata.totalTokens ?? 0) + (usage.total_tokens ?? 0);
+          if (event.data?.tokensUsed) {
+            turn.metadata.totalTokens = (turn.metadata.totalTokens ?? 0) + event.data.tokensUsed;
           }
 
           return true;
@@ -374,9 +374,9 @@ export class TurnAssembler {
         turn.status = 'failed';
         turn.completedAt = event.timestamp;
         turn.error = {
-          code: (event.data?.code as string) ?? 'UNKNOWN',
-          message: (event.data?.message as string) ?? 'Agent failed',
-          details: event.data?.details,
+          code: 'AGENT_ERROR',
+          message: event.data?.error ?? 'Agent failed',
+          details: undefined,
         };
         const step: ErrorStep = {
           type: 'error',
@@ -447,12 +447,13 @@ export class TurnAssembler {
     }
 
     // Apply the most recent result (last wins — same semantics as live processing)
-    const last = pending[pending.length - 1];
+    const last = pending[pending.length - 1]!;
     if (last.type === 'tool:end') {
-      this.applyToolEnd(step, last.event);
+      this.applyToolEnd(step, last.event as ToolEndEvent);
     } else {
       step.status = 'error';
-      step.error = (last.event.data?.error as string) ?? 'Unknown error';
+      const errData = last.event.data as { error?: string } | undefined;
+      step.error = errData?.error ?? 'Unknown error';
     }
 
     this.orphanedToolResults.delete(usedKey);
@@ -461,10 +462,10 @@ export class TurnAssembler {
   /**
    * Apply a tool:end event payload to an existing ToolUseStep.
    */
-  private applyToolEnd(step: ToolUseStep, event: AgentEvent): void {
+  private applyToolEnd(step: ToolUseStep, event: ToolEndEvent): void {
     step.status = 'done';
     step.output = event.data?.output;
-    step.durationMs = event.data?.durationMs as number | undefined;
+    step.durationMs = event.data?.durationMs;
     const m = event.data?.metadata;
     if (m) {
       step.metadata = {
