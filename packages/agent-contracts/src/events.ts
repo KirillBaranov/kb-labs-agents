@@ -44,7 +44,11 @@ export type AgentEventType =
   | 'verification:complete'
   // Progress
   | 'progress:update'
-  | 'status:change';
+  | 'status:change'
+  // Middleware decisions (context trim, budget warnings, loop detection, etc.)
+  | 'middleware:decision'
+  // Debug: full prompts and responses (only when debug=true)
+  | 'llm:debug';
 
 /**
  * Base event structure
@@ -117,6 +121,8 @@ export interface AgentEndEvent extends AgentEventBase {
     durationMs: number;
     filesCreated: string[];
     filesModified: string[];
+    stopReason?: string;
+    answer?: string;
   };
 }
 
@@ -159,6 +165,8 @@ export interface LLMStartEvent extends AgentEventBase {
   data: {
     tier: string;
     messageCount: number;
+    toolCount?: number;
+    systemPromptChars?: number;
   };
 }
 
@@ -205,6 +213,7 @@ export interface LLMEndEvent extends AgentEventBase {
     tokensUsed: number;
     durationMs: number;
     hasToolCalls: boolean;
+    stopReason?: string;
     content?: string;
   };
 }
@@ -240,6 +249,8 @@ export interface ToolEndEvent extends AgentEventBase {
     output?: string;
     /** Execution duration in milliseconds */
     durationMs: number;
+    /** Output length in characters */
+    outputLength?: number;
     /** Optional metadata for UI (e.g., diff, structured result) */
     metadata?: ToolEventMetadata;
   };
@@ -481,6 +492,33 @@ export interface StatusChangeEvent extends AgentEventBase {
 }
 
 /**
+ * Middleware decision events
+ * Emitted when middleware takes a notable action (budget warning, context trim, loop detection, etc.)
+ */
+export interface MiddlewareDecisionEvent extends AgentEventBase {
+  type: 'middleware:decision';
+  data: {
+    middleware: string;
+    decision: string;
+    details: Record<string, unknown>;
+  };
+}
+
+/**
+ * LLM debug event — full prompt and response content
+ * Only emitted when AgentConfig.debug = true
+ */
+export interface LLMDebugEvent extends AgentEventBase {
+  type: 'llm:debug';
+  data: {
+    iteration: number;
+    systemPrompt: string;
+    messages: Array<{ role: string; content: string }>;
+    responseContent: string;
+  };
+}
+
+/**
  * Union of all event types
  */
 export type AgentEvent =
@@ -509,7 +547,9 @@ export type AgentEvent =
   | VerificationStartEvent
   | VerificationCompleteEvent
   | ProgressUpdateEvent
-  | StatusChangeEvent;
+  | StatusChangeEvent
+  | MiddlewareDecisionEvent
+  | LLMDebugEvent;
 
 /**
  * Event callback type

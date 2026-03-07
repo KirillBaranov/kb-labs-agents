@@ -305,12 +305,16 @@ export interface AgentConfig {
   temperature: number;
   sessionId?: string;
   tier?: LLMTier;
+  /** Optional analytics adapter from CLI host context. */
+  analytics?: { track(event: string, payload: unknown): Promise<void> } | null;
   /** Token budget policy (usually loaded from kb.config.json -> agents.tokenBudget). */
   tokenBudget?: AgentTokenBudgetConfig;
   /** Mode configuration (execute/plan/edit/debug) */
   mode?: ModeConfig;
   /** Event callback for streaming agent execution events to UI (optional) */
   onEvent?: import('./events.js').AgentEventCallback;
+  /** Enable debug tracing: full prompts and responses in llm:debug events */
+  debug?: boolean;
 
   // ═══════════════════════════════════════════════════════════════════════
   // Hierarchical Event Correlation
