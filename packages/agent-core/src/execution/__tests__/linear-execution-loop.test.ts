@@ -115,7 +115,7 @@ describe('LinearExecutionLoop', () => {
       expect(result.outcome).toBe('complete');
       expect(asComplete(result).result.reasonCode).toBe('no_tool_calls');
       expect(asComplete(result).result.answer).toBe('Here is the answer');
-      expect(asComplete(result).result.success).toBe(false); // no_tool_calls priority = 5 > REPORT (1)
+      expect(asComplete(result).result.success).toBe(true);
     });
   });
 
@@ -169,13 +169,28 @@ describe('LinearExecutionLoop', () => {
 
       const result = await loop.run(ctx);
 
-      expect(result.outcome).toBe('escalate');
-      expect((result as Extract<typeof result, { outcome: 'escalate' }>).reason).toContain('Maximum iterations');
+      expect(result.outcome).toBe('complete');
+      expect(asComplete(result).result.reasonCode).toBe('max_iterations');
+      expect(asComplete(result).result.answer).toContain('Maximum iterations reached');
       expect(ctx.callLLM).toHaveBeenCalledTimes(3);
     });
   });
 
   describe('loop detection', () => {
+    it('stops early when same intent repeats without new evidence', async () => {
+      const run = makeRunCtx({ maxIterations: 10 });
+      const same = makeLLMResponse({
+        toolCalls: [{ id: 'tc-1', name: 'grep_search', input: { pattern: 'foo' } }],
+      });
+      const ctx = makeCtx(run, [same, same, same, same]);
+
+      const result = await loop.run(ctx);
+
+      expect(result.outcome).toBe('complete');
+      expect(asComplete(result).result.reasonCode).toBe('repeated_without_progress');
+      expect(asComplete(result).result.answer).toContain('without collecting new evidence');
+    });
+
     it('detects repeated tool call pattern', async () => {
       const run = makeRunCtx({ maxIterations: 20 });
       // Same 3 tool calls repeated twice = 6 iterations
@@ -187,8 +202,9 @@ describe('LinearExecutionLoop', () => {
 
       const result = await loop.run(ctx);
 
-      expect(result.outcome).toBe('escalate');
-      expect((result as Extract<typeof result, { outcome: 'escalate' }>).reason).toContain('repeating the same tool calls');
+      expect(result.outcome).toBe('complete');
+      expect(asComplete(result).result.reasonCode).toBe('loop_detected');
+      expect(asComplete(result).result.answer).toContain('loop');
     });
   });
 

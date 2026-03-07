@@ -209,38 +209,41 @@ describe('TaskClassifierMiddleware', () => {
     expect(mw.enabled()).toBe(true);
   });
 
-  it('classifies action tasks', () => {
+  // onStart is async; LLM is not available in unit test environment,
+  // so it falls back to heuristic regex classification.
+
+  it('classifies action tasks', async () => {
     const onClassified = vi.fn();
     const mw = new TaskClassifierMiddleware({ onClassified });
-    mw.onStart(makeRunCtx({ task: 'fix the authentication bug' }));
+    await mw.onStart(makeRunCtx({ task: 'fix the authentication bug' }));
     expect(mw.classification?.intent).toBe('action');
     expect(mw.classification?.confidence).toBeGreaterThanOrEqual(0.5);
     expect(onClassified).toHaveBeenCalledOnce();
   });
 
-  it('classifies discovery tasks', () => {
+  it('classifies discovery tasks', async () => {
     const mw = new TaskClassifierMiddleware();
-    mw.onStart(makeRunCtx({ task: 'where is the login page implemented?' }));
+    await mw.onStart(makeRunCtx({ task: 'where is the login page implemented?' }));
     expect(mw.classification?.intent).toBe('discovery');
   });
 
-  it('classifies analysis tasks', () => {
+  it('classifies analysis tasks', async () => {
     const mw = new TaskClassifierMiddleware();
-    mw.onStart(makeRunCtx({ task: 'analyze the performance of the search module' }));
+    await mw.onStart(makeRunCtx({ task: 'analyze the performance of the search module' }));
     expect(mw.classification?.intent).toBe('analysis');
   });
 
-  it('defaults to action for ambiguous tasks', () => {
+  it('defaults to action for ambiguous tasks', async () => {
     const mw = new TaskClassifierMiddleware();
-    mw.onStart(makeRunCtx({ task: 'hello world' }));
+    await mw.onStart(makeRunCtx({ task: 'hello world' }));
     expect(mw.classification?.intent).toBe('action');
     expect(mw.classification?.confidence).toBeLessThanOrEqual(0.3);
   });
 
-  it('stores classification in context meta', () => {
+  it('stores classification in context meta', async () => {
     const mw = new TaskClassifierMiddleware();
     const ctx = makeRunCtx({ task: 'find all TODO comments' });
-    mw.onStart(ctx);
+    await mw.onStart(ctx);
     expect(ctx.meta.set).toHaveBeenCalledWith('classifier', 'intent', 'discovery');
   });
 });
