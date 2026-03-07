@@ -16,6 +16,7 @@ import { loadTrace, formatTraceLoadError } from '@kb-labs/agent-tracing';
 
 type TraceContextInput = {
   taskId?: string;
+  'task-id'?: string;
   iteration?: number;
   json?: boolean;
 };
@@ -67,7 +68,7 @@ export default defineCommand({
   handler: {
     async execute(ctx: PluginContextV3, input: TraceContextInput): Promise<{ exitCode: number }> {
       const flags = (input as any).flags ?? input;
-      const taskId = flags.taskId as string | undefined;
+      const taskId = (flags['task-id'] ?? flags.taskId) as string | undefined;
       const filterIteration = typeof flags.iteration === 'string'
         ? parseInt(flags.iteration, 10)
         : (flags.iteration as number | undefined);

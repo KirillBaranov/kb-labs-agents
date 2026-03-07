@@ -43,6 +43,7 @@ const VALID_EVENT_TYPES: string[] = [
 
 type TraceFilterInput = {
   taskId?: string;
+  'task-id'?: string;
   type?: string;
   json?: boolean;
 };
@@ -57,7 +58,7 @@ export default defineCommand({
     async execute(ctx: PluginContextV3, input: TraceFilterInput): Promise<TraceFilterResult> {
       const logger = useLogger();
       const flags = (input as any).flags ?? input;
-      const taskId = flags.taskId as string | undefined;
+      const taskId = (flags['task-id'] ?? flags.taskId) as string | undefined;
       const eventType = flags.type as string | undefined;
 
     if (!eventType) {

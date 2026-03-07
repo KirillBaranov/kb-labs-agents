@@ -58,6 +58,11 @@ const runFlags = {
     description: 'Verbose output',
     default: false,
   },
+  debug: {
+    type: 'boolean',
+    description: 'Enable debug mode: emit full prompts and responses as llm:debug events',
+    default: false,
+  },
 } as const;
 
 /**
@@ -140,7 +145,7 @@ export const manifest = {
         handlerPath: './cli/commands/trace-stats.js',
 
         flags: defineCommandFlags({
-          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          'task-id': { type: 'string', description: 'Task ID or trace filename' },
           json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
         }),
 
@@ -162,7 +167,7 @@ export const manifest = {
         handlerPath: './cli/commands/trace-filter.js',
 
         flags: defineCommandFlags({
-          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          'task-id': { type: 'string', description: 'Task ID or trace filename' },
           type: { type: 'string', description: 'Event type to filter (llm:call, tool:execution, etc.)' },
           json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
         }),
@@ -185,7 +190,7 @@ export const manifest = {
         handlerPath: './cli/commands/trace-iteration.js',
 
         flags: defineCommandFlags({
-          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          'task-id': { type: 'string', description: 'Task ID or trace filename' },
           iteration: { type: 'number', description: 'Iteration number (1-based)' },
           json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
         }),
@@ -208,7 +213,7 @@ export const manifest = {
         handlerPath: './cli/commands/trace-context.js',
 
         flags: defineCommandFlags({
-          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          'task-id': { type: 'string', description: 'Task ID or trace filename' },
           iteration: { type: 'number', description: 'Filter to specific iteration' },
           json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
         }),
@@ -233,7 +238,7 @@ export const manifest = {
         handlerPath: './cli/commands/trace-diagnose.js',
 
         flags: defineCommandFlags({
-          taskId: { type: 'string', description: 'Task ID or trace filename' },
+          'task-id': { type: 'string', description: 'Task ID or trace filename' },
           json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
         }),
 
@@ -257,7 +262,7 @@ export const manifest = {
         flags: defineCommandFlags({
           days: { type: 'number', description: 'Lookback period in days', default: 1 },
           limit: { type: 'number', description: 'Max KPI runs to analyze', default: 200 },
-          sessionId: { type: 'string', description: 'Filter by session ID' },
+          'session-id': { type: 'string', description: 'Filter by session ID' },
           json: { type: 'boolean', description: 'Output JSON for automation', default: false },
         }),
 
@@ -281,9 +286,9 @@ export const manifest = {
         handlerPath: './cli/commands/history.js',
 
         flags: defineCommandFlags({
-          sessionId: { type: 'string', description: 'Session ID to filter by' },
+          'session-id': { type: 'string', description: 'Session ID to filter by' },
           file: { type: 'string', description: 'File path to filter by' },
-          agentId: { type: 'string', description: 'Agent ID to filter by' },
+          'agent-id': { type: 'string', description: 'Agent ID to filter by' },
           json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
         }),
 
@@ -306,7 +311,7 @@ export const manifest = {
         handlerPath: './cli/commands/diff.js',
 
         flags: defineCommandFlags({
-          changeId: { type: 'string', description: 'Change ID to show diff for' },
+          'change-id': { type: 'string', description: 'Change ID to show diff for' },
           json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
         }),
 
@@ -328,13 +333,13 @@ export const manifest = {
         handlerPath: './cli/commands/rollback.js',
 
         flags: defineCommandFlags({
-          changeId: { type: 'string', description: 'Change ID to rollback' },
+          'change-id': { type: 'string', description: 'Change ID to rollback' },
           file: { type: 'string', description: 'File path to rollback all changes for' },
-          agentId: { type: 'string', description: 'Agent ID to rollback all changes by' },
-          sessionId: { type: 'string', description: 'Session ID to rollback all changes in' },
+          'agent-id': { type: 'string', description: 'Agent ID to rollback all changes by' },
+          'session-id': { type: 'string', description: 'Session ID to rollback all changes in' },
           after: { type: 'string', description: 'Rollback all changes after timestamp (ISO 8601)' },
           force: { type: 'boolean', description: 'Force rollback even with conflicts', default: false },
-          dryRun: { type: 'boolean', description: 'Preview rollback without applying', default: false },
+          'dry-run': { type: 'boolean', description: 'Preview rollback without applying', default: false },
           json: { type: 'boolean', description: 'Output JSON for AI agents', default: false },
         }),
 

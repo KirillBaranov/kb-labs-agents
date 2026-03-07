@@ -327,8 +327,9 @@ export function createEventRenderer(options: {
           // Clear line and show result
           process.stdout.write(`\r`);
           const linePrefix = getLinePrefix(state);
+          const stopLabel = event.data.stopReason ? `, stop=${event.data.stopReason}` : '';
           console.log(linePrefix + renderBoxLine(
-            `${color.accent(symbols.thinking)} Thought ${color.dim(`(${formatDuration(event.data.durationMs)}, ${event.data.tokensUsed} tok)`)}`,
+            `${color.accent(symbols.thinking)} Thought ${color.dim(`(${formatDuration(event.data.durationMs)}, ${event.data.tokensUsed} tok${stopLabel})`)}`,
             color.primary
           ));
 
@@ -476,6 +477,47 @@ export function createEventRenderer(options: {
               ? `${symbols.success} ${event.data.message}${budgetSuffix}`
               : `${symbols.error} ${event.data.message}${budgetSuffix}`
           );
+        }
+        break;
+      }
+
+      case 'middleware:decision': {
+        if (verbose) {
+          const linePrefix = getLinePrefix(state);
+          const decisionIcons: Record<string, string> = {
+            soft_warning: '⚠',
+            hard_stop: '🛑',
+            trimmed: '✂',
+            loop_detected: '🔁',
+            stuck: '⏸',
+            summarized: '📝',
+          };
+          const icon = decisionIcons[event.data.decision] ?? '·';
+          console.log(linePrefix + renderBoxLine(
+            color.dim(`  ${icon} [${event.data.middleware}] ${event.data.decision}`),
+            color.primary
+          ));
+        }
+        break;
+      }
+
+      case 'llm:debug': {
+        const linePrefix = getLinePrefix(state);
+        console.log(linePrefix + renderBoxLine(
+          color.dim('  ─── System Prompt ───'),
+          color.primary
+        ));
+        const promptPreview = event.data.systemPrompt.slice(0, 3000);
+        for (const line of promptPreview.split('\n').slice(0, 30)) {
+          console.log(linePrefix + renderBoxLine(color.dim(`  ${line}`), color.primary));
+        }
+        console.log(linePrefix + renderBoxLine(color.dim('  ─── Messages ───'), color.primary));
+        for (const m of event.data.messages.slice(-6)) {
+          const preview = m.content.slice(0, 300).replace(/\n/g, ' ');
+          console.log(linePrefix + renderBoxLine(
+            color.dim(`  [${m.role}] ${preview}${m.content.length > 300 ? '...' : ''}`),
+            color.primary
+          ));
         }
         break;
       }

@@ -16,12 +16,16 @@ import path from 'path';
 
 type RollbackInput = {
   changeId?: string;
+  'change-id'?: string;
   file?: string;
   agentId?: string;
+  'agent-id'?: string;
   sessionId?: string;
+  'session-id'?: string;
   after?: string;
   force?: boolean;
   dryRun?: boolean;
+  'dry-run'?: boolean;
   json?: boolean;
 };
 
@@ -35,33 +39,40 @@ export default defineCommand({
     async execute(ctx: PluginContextV3, input: RollbackInput): Promise<RollbackResult> {
       const logger = useLogger();
       const flags = (input as any).flags ?? input;
+      const normalizedFlags = {
+        ...flags,
+        changeId: flags['change-id'] ?? flags.changeId,
+        agentId: flags['agent-id'] ?? flags.agentId,
+        sessionId: flags['session-id'] ?? flags.sessionId,
+        dryRun: flags['dry-run'] ?? flags.dryRun,
+      };
 
       try {
         const basePath = path.join(process.cwd(), '.kb', 'agents', 'sessions');
 
         // Rollback specific change
-        if (flags.changeId) {
-          return await rollbackChange(ctx, basePath, flags.changeId, flags);
+        if (normalizedFlags.changeId) {
+          return await rollbackChange(ctx, basePath, normalizedFlags.changeId, normalizedFlags);
         }
 
         // Rollback all changes to specific file
-        if (flags.file) {
-          return await rollbackFile(ctx, basePath, flags.file, flags);
+        if (normalizedFlags.file) {
+          return await rollbackFile(ctx, basePath, normalizedFlags.file, normalizedFlags);
         }
 
         // Rollback all changes by specific agent
-        if (flags.agentId) {
-          return await rollbackAgent(ctx, basePath, flags.agentId, flags);
+        if (normalizedFlags.agentId) {
+          return await rollbackAgent(ctx, basePath, normalizedFlags.agentId, normalizedFlags);
         }
 
         // Rollback all changes in session
-        if (flags.sessionId) {
-          return await rollbackSession(ctx, basePath, flags.sessionId, flags);
+        if (normalizedFlags.sessionId) {
+          return await rollbackSession(ctx, basePath, normalizedFlags.sessionId, normalizedFlags);
         }
 
         // Rollback all changes after timestamp
-        if (flags.after) {
-          return await rollbackAfter(ctx, basePath, flags.after, flags);
+        if (normalizedFlags.after) {
+          return await rollbackAfter(ctx, basePath, normalizedFlags.after, normalizedFlags);
         }
 
         // No flags provided

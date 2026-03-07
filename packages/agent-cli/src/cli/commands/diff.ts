@@ -13,6 +13,7 @@ import path from 'path';
 
 type DiffInput = {
   changeId?: string;
+  'change-id'?: string;
   json?: boolean;
 };
 
@@ -27,7 +28,8 @@ export default defineCommand({
       const logger = useLogger();
       const flags = (input as any).flags ?? input;
 
-      if (!flags.changeId) {
+      const changeId = flags['change-id'] ?? flags.changeId;
+      if (!changeId) {
         const err = { success: false, error: 'Missing required --change-id flag' };
         ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
         return { exitCode: 1, response: err };
@@ -42,7 +44,7 @@ export default defineCommand({
         let foundSessionId = null;
 
         for (const sessionId of sessions) {
-          const snapshotPath = path.join(basePath, sessionId, 'snapshots', `${flags.changeId}.json`);
+          const snapshotPath = path.join(basePath, sessionId, 'snapshots', `${changeId}.json`);
 
           try {
             const content = await fs.readFile(snapshotPath, 'utf-8');
@@ -56,7 +58,7 @@ export default defineCommand({
         }
 
         if (!snapshot) {
-          const err = { success: false, error: `Change not found: ${flags.changeId}` };
+          const err = { success: false, error: `Change not found: ${changeId}` };
           ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
           return { exitCode: 1, response: err };
         }
@@ -66,7 +68,7 @@ export default defineCommand({
 
         const response = {
           success: true,
-          changeId: flags.changeId,
+          changeId,
           sessionId: foundSessionId,
           data: {
             ...snapshot,

@@ -44,12 +44,12 @@
     "@kb-labs/agent-sdk": "workspace:*",
     "@kb-labs/agent-tools": "workspace:*",
     "@kb-labs/agent-tracing": "workspace:*",
-    "@kb-labs/sdk": "^1.0.0",
+    "@kb-labs/sdk": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@kb-labs/devkit": "link:../../../kb-labs-devkit",
-    "@kb-labs/plugin-runtime": "^1.0.0",
+    "@kb-labs/plugin-runtime": "workspace:*",
     "@types/node": "^24.3.3",
     "rimraf": "^6.0.1",
     "tsup": "^8.5.0",

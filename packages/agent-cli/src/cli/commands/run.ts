@@ -4,7 +4,7 @@
  * Uses event-driven UI rendering instead of simple loaders.
  */
 
-import { defineCommand, useCache, useConfig, type PluginContextV3 } from '@kb-labs/sdk';
+import { defineCommand, useAnalytics, useCache, useConfig, type PluginContextV3 } from '@kb-labs/sdk';
 import {
   SessionManager,
   PlanDocumentService,
@@ -41,6 +41,7 @@ type RunInput = {
   approve?: boolean;
   spec?: boolean;
   'dry-run'?: boolean;
+  debug?: boolean;
   argv?: string[];
 };
 
@@ -98,6 +99,7 @@ export default defineCommand({
         approve: approveRaw = false,
         spec: specRaw = false,
         'dry-run': dryRunRaw = false,
+        debug: debugRaw = false,
       } = flags;
 
       const verbose = parseBooleanFlag(verboseRaw, true);
@@ -106,6 +108,7 @@ export default defineCommand({
       const approve = parseBooleanFlag(approveRaw, false);
       const spec = parseBooleanFlag(specRaw, false);
       const dryRun = parseBooleanFlag(dryRunRaw, false);
+      const debug = parseBooleanFlag(debugRaw, false);
 
       if (!task) {
         ctx.ui?.error?.('Error: --task is required');
@@ -184,6 +187,7 @@ export default defineCommand({
           filesReadHash,
         });
         const agentsConfig = await useConfig<AgentsPluginConfig>();
+        const analytics = useAnalytics() ?? null;
         const taskId = `task-${Date.now()}`;
         const tracer = new IncrementalTraceWriter(taskId);
 
@@ -223,6 +227,7 @@ export default defineCommand({
                 temperature: 0.1,
                 sessionId: effectiveSessionId,
                 tier,
+                analytics,
                 tokenBudget: agentsConfig?.tokenBudget,
                 onEvent: specEventCallback,
               };
@@ -239,10 +244,11 @@ export default defineCommand({
               } else {
                 ctx.ui?.warn?.(`Spec generation failed: ${specResult.summary}`);
               }
+              const specSucceeded = specResult.success;
               return {
-                exitCode: specResult.success ? 0 : 1,
+                exitCode: specSucceeded ? 0 : 1,
                 result: {
-                  success: specResult.success,
+                  success: specSucceeded,
                   summary: specResult.summary,
                   filesCreated: specResult.filesCreated,
                   filesModified: specResult.filesModified,
@@ -290,9 +296,11 @@ export default defineCommand({
           temperature,
           sessionId: effectiveSessionId,
           tier,
+          analytics,
           tokenBudget: agentsConfig?.tokenBudget,
           mode: modeConfig,
           onEvent: compositeEventCallback,
+          debug,
         };
 
         // Create and execute agent via SDK
@@ -330,6 +338,7 @@ export default defineCommand({
               hasToolCalls: false,
               tokensUsed: 0,
               durationMs: 0,
+              stopReason: 'no_tool_calls',
             },
             metadata: baseMetadata,
           } as AgentEvent);
@@ -347,6 +356,7 @@ export default defineCommand({
               durationMs: 0,
               filesCreated: result.filesCreated,
               filesModified: result.filesModified,
+              stopReason: result.success ? 'report_complete' : 'unknown',
             },
             metadata: baseMetadata,
           } as AgentEvent);
@@ -356,7 +366,6 @@ export default defineCommand({
         if (detailedTrace.length > 0) {
           await sessionManager.storeTraceArtifacts(effectiveSessionId, runId, detailedTrace);
         }
-
         // Optional: auto-approve generated plan in plan mode
         if (approve) {
           if (mode !== 'plan') {
@@ -406,10 +415,11 @@ export default defineCommand({
         // Event renderer already showed the result via agent:end event
         // Just return the structured result
 
+        const runSucceeded = result.success;
         return {
-          exitCode: result.success ? 0 : 1,
+          exitCode: runSucceeded ? 0 : 1,
           result: {
-            success: result.success,
+            success: runSucceeded,
             summary: result.summary,
             filesCreated: result.filesCreated,
             filesModified: result.filesModified,

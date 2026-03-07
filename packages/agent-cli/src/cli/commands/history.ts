@@ -1,26 +1,28 @@
 /**
- * agent:history - Show file change history
- *
- * Usage:
- *   pnpm kb agent:history --session-id={id}
- *   pnpm kb agent:history --file=src/index.ts
- *   pnpm kb agent:history --agent-id={id}
- *   pnpm kb agent:history --json
+ * agent:history - Show file change history for agent sessions
  */
 
-import { defineCommand, useLogger } from '@kb-labs/sdk';
-import type { PluginContextV3 } from '@kb-labs/sdk';
-import { promises as fs } from 'fs';
-import path from 'path';
+import { defineCommand, type PluginContextV3 } from '@kb-labs/sdk';
+import { SessionManager } from '@kb-labs/agent-core';
+import type { FileChangeSummary, Turn } from '@kb-labs/agent-contracts';
 
 type HistoryInput = {
   sessionId?: string;
+  'session-id'?: string;
   file?: string;
   agentId?: string;
+  'agent-id'?: string;
   json?: boolean;
 };
 
-type HistoryResult = { exitCode: number; response?: any };
+type HistoryResult = { exitCode: number; response?: unknown };
+
+type ChangeRow = FileChangeSummary & {
+  sessionId: string;
+  turnId: string;
+  turnSequence: number;
+  agentId: string;
+};
 
 export default defineCommand({
   id: 'history',
@@ -28,133 +30,91 @@ export default defineCommand({
 
   handler: {
     async execute(ctx: PluginContextV3, input: HistoryInput): Promise<HistoryResult> {
-      const logger = useLogger();
       const flags = (input as any).flags ?? input;
+      const manager = new SessionManager(process.cwd());
 
       try {
-        // Default to .kb/agents/sessions
-        const basePath = path.join(process.cwd(), '.kb', 'agents', 'sessions');
-
-        // If session-id provided, load that session
-        if (flags.sessionId) {
-          return await showSessionHistory(ctx, basePath, flags.sessionId, flags);
+        const sessionId = flags['session-id'] ?? flags.sessionId;
+        const agentId = flags['agent-id'] ?? flags.agentId;
+        if (sessionId) {
+          return showSessionHistory(ctx, manager, String(sessionId), Boolean(flags.json));
         }
-
-        // If file provided, search all sessions for that file
         if (flags.file) {
-          return await showFileHistory(ctx, basePath, flags.file, flags);
+          return showFileHistory(ctx, manager, String(flags.file), Boolean(flags.json));
         }
-
-        // If agent-id provided, search all sessions for that agent
-        if (flags.agentId) {
-          return await showAgentHistory(ctx, basePath, flags.agentId, flags);
+        if (agentId) {
+          return showAgentHistory(ctx, manager, String(agentId), Boolean(flags.json));
         }
-
-        // Otherwise, list all sessions
-        return await listAllSessions(ctx, basePath, flags);
-      } catch (err) {
-        logger.error('agent:history error:', err instanceof Error ? err : undefined);
-        const errResponse = {
+        return listAllSessions(ctx, manager, Boolean(flags.json));
+      } catch (error) {
+        const response = {
           success: false,
-          error: err instanceof Error ? err.message : String(err),
+          error: error instanceof Error ? error.message : String(error),
         };
-        ctx.ui.write(JSON.stringify(errResponse, null, 2) + '\n');
-        return { exitCode: 1, response: errResponse };
+        ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
+        return { exitCode: 1, response };
       }
     },
   },
 });
 
-/**
- * Show history for specific session
- */
 async function showSessionHistory(
   ctx: PluginContextV3,
-  basePath: string,
+  manager: SessionManager,
   sessionId: string,
-  flags: any
+  asJson: boolean
 ): Promise<HistoryResult> {
-  const sessionDir = path.join(basePath, sessionId);
-  const snapshotsDir = path.join(sessionDir, 'snapshots');
-
-  // Check if session exists
-  try {
-    await fs.access(snapshotsDir);
-  } catch {
+  const info = await manager.getSessionInfo(sessionId);
+  if (!info) {
     const err = { success: false, error: `Session not found: ${sessionId}` };
     ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
     return { exitCode: 1, response: err };
   }
 
-  // Read all snapshots
-  const files = await fs.readdir(snapshotsDir);
-  const snapshots = [];
-
-  for (const file of files) {
-    if (!file.endsWith('.json')) {continue;}
-
-    const content = await fs.readFile(path.join(snapshotsDir, file), 'utf-8');
-    const snapshot = JSON.parse(content);
-    snapshots.push(snapshot);
-  }
-
-  // Sort by timestamp
-  snapshots.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const turns = await manager.getTurns(sessionId);
+  const changes = collectChanges(sessionId, turns);
+  changes.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
   const response = {
     success: true,
     sessionId,
-    changes: snapshots.length,
-    data: snapshots,
+    runCount: info.runCount,
+    changes: changes.length,
+    data: changes,
   };
 
-  if (flags.json) {
+  if (asJson) {
     ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
   } else {
-    printSessionHistory(ctx, sessionId, snapshots);
+    ctx.ui.write(`Session: ${sessionId}\n`);
+    ctx.ui.write(`Runs: ${info.runCount} | Changes: ${changes.length}\n\n`);
+    for (const c of changes) {
+      const ts = new Date(c.timestamp).toLocaleString();
+      ctx.ui.write(`[${ts}] ${c.operation.toUpperCase()} ${c.filePath}\n`);
+      ctx.ui.write(`  Agent: ${c.agentId} | Turn: #${c.turnSequence}\n`);
+      ctx.ui.write(`  Change ID: ${c.changeId}\n\n`);
+    }
   }
 
   return { exitCode: 0, response };
 }
 
-/**
- * Show history for specific file across all sessions
- */
 async function showFileHistory(
   ctx: PluginContextV3,
-  basePath: string,
+  manager: SessionManager,
   filePath: string,
-  flags: any
+  asJson: boolean
 ): Promise<HistoryResult> {
-  // Find all sessions
-  const sessions = await fs.readdir(basePath);
-  const allChanges = [];
+  const sessions = await manager.listSessions({ limit: 1000, offset: 0 });
+  const allChanges: ChangeRow[] = [];
 
-  for (const sessionId of sessions) {
-    const snapshotsDir = path.join(basePath, sessionId, 'snapshots');
-
-    try {
-      const files = await fs.readdir(snapshotsDir);
-
-      for (const file of files) {
-        if (!file.endsWith('.json')) {continue;}
-
-        const content = await fs.readFile(path.join(snapshotsDir, file), 'utf-8');
-        const snapshot = JSON.parse(content);
-
-        if (snapshot.filePath === filePath) {
-          allChanges.push({ ...snapshot, sessionId });
-        }
-      }
-    } catch {
-      // Skip sessions without snapshots
-      continue;
-    }
+  for (const s of sessions.sessions) {
+    const turns = await manager.getTurns(s.id);
+    const changes = collectChanges(s.id, turns).filter((c) => c.filePath === filePath);
+    allChanges.push(...changes);
   }
 
-  // Sort by timestamp
   allChanges.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
   const response = {
     success: true,
     filePath,
@@ -162,53 +122,37 @@ async function showFileHistory(
     data: allChanges,
   };
 
-  if (flags.json) {
+  if (asJson) {
     ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
   } else {
-    printFileHistory(ctx, filePath, allChanges);
+    ctx.ui.write(`File: ${filePath}\n`);
+    ctx.ui.write(`Changes: ${allChanges.length}\n\n`);
+    for (const c of allChanges) {
+      const ts = new Date(c.timestamp).toLocaleString();
+      ctx.ui.write(`[${ts}] ${c.operation.toUpperCase()} (${c.sessionId})\n`);
+      ctx.ui.write(`  Agent: ${c.agentId} | Change ID: ${c.changeId}\n\n`);
+    }
   }
 
   return { exitCode: 0, response };
 }
 
-/**
- * Show history for specific agent across all sessions
- */
 async function showAgentHistory(
   ctx: PluginContextV3,
-  basePath: string,
+  manager: SessionManager,
   agentId: string,
-  flags: any
+  asJson: boolean
 ): Promise<HistoryResult> {
-  // Find all sessions
-  const sessions = await fs.readdir(basePath);
-  const allChanges = [];
+  const sessions = await manager.listSessions({ limit: 1000, offset: 0 });
+  const allChanges: ChangeRow[] = [];
 
-  for (const sessionId of sessions) {
-    const snapshotsDir = path.join(basePath, sessionId, 'snapshots');
-
-    try {
-      const files = await fs.readdir(snapshotsDir);
-
-      for (const file of files) {
-        if (!file.endsWith('.json')) {continue;}
-
-        const content = await fs.readFile(path.join(snapshotsDir, file), 'utf-8');
-        const snapshot = JSON.parse(content);
-
-        if (snapshot.agentId === agentId) {
-          allChanges.push({ ...snapshot, sessionId });
-        }
-      }
-    } catch {
-      // Skip sessions without snapshots
-      continue;
-    }
+  for (const s of sessions.sessions) {
+    const turns = await manager.getTurns(s.id);
+    const changes = collectChanges(s.id, turns).filter((c) => c.agentId === agentId);
+    allChanges.push(...changes);
   }
 
-  // Sort by timestamp
   allChanges.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
   const response = {
     success: true,
     agentId,
@@ -216,206 +160,95 @@ async function showAgentHistory(
     data: allChanges,
   };
 
-  if (flags.json) {
+  if (asJson) {
     ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
   } else {
-    printAgentHistory(ctx, agentId, allChanges);
+    ctx.ui.write(`Agent: ${agentId}\n`);
+    ctx.ui.write(`Changes: ${allChanges.length}\n\n`);
+    for (const c of allChanges) {
+      const ts = new Date(c.timestamp).toLocaleString();
+      ctx.ui.write(`[${ts}] ${c.operation.toUpperCase()} ${c.filePath} (${c.sessionId})\n`);
+    }
+    ctx.ui.write('\n');
   }
 
   return { exitCode: 0, response };
 }
 
-/**
- * List all sessions with basic info
- */
 async function listAllSessions(
   ctx: PluginContextV3,
-  basePath: string,
-  flags: any
+  manager: SessionManager,
+  asJson: boolean
 ): Promise<HistoryResult> {
-  const sessions = await fs.readdir(basePath);
-  const sessionInfo = [];
-
-  for (const sessionId of sessions) {
-    const snapshotsDir = path.join(basePath, sessionId, 'snapshots');
-
-    try {
-      const files = await fs.readdir(snapshotsDir);
-      const snapshotFiles = files.filter((f) => f.endsWith('.json'));
-
-      if (snapshotFiles.length === 0) {continue;}
-
-      // Read first and last snapshot for timestamps
-      const firstContent = await fs.readFile(
-        path.join(snapshotsDir, snapshotFiles[0]!),
-        'utf-8'
-      );
-      const lastContent = await fs.readFile(
-        path.join(snapshotsDir, snapshotFiles[snapshotFiles.length - 1]!),
-        'utf-8'
-      );
-
-      const firstSnapshot = JSON.parse(firstContent);
-      const lastSnapshot = JSON.parse(lastContent);
-
-      // Collect unique agents
-      const agents = new Set<string>();
-      const files_changed = new Set<string>();
-
-      for (const file of snapshotFiles) {
-        const content = await fs.readFile(path.join(snapshotsDir, file), 'utf-8');
-        const snapshot = JSON.parse(content);
-        agents.add(snapshot.agentId);
-        files_changed.add(snapshot.filePath);
-      }
-
-      sessionInfo.push({
-        sessionId,
-        changes: snapshotFiles.length,
-        agents: Array.from(agents),
-        filesChanged: Array.from(files_changed),
-        startedAt: firstSnapshot.timestamp,
-        lastChangeAt: lastSnapshot.timestamp,
-      });
-    } catch {
-      // Skip invalid sessions
-      continue;
-    }
-  }
-
-  // Sort by last change
-  sessionInfo.sort(
-    (a, b) => new Date(b.lastChangeAt).getTime() - new Date(a.lastChangeAt).getTime()
+  const sessions = await manager.listSessions({ limit: 1000, offset: 0 });
+  const uniqueSessions = dedupeSessionsById(sessions.sessions);
+  const data = await Promise.all(
+    uniqueSessions.map(async (s) => {
+      const turns = await manager.getTurns(s.id);
+      return {
+        sessionId: s.id,
+        status: s.status,
+        runCount: s.runCount,
+        lastActivityAt: s.lastActivityAt,
+        changes: collectChanges(s.id, turns).length,
+      };
+    }),
   );
 
   const response = {
     success: true,
-    sessions: sessionInfo.length,
-    data: sessionInfo,
+    sessions: data.length,
+    data,
   };
 
-  if (flags.json) {
+  if (asJson) {
     ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
   } else {
-    printSessionsList(ctx, sessionInfo);
+    ctx.ui.write(`Sessions: ${data.length}\n\n`);
+    for (const s of data) {
+      ctx.ui.write(`${s.sessionId}\n`);
+      ctx.ui.write(`  Runs: ${s.runCount} | Changes: ${s.changes} | Status: ${s.status}\n`);
+      ctx.ui.write(`  Last activity: ${new Date(s.lastActivityAt).toLocaleString()}\n\n`);
+    }
   }
 
   return { exitCode: 0, response };
 }
 
-/**
- * Print session history in human-readable format
- */
-function printSessionHistory(ctx: PluginContextV3, sessionId: string, snapshots: any[]): void {
-  ctx.ui.write('\n');
-  ctx.ui.write(`📜 File Change History - Session: ${sessionId}\n`);
-  ctx.ui.write('\n');
-  ctx.ui.write(`Total changes: ${snapshots.length}\n`);
-  ctx.ui.write('\n');
-
-  for (const snapshot of snapshots) {
-    const timestamp = new Date(snapshot.timestamp).toLocaleString();
-    const operation = snapshot.operation.toUpperCase().padEnd(7);
-    const size = snapshot.after?.size || 0;
-    const sizeFormatted = formatSize(size);
-
-    ctx.ui.write(`[${timestamp}] ${operation} ${snapshot.filePath}\n`);
-    ctx.ui.write(`  Agent: ${snapshot.agentId}\n`);
-    ctx.ui.write(`  Size: ${sizeFormatted}\n`);
-
-    if (snapshot.metadata?.linesAdded !== undefined) {
-      ctx.ui.write(
-        `  Lines: +${snapshot.metadata.linesAdded} -${snapshot.metadata.linesRemoved}\n`
-      );
-    }
-
-    ctx.ui.write(`  Change ID: ${snapshot.id}\n`);
-    ctx.ui.write('\n');
-  }
-}
-
-/**
- * Print file history in human-readable format
- */
-function printFileHistory(ctx: PluginContextV3, filePath: string, changes: any[]): void {
-  ctx.ui.write('\n');
-  ctx.ui.write(`📄 File History: ${filePath}\n`);
-  ctx.ui.write('\n');
-  ctx.ui.write(`Total changes: ${changes.length}\n`);
-  ctx.ui.write('\n');
-
-  for (const change of changes) {
-    const timestamp = new Date(change.timestamp).toLocaleString();
-    const operation = change.operation.toUpperCase().padEnd(7);
-
-    ctx.ui.write(`[${timestamp}] ${operation}\n`);
-    ctx.ui.write(`  Session: ${change.sessionId}\n`);
-    ctx.ui.write(`  Agent: ${change.agentId}\n`);
-    ctx.ui.write(`  Change ID: ${change.id}\n`);
-    ctx.ui.write('\n');
-  }
-}
-
-/**
- * Print agent history in human-readable format
- */
-function printAgentHistory(ctx: PluginContextV3, agentId: string, changes: any[]): void {
-  ctx.ui.write('\n');
-  ctx.ui.write(`🤖 Agent History: ${agentId}\n`);
-  ctx.ui.write('\n');
-  ctx.ui.write(`Total changes: ${changes.length}\n`);
-  ctx.ui.write('\n');
-
-  // Group by file
-  const byFile = new Map<string, any[]>();
-  for (const change of changes) {
-    if (!byFile.has(change.filePath)) {
-      byFile.set(change.filePath, []);
-    }
-    byFile.get(change.filePath)!.push(change);
-  }
-
-  ctx.ui.write(`Files modified: ${byFile.size}\n`);
-  ctx.ui.write('\n');
-
-  for (const [filePath, fileChanges] of byFile.entries()) {
-    ctx.ui.write(`📄 ${filePath} (${fileChanges.length} changes)\n`);
-    for (const change of fileChanges) {
-      const timestamp = new Date(change.timestamp).toLocaleString();
-      const operation = change.operation.toUpperCase().padEnd(7);
-      ctx.ui.write(`  [${timestamp}] ${operation} (${change.sessionId})\n`);
-    }
-    ctx.ui.write('\n');
-  }
-}
-
-/**
- * Print sessions list in human-readable format
- */
-function printSessionsList(ctx: PluginContextV3, sessions: any[]): void {
-  ctx.ui.write('\n');
-  ctx.ui.write('📋 Agent Sessions\n');
-  ctx.ui.write('\n');
-  ctx.ui.write(`Total sessions: ${sessions.length}\n`);
-  ctx.ui.write('\n');
-
+function dedupeSessionsById<T extends { id: string; runCount: number; lastActivityAt: string }>(sessions: T[]): T[] {
+  const byId = new Map<string, T>();
   for (const session of sessions) {
-    const lastChange = new Date(session.lastChangeAt).toLocaleString();
+    const existing = byId.get(session.id);
+    if (!existing) {
+      byId.set(session.id, session);
+      continue;
+    }
 
-    ctx.ui.write(`Session: ${session.sessionId}\n`);
-    ctx.ui.write(`  Last change: ${lastChange}\n`);
-    ctx.ui.write(`  Changes: ${session.changes}\n`);
-    ctx.ui.write(`  Agents: ${session.agents.join(', ')}\n`);
-    ctx.ui.write(`  Files: ${session.filesChanged.length}\n`);
-    ctx.ui.write('\n');
+    const existingTs = Date.parse(existing.lastActivityAt);
+    const incomingTs = Date.parse(session.lastActivityAt);
+    if (incomingTs > existingTs || (incomingTs === existingTs && session.runCount > existing.runCount)) {
+      byId.set(session.id, session);
+    }
   }
+  return Array.from(byId.values()).sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
 }
 
-/**
- * Format file size in human-readable format
- */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) {return `${bytes} B`;}
-  if (bytes < 1024 * 1024) {return `${(bytes / 1024).toFixed(1)} KB`;}
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+function collectChanges(sessionId: string, turns: Turn[]): ChangeRow[] {
+  const rows: ChangeRow[] = [];
+  for (const turn of turns) {
+    if (turn.type !== 'assistant') {
+      continue;
+    }
+    const changes = turn.metadata.fileChanges ?? [];
+    for (const change of changes) {
+      rows.push({
+        ...change,
+        sessionId,
+        turnId: turn.id,
+        turnSequence: turn.sequence,
+        agentId: turn.metadata.agentId,
+      });
+    }
+  }
+  return rows;
 }

@@ -1,142 +1,306 @@
-# KB Labs Agents
+# Standard Configuration Templates
 
-Autonomous AI agent system for [KB Labs](https://github.com/kirill-baranov/kb-labs). Executes natural-language tasks using LLM tool calling — reads files, writes code, runs commands, searches codebases, and validates results.
+This directory contains canonical configuration templates for all `@kb-labs` packages.
 
-Part of the **KB Labs** ecosystem. Works through the platform CLI (`pnpm kb agent:run`) or REST/WebSocket APIs.
+## 📋 Available Templates
 
-## Architecture
+### Core Configs (All Packages)
 
+| File | Purpose | Required | Customizable |
+|------|---------|----------|--------------|
+| **eslint.config.js** | Linting rules | ✅ Yes | ⚠️ Minimal |
+| **tsconfig.json** | TypeScript IDE config | ✅ Yes | ❌ No |
+| **tsconfig.build.json** | TypeScript build config | ✅ Yes | ❌ No |
+
+### Tsup Configs (Choose ONE based on package type)
+
+| Template | Package Type | Use Cases |
+|----------|--------------|-----------|
+| **tsup.config.ts** | 📦 **Library** (default) | Most packages, importable libraries |
+| **tsup.config.bin.ts** | 🔧 **Binary** | Standalone executables, CLI bins |
+| **tsup.config.cli.ts** | ⌨️ **CLI** | CLI packages with commands |
+| **tsup.config.dual.ts** | 📦🔧 **Library + Binary** | Packages with both API and bin |
+
+### Package.json Examples
+
+| Template | Purpose |
+|----------|---------|
+| **package.json.lib** | Library package example |
+| **package.json.bin** | Binary package example |
+
+## 🎯 Philosophy
+
+**Convention over Configuration**
+
+All `@kb-labs` packages MUST use these exact templates with minimal customization. This ensures:
+
+- ✅ Consistent build output across all packages
+- ✅ Predictable dependency resolution
+- ✅ Unified linting standards
+- ✅ Easy maintenance and upgrades
+
+## 📦 Usage
+
+### For New Packages
+
+#### Step 1: Choose Package Type
+
+**Library Package** (most common):
+```bash
+cp kb-labs-devkit/templates/configs/tsup.config.ts your-package/
+cp kb-labs-devkit/templates/configs/eslint.config.js your-package/
+cp kb-labs-devkit/templates/configs/tsconfig*.json your-package/
+cp kb-labs-devkit/templates/configs/package.json.lib your-package/package.json
 ```
-                    ┌─────────────┐
-                    │  agent-cli  │   CLI / REST / WebSocket entry points
-                    └──────┬──────┘
-                           │
-                 ┌─────────▼──────────┐
-                 │  agent-task-runner  │   Plan → Execute → Verify pipeline
-                 └─────────┬──────────┘
-                           │
-                    ┌──────▼──────┐
-                    │  agent-core │   LLM orchestration, budget, quality gates
-                    └──┬────┬────┘
-                       │    │
-              ┌────────▼┐  ┌▼──────────┐
-              │  tools   │  │  tracing   │   Tool registry + NDJSON observability
-              └────┬─────┘  └───────────┘
-                   │
-            ┌──────▼──────┐
-            │   history    │   File snapshots, conflict resolution, rollback
-            └─────────────┘
 
-            ┌──────────────┐
-            │  contracts   │   Shared types (used by every package above)
-            └──────────────┘
+**Binary Package** (standalone executables):
+```bash
+cp kb-labs-devkit/templates/configs/tsup.config.bin.ts your-package/tsup.config.ts
+cp kb-labs-devkit/templates/configs/eslint.config.js your-package/
+cp kb-labs-devkit/templates/configs/tsconfig*.json your-package/
+cp kb-labs-devkit/templates/configs/package.json.bin your-package/package.json
 ```
 
-## Packages
+**CLI Package** (command handlers):
+```bash
+cp kb-labs-devkit/templates/configs/tsup.config.cli.ts your-package/tsup.config.ts
+cp kb-labs-devkit/templates/configs/eslint.config.js your-package/
+cp kb-labs-devkit/templates/configs/tsconfig*.json your-package/
+cp kb-labs-devkit/templates/configs/package.json.lib your-package/package.json
+```
 
-| Package | Description |
-|---------|-------------|
-| [`agent-contracts`](packages/agent-contracts/) | Type definitions, event schemas, API routes |
-| [`agent-core`](packages/agent-core/) | Main agent engine — LLM loop, budget management, quality gates, 12 extracted modules |
-| [`agent-cli`](packages/agent-cli/) | CLI plugin, REST handlers, WebSocket handlers for KB Labs platform |
-| [`agent-tools`](packages/agent-tools/) | Tool registry — filesystem, search, shell, memory, delegation |
-| [`agent-tracing`](packages/agent-tracing/) | Crash-safe NDJSON tracing, privacy redaction, trace analysis |
-| [`agent-history`](packages/agent-history/) | File change tracking, snapshots, conflict detection and resolution |
-| [`agent-task-runner`](packages/agent-task-runner/) | High-level plan/execute/verify pipeline with checkpointing |
+**Dual Package** (library + binary):
+```bash
+cp kb-labs-devkit/templates/configs/tsup.config.dual.ts your-package/tsup.config.ts
+cp kb-labs-devkit/templates/configs/eslint.config.js your-package/
+cp kb-labs-devkit/templates/configs/tsconfig*.json your-package/
+cp kb-labs-devkit/templates/configs/package.json.lib your-package/package.json
+# Then add "bin" field to package.json
+```
 
-## Quick Start
+#### Step 2: Customize Package Name
+```bash
+# Edit package.json and update name, description
+```
+
+### For Existing Packages
 
 ```bash
-# From KB Labs root (kb-labs/)
-pnpm install
-pnpm --filter @kb-labs/agents run build
+# Check for drift
+npx kb-devkit-check-configs
 
-# Run an agent task
-pnpm kb agent:run --task="Fix the login bug in auth.ts"
-
-# Run with tracing
-pnpm kb agent:run --task="Refactor the search module" --trace=./trace.ndjson
-
-# Dry run (preview, no file changes)
-pnpm kb agent:run --task="Add input validation" --dry-run
+# Auto-fix drift
+npx kb-devkit-check-configs --fix
 ```
 
-## How It Works
+## 🔧 Customization Rules
 
-1. **Task Classification** — LLM classifies intent (action/discovery/analysis) and sets iteration budget
-2. **Scope Extraction** — Narrows working directory to relevant subdirectory when possible
-3. **Execution Loop** — LLM calls tools iteratively (read files, write code, run commands)
-4. **Quality Gates** — Monitors drift, evidence density, tool error rate via EMA baselines
-5. **Tier Escalation** — Upgrades to stronger LLM tier when task stalls or quality drops
-6. **Completion Validation** — Heuristic + LLM-based evaluation of task success
-7. **Tracing** — Every action logged to crash-safe NDJSON for debugging
+### tsup.config.ts
 
-## Development
+**Allowed customizations:**
+
+```typescript
+export default defineConfig({
+  ...nodePreset,
+  tsconfig: 'tsconfig.build.json', // ✅ Always required
+
+  // ✅ OK: Multiple entry points
+  entry: ['src/index.ts', 'src/cli.ts'],
+
+  // ✅ OK: Extra external deps (if really needed)
+  external: ['special-native-module'],
+
+  dts: true, // ✅ Always required
+});
+```
+
+**NOT allowed:**
+
+```typescript
+// ❌ WRONG: Don't override preset settings
+export default defineConfig({
+  format: ['esm'],        // Already in preset!
+  target: 'es2022',       // Already in preset!
+  sourcemap: true,        // Already in preset!
+  // ...
+});
+
+// ❌ WRONG: Don't disable types
+dts: false,
+
+// ❌ WRONG: Don't duplicate external deps
+external: [
+  '@kb-labs/core',  // Already in preset!
+  '@kb-labs/cli',   // Already in preset!
+],
+```
+
+### eslint.config.js
+
+**Allowed customizations:**
+
+```javascript
+export default [
+  ...nodePreset,
+  {
+    // ✅ OK: Project-specific ignores only
+    ignores: ['**/*.generated.ts']
+  }
+];
+```
+
+**NOT allowed:**
+
+```javascript
+// ❌ WRONG: Don't duplicate preset ignores
+export default [
+  ...nodePreset,
+  {
+    ignores: [
+      '**/dist/**',        // Already in preset!
+      '**/node_modules/**', // Already in preset!
+    ]
+  }
+];
+```
+
+### tsconfig.json & tsconfig.build.json
+
+**NOT customizable!**
+
+These files MUST remain identical to templates. All TypeScript configuration is standardized in DevKit presets.
+
+```json
+// ❌ WRONG: Don't override extends
+{
+  "extends": "./my-custom-base.json"
+}
+
+// ❌ WRONG: Don't add compilerOptions
+{
+  "extends": "@kb-labs/devkit/tsconfig/node.json",
+  "compilerOptions": {
+    "strict": false  // Don't override preset!
+  }
+}
+```
+
+## 🔍 Drift Detection
+
+DevKit automatically detects configuration drift:
 
 ```bash
-# Build all packages
-pnpm build
+# Check all packages
+npx kb-devkit-check-configs
 
-# Run tests (406 tests across 17 test files)
-pnpm test
+# Check specific package
+npx kb-devkit-check-configs --package=@kb-labs/core
 
-# Lint
-pnpm lint
+# Auto-fix (creates backup)
+npx kb-devkit-check-configs --fix
 
-# Type check
-pnpm type-check
-
-# Full CI pipeline
-pnpm ci
+# CI mode (fail on drift)
+npx kb-devkit-check-configs --ci
 ```
 
-### Build Order
+### Drift Detection Rules
 
-Packages must be built in dependency order:
+| Issue | Severity | Auto-fix |
+|-------|----------|----------|
+| Missing `dts: true` | 🔴 Error | ✅ Yes |
+| Using `dts: false` | 🔴 Error | ✅ Yes |
+| Not using `nodePreset` | 🔴 Error | ⚠️ Manual |
+| Duplicate `external` | 🟡 Warning | ✅ Yes |
+| Duplicate `ignores` | 🟡 Warning | ✅ Yes |
+| Missing templates | 🔴 Error | ✅ Yes |
+| Modified templates | 🔴 Error | ⚠️ Manual |
 
+## 📚 Examples
+
+### ✅ Good Example (Minimal Package)
+
+```typescript
+// tsup.config.ts
+import { defineConfig } from 'tsup';
+import nodePreset from '@kb-labs/devkit/tsup/node.js';
+
+export default defineConfig({
+  ...nodePreset,
+  tsconfig: 'tsconfig.build.json',
+  entry: ['src/index.ts'],
+  dts: true,
+});
 ```
-1. agent-contracts   (no deps)
-2. agent-history     (← contracts)
-3. agent-tracing     (← contracts)
-4. agent-tools       (← contracts)
-5. agent-core        (← contracts, tools, history, tracing)
-6. agent-task-runner (← contracts, core, tools)
-7. agent-cli         (← contracts, core, tools, tracing)
+
+### ✅ Good Example (CLI Package with Multiple Entries)
+
+```typescript
+// tsup.config.ts
+import { defineConfig } from 'tsup';
+import nodePreset from '@kb-labs/devkit/tsup/node.js';
+
+export default defineConfig({
+  ...nodePreset,
+  tsconfig: 'tsconfig.build.json',
+  entry: [
+    'src/index.ts',
+    'src/cli/index.ts',
+    'src/cli/commands/build.ts',
+    'src/cli/commands/test.ts',
+  ],
+  dts: true,
+});
 ```
 
-`pnpm build` at root handles this automatically.
+### ❌ Bad Example (Over-configured)
 
-## agent-core Module Map
+```typescript
+// tsup.config.ts
+import { defineConfig } from 'tsup';
 
-The core engine (`agent-core`) has been refactored from a single 5160-line file into focused modules:
+// ❌ Not using preset!
+export default defineConfig({
+  format: ['esm'],
+  target: 'es2022',
+  sourcemap: true,
+  clean: true,
+  dts: true,
+  entry: ['src/index.ts'],
+  external: [/^@kb-labs\/.*/],  // Manual external
+});
+```
 
-| Module | Purpose |
-|--------|---------|
-| `execution/` | State machine, execution ledger, checkpoint |
-| `budget/` | Iteration budget, quality gates, tier selection |
-| `prompt/` | System prompt construction |
-| `tool-input/` | Tool call validation and normalization |
-| `progress/` | Progress tracking during execution |
-| `search-signal/` | Search signal heuristics for discovery tasks |
-| `analytics/` | Run metrics, KPI tracking, regression detection |
-| `reflection/` | Self-evaluation between iterations |
-| `todo-sync/` | Todo-list lifecycle for phase tracking |
-| `task-classifier/` | LLM-based intent classification and scope extraction |
-| `task-completion/` | Heuristic + LLM task completion validation |
-| `context/` | Context filtering, sliding window, summarization |
-| `memory/` | Short-term, long-term, working memory |
-| `planning/` | Turn assembly and planning strategies |
-| `modes/` | Execution modes (execute, plan, edit, debug) |
+## 🚀 Migration Guide
 
-## Configuration
+### From Custom Config to Standard Template
 
-Agent configs live in `.kb/agents/` (JSON files defining tool permissions, LLM tiers, budgets).
+1. **Backup your current config**
+   ```bash
+   cp tsup.config.ts tsup.config.ts.backup
+   ```
 
-Key environment variables:
-- `OPENAI_API_KEY` — LLM provider API key
-- `KB_AGENT_MAX_ITERATIONS` — Override default iteration budget
-- `KB_AGENT_TRACE` — Enable tracing globally
+2. **Copy standard template**
+   ```bash
+   cp kb-labs-devkit/templates/configs/tsup.config.ts .
+   ```
 
-## License
+3. **Migrate customizations** (only if needed)
+   - Compare your backup with template
+   - Extract only truly necessary customizations
+   - Add them with comments explaining why
 
-MIT
+4. **Test build**
+   ```bash
+   pnpm run build
+   ```
+
+5. **Verify types**
+   ```bash
+   npx kb-devkit-check-types
+   ```
+
+## 🔗 Related
+
+- [DevKit README](../../README.md)
+- [DevKit Usage Guide](../../USAGE_GUIDE.md)
+- [ADR-0009: Unified Build Convention](../../docs/adr/0009-unified-build-convention.md)
