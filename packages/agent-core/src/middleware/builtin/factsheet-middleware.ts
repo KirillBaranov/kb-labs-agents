@@ -15,7 +15,7 @@
  * to extract structured facts from recent agent reasoning and tool results.
  */
 
-import { useLLM, type ILLM, type LLMMessage } from '@kb-labs/sdk';
+import { useLLM, type ILLM, type LLMMessage, type LLMTool } from '@kb-labs/sdk';
 import type {
   AgentMiddleware,
   RunContext,
@@ -114,23 +114,32 @@ export class FactSheetMiddleware implements AgentMiddleware {
 
   beforeLLMCall(ctx: LLMCtx): LLMCallPatch | undefined {
     const rendered = this.sheet.render();
-    if (!rendered) {return undefined;}
+    const runMemoryBlock = buildRunMemoryBlock(ctx.run);
+    if (!rendered && !runMemoryBlock) {return undefined;}
 
     // Find system message and append FactSheet
     const messages = [...ctx.messages];
     const sysIdx = messages.findIndex(m => m.role === 'system');
+    const sections: string[] = [];
+    if (rendered) {
+      sections.push(`# Working Memory (${this.sheet.size} facts)\n${rendered}`);
+    }
+    if (runMemoryBlock) {
+      sections.push(runMemoryBlock);
+    }
+    const addition = sections.join('\n\n');
 
     if (sysIdx >= 0) {
       const sys = messages[sysIdx]!;
       messages[sysIdx] = {
         ...sys,
-        content: sys.content + `\n\n# Working Memory (${this.sheet.size} facts)\n${rendered}`,
+        content: sys.content + `\n\n${addition}`,
       };
     } else {
       // No system message — prepend one
       messages.unshift({
         role: 'system',
-        content: `# Working Memory (${this.sheet.size} facts)\n${rendered}`,
+        content: addition,
       });
     }
 
@@ -164,22 +173,48 @@ export class FactSheetMiddleware implements AgentMiddleware {
   // ── LLM Summarization ─────────────────────────────────────────────────────
 
   private async runSummarization(ctx: RunContext): Promise<void> {
-    if (!this.llm?.complete) {return;}
+    if (!this.llm) {return;}
 
     // Build compressed context from recent messages
     const recentMessages = ctx.messages.slice(-this.interval * 4); // ~4 messages per iteration
     const compressed = compressMessages(recentMessages as LLMMessage[]);
     if (!compressed) {return;}
 
-    const prompt = buildExtractionPrompt(compressed, ctx.iteration - this.interval, ctx.iteration);
+    const systemPrompt = buildExtractionSystemPrompt(ctx.iteration - this.interval, ctx.iteration);
+    const messages: LLMMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: compressed },
+    ];
 
-    const response = await this.llm.complete(prompt, {
-      temperature: 0.1,
-      maxTokens: this.maxSummaryTokens,
-    });
+    let facts: ExtractedFact[] = [];
 
-    const raw = (response.content || '').trim();
-    const facts = parseExtractedFacts(raw);
+    // Prefer tool calling for structured output — more reliable than text JSON parsing
+    if (this.llm.chatWithTools) {
+      try {
+        const response = await this.llm.chatWithTools(messages, {
+          tools: [EXTRACT_FACTS_TOOL],
+          toolChoice: { type: 'function', function: { name: 'extract_facts' } },
+          temperature: 0.1,
+          maxTokens: this.maxSummaryTokens,
+        });
+        const call = response.toolCalls?.find(tc => tc.name === 'extract_facts');
+        if (call?.input) {
+          facts = parseExtractedFactsFromToolInput(call.input);
+        }
+      } catch {
+        // fall through to text completion fallback
+      }
+    }
+
+    // Fallback: text completion with JSON parsing (when chatWithTools unavailable or failed)
+    if (facts.length === 0 && this.llm.complete) {
+      const prompt = buildExtractionPromptFallback(compressed, ctx.iteration - this.interval, ctx.iteration);
+      const response = await this.llm.complete(prompt, {
+        temperature: 0.1,
+        maxTokens: this.maxSummaryTokens,
+      });
+      facts = parseExtractedFactsFromText((response.content || '').trim());
+    }
 
     for (const f of facts) {
       this.sheet.add({
@@ -193,6 +228,14 @@ export class FactSheetMiddleware implements AgentMiddleware {
       factsExtracted: facts.length,
       stats: this.sheet.getStats(),
     });
+
+    if (facts.length > 0) {
+      ctx.eventBus.emit('middleware:event', {
+        name: 'factsheet',
+        event: 'summarized',
+        data: { factsAdded: facts.length, totalFacts: this.sheet.size, iteration: ctx.iteration },
+      });
+    }
   }
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -219,6 +262,34 @@ export class FactSheetMiddleware implements AgentMiddleware {
       );
     } catch { /* non-critical */ }
   }
+}
+
+function buildRunMemoryBlock(run: RunContext): string | null {
+  const lastSummary = run.meta.get<string>('loop', 'lastIterationSummary');
+  const repeatsWithoutEvidence = run.meta.get<number>('loop', 'repeatsWithoutEvidence') ?? 0;
+  const repeatNoEvidenceCount = run.meta.get<number>('loop', 'repeatNoEvidenceCount') ?? 0;
+  const lastEvidenceCount = run.meta.get<number>('loop', 'lastEvidenceCount') ?? 0;
+
+  if (!lastSummary && repeatNoEvidenceCount === 0 && lastEvidenceCount === 0) {
+    return null;
+  }
+
+  const task = (run as unknown as { task?: string }).task ?? '';
+  const lines: string[] = [
+    '# Run Memory (Current Session)',
+    `Task: ${task || '(not set)'}`,
+  ];
+  if (lastSummary) {
+    lines.push(`Last iteration: ${lastSummary}`);
+  }
+  lines.push(`Evidence count so far: ${lastEvidenceCount}`);
+  lines.push(`Repeated-without-evidence events: ${repeatNoEvidenceCount}`);
+  if (repeatsWithoutEvidence > 0) {
+    lines.push(`Current repeated intent streak: ${repeatsWithoutEvidence}`);
+  }
+  lines.push('Rule: if no new evidence appears for repeated actions, change strategy or report partial result.');
+
+  return lines.join('\n');
 }
 
 // ─── Heuristic fact extraction (no LLM) ──────────────────────────────────────
@@ -323,7 +394,59 @@ function compressMessages(messages: LLMMessage[]): string | null {
   return lines.length > 0 ? lines.join('\n\n') : null;
 }
 
-function buildExtractionPrompt(context: string, fromIter: number, toIter: number): string {
+// ─── Tool definition for structured fact extraction ───────────────────────────
+
+const EXTRACT_FACTS_TOOL: LLMTool = {
+  name: 'extract_facts',
+  description: 'Extract concrete, specific facts discovered during agent work iterations.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      facts: {
+        type: 'array',
+        description: 'List of concrete facts extracted from the agent context',
+        items: {
+          type: 'object',
+          properties: {
+            category: {
+              type: 'string',
+              enum: ['file_content', 'architecture', 'finding', 'decision', 'blocker', 'correction', 'tool_result', 'environment'],
+              description: 'Semantic category of the fact',
+            },
+            fact: {
+              type: 'string',
+              description: 'Concrete, specific fact. Good: "src/index.ts exports Agent class". Bad: "Agent searched for files"',
+            },
+            confidence: {
+              type: 'number',
+              minimum: 0,
+              maximum: 1,
+              description: 'Confidence score 0.0-1.0',
+            },
+            source: {
+              type: 'string',
+              description: 'Source of this fact: "agent_reasoning" or tool name (e.g. "fs_read")',
+            },
+          },
+          required: ['category', 'fact', 'confidence', 'source'],
+        },
+      },
+    },
+    required: ['facts'],
+  },
+};
+
+function buildExtractionSystemPrompt(fromIter: number, toIter: number): string {
+  return `You extract concrete FACTS from agent work during iterations ${fromIter} to ${toIter}.
+
+Call extract_facts with facts discovered. Only include specific, verifiable facts:
+GOOD: "src/index.ts exports Agent, FileMemory, FactSheet" [file_content]
+GOOD: "Agent uses StateMachine for lifecycle" [architecture]
+BAD: "Agent searched for files", "Tool was called"`;
+}
+
+// Fallback prompt for when chatWithTools is unavailable
+function buildExtractionPromptFallback(context: string, fromIter: number, toIter: number): string {
   return `Extract concrete FACTS from agent work during iterations ${fromIter} to ${toIter}.
 
 ${context}
@@ -341,19 +464,12 @@ BAD: "Agent searched for files", "Tool was called"
 Output ONLY the JSON array:`;
 }
 
-function parseExtractedFacts(raw: string): ExtractedFact[] {
+// Parse facts from tool call input (structured, no regex needed)
+function parseExtractedFactsFromToolInput(input: unknown): ExtractedFact[] {
   try {
-    const match = raw.match(/\[[\s\S]*\]/);
-    if (!match) {return [];}
-
-    const parsed = JSON.parse(match[0]) as Array<{
-      category?: string;
-      fact?: string;
-      confidence?: number;
-      source?: string;
-    }>;
-
-    return parsed
+    const data = input as { facts?: Array<{ category?: string; fact?: string; confidence?: number; source?: string }> };
+    if (!Array.isArray(data?.facts)) {return [];}
+    return data.facts
       .filter(f => f.category && f.fact)
       .map(f => ({
         category: (f.category as FactCategory) || 'finding',
@@ -361,6 +477,47 @@ function parseExtractedFacts(raw: string): ExtractedFact[] {
         confidence: Math.min(1.0, Math.max(0.0, f.confidence ?? 0.5)),
         source: f.source || 'llm_extraction',
       }));
+  } catch {
+    return [];
+  }
+}
+
+// Fallback: parse facts from raw LLM text response (last JSON array wins)
+function parseExtractedFactsFromText(raw: string): ExtractedFact[] {
+  try {
+    // Find the last '[' that starts a valid JSON array — LLM often prefixes with explanation
+    let startIdx = raw.lastIndexOf('[');
+    while (startIdx >= 0) {
+      const slice = raw.slice(startIdx);
+      let depth = 0;
+      let endIdx = -1;
+      for (let i = 0; i < slice.length; i++) {
+        if (slice[i] === '[') {depth++;}
+        else if (slice[i] === ']') {
+          depth--;
+          if (depth === 0) { endIdx = i; break; }
+        }
+      }
+      if (endIdx >= 0) {
+        try {
+          const parsed = JSON.parse(slice.slice(0, endIdx + 1)) as Array<{
+            category?: string; fact?: string; confidence?: number; source?: string;
+          }>;
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed
+              .filter(f => f.category && f.fact)
+              .map(f => ({
+                category: (f.category as FactCategory) || 'finding',
+                fact: f.fact!,
+                confidence: Math.min(1.0, Math.max(0.0, f.confidence ?? 0.5)),
+                source: f.source || 'llm_extraction',
+              }));
+          }
+        } catch { /* try earlier '[' */ }
+      }
+      startIdx = raw.lastIndexOf('[', startIdx - 1);
+    }
+    return [];
   } catch {
     return [];
   }

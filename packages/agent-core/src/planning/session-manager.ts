@@ -59,6 +59,8 @@ export class SessionManager {
 
   /** In-memory cache of per-run sequence counters (initialized lazily from NDJSON) */
   private runSeqCounters = new Map<string, number>();
+  /** In-memory cache of turn sequence counters per session (for turns.json). */
+  private turnSeqCounters = new Map<string, number>();
 
   /** Turn assembler for creating turn snapshots from events */
   private assembler = new TurnAssembler();
@@ -844,8 +846,7 @@ export class SessionManager {
    * Called when user submits a task to agent
    */
   async createUserTurn(sessionId: string, task: string, runId: string): Promise<Turn> {
-    // Get next sequence from file system (persistent across SessionManager instances)
-    const sequence = await this.getNextTurnSequence(sessionId);
+    const sequence = await this.reserveNextTurnSequence(sessionId);
     const timestamp = new Date().toISOString();
 
     const userTurn: Turn = {
@@ -874,16 +875,24 @@ export class SessionManager {
   }
 
   /**
-   * Get next turn sequence number from file system
-   * Reads turns.json to find max sequence and returns next
+   * Reserve next turn sequence number atomically per session.
+   * Uses the same serialized write queue as turns.json updates.
    */
-  private async getNextTurnSequence(sessionId: string): Promise<number> {
-    const turns = await this.getTurns(sessionId);
-    if (turns.length === 0) {
-      return 1;
-    }
-    const maxSequence = Math.max(...turns.map((t) => t.sequence));
-    return maxSequence + 1;
+  private async reserveNextTurnSequence(sessionId: string): Promise<number> {
+    let reserved = 1;
+    const prev = this.writeQueues.get(sessionId) ?? Promise.resolve();
+    const next = prev.then(async () => {
+      if (!this.turnSeqCounters.has(sessionId)) {
+        const turns = await this.getTurns(sessionId);
+        const maxSequence = turns.length === 0 ? 0 : Math.max(...turns.map((t) => t.sequence));
+        this.turnSeqCounters.set(sessionId, maxSequence);
+      }
+      reserved = (this.turnSeqCounters.get(sessionId) ?? 0) + 1;
+      this.turnSeqCounters.set(sessionId, reserved);
+    });
+    this.writeQueues.set(sessionId, next.catch(() => {}));
+    await next;
+    return reserved;
   }
 
   /**
@@ -893,7 +902,7 @@ export class SessionManager {
   async processEventAndUpdateTurn(sessionId: string, event: AgentEvent): Promise<Turn | null> {
     // Pass sequence generator to assembler
     const turn = await this.assembler.processEventAsync(event, async (sid) => {
-      return this.getNextTurnSequence(sid);
+      return this.reserveNextTurnSequence(sid);
     });
 
     if (turn) {

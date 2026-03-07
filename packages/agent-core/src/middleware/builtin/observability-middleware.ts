@@ -1,9 +1,13 @@
 /**
  * ObservabilityMiddleware — bridges AgentMiddleware hooks to AgentEvent stream.
  *
- * Converts middleware lifecycle callbacks into AgentEvent objects and forwards
- * them to the onEvent callback from AgentConfig. Also tracks file operations
- * in run.meta for later extraction into TaskResult.
+ * Architecture (bus pattern):
+ *   - Lifecycle hooks (beforeLLMCall, afterLLMCall, beforeToolExec, afterToolExec)
+ *     emit into ctx.run.eventBus — infrastructure-level events.
+ *   - onStart subscribes to eventBus and translates to UI AgentEvent stream
+ *     via the onEvent callback (CLI, WebSocket, NDJSON trace).
+ *   - onStart/onStop emit agent:start / agent:end directly to onEvent
+ *     (lifecycle events don't go through the bus — they are one-per-run).
  *
  * Design:
  *   - order = 5 (runs before all other middlewares so events fire first)
@@ -29,9 +33,6 @@ import type {
   AgentStartEvent,
   AgentEndEvent,
   LLMStartEvent,
-  LLMEndEvent,
-  ToolStartEvent,
-  ToolEndEvent,
   IterationStartEvent,
   IterationEndEvent,
 } from '@kb-labs/agent-contracts';
@@ -106,6 +107,7 @@ export class ObservabilityMiddleware {
   private _toolStartedAt = new Map<string, number>();
   private _lastIteration = 0;
   private _totalTokens = 0;
+  private _pendingDebug: { systemPrompt: string; messages: ReadonlyArray<{ role: string; content: unknown }> } | null = null;
 
   constructor(
     private readonly agentId: string,
@@ -118,6 +120,52 @@ export class ObservabilityMiddleware {
 
   onStart(ctx: RunContext): void {
     this._startedAt = Date.now();
+
+    // Subscribe to bus — translate infrastructure events to UI AgentEvent stream
+    ctx.eventBus.on('llm:end', (d) => {
+      this._totalTokens += d.promptTokens + d.completionTokens;
+      this._emit({
+        ...makeBase('llm:end', this.agentId, this.parentAgentId, this.sessionId),
+        data: {
+          tokensUsed: d.promptTokens + d.completionTokens,
+          durationMs: d.durationMs,
+          hasToolCalls: d.hasToolCalls,
+          stopReason: d.stopReason,
+        },
+      } as AgentEvent);
+    });
+
+    ctx.eventBus.on('tool:end', (d) => {
+      this._emit({
+        ...makeBase('tool:end', this.agentId, this.parentAgentId, this.sessionId),
+        data: {
+          toolName: d.toolName,
+          success: d.success,
+          durationMs: d.durationMs,
+          outputLength: d.outputLength,
+        },
+      } as AgentEvent);
+    });
+
+    ctx.eventBus.on('middleware:event', (d) => {
+      this._emit({
+        ...makeBase('middleware:decision' as AgentEvent['type'], this.agentId, this.parentAgentId, this.sessionId),
+        data: {
+          middleware: d.name,
+          decision: d.event,
+          details: d.data,
+        },
+      } as AgentEvent);
+    });
+
+    ctx.eventBus.on('llm:debug', (d) => {
+      this._emit({
+        ...makeBase('llm:debug' as AgentEvent['type'], this.agentId, this.parentAgentId, this.sessionId),
+        data: d,
+      } as AgentEvent);
+    });
+
+    // agent:start goes directly to onEvent (lifecycle — not via bus)
     const event: AgentStartEvent = {
       ...makeBase('agent:start', this.agentId, this.parentAgentId, this.sessionId),
       data: {
@@ -133,16 +181,19 @@ export class ObservabilityMiddleware {
   onStop(ctx: RunContext, reason: string): void {
     const filesCreated = ctx.meta.get<string[]>('files', 'created') ?? [];
     const filesModified = ctx.meta.get<string[]>('files', 'modified') ?? [];
+    const finalAnswer = ctx.meta.get<string>('agent', 'finalAnswer') ?? '';
+    const success = reason === 'report_complete' || reason === 'no_tool_calls';
     const event: AgentEndEvent = {
       ...makeBase('agent:end', this.agentId, this.parentAgentId, this.sessionId),
       data: {
-        success: reason !== 'abort_signal' && reason !== 'hard_budget',
-        summary: '',
+        success,
+        summary: finalAnswer,
         iterations: this._lastIteration,
         tokensUsed: this._totalTokens,
         durationMs: Date.now() - this._startedAt,
         filesCreated,
         filesModified,
+        stopReason: reason,
       },
     } as AgentEndEvent;
     this._emit(event);
@@ -176,51 +227,87 @@ export class ObservabilityMiddleware {
     this._emit(event);
   }
 
-  // ── LLM hooks ─────────────────────────────────────────────────────────
+  // ── LLM hooks — emit to bus; also emit llm:start directly for CLI ──────
 
   beforeLLMCall(ctx: LLMCtx): undefined {
     this._llmStartedAt = Date.now();
+    const sysMsg = ctx.messages.find(m => m.role === 'system');
+    const systemPromptChars = typeof sysMsg?.content === 'string' ? sysMsg.content.length : 0;
+
+    ctx.run.eventBus.emit('llm:start', {
+      iteration: ctx.run.iteration,
+      messageCount: ctx.messages.length,
+      toolCount: ctx.tools.length,
+      systemPromptChars,
+    });
+
+    if (ctx.run.debug) {
+      this._pendingDebug = {
+        systemPrompt: typeof sysMsg?.content === 'string' ? sysMsg.content : '',
+        messages: ctx.messages,
+      };
+    }
+
+    // Also emit llm:start directly to onEvent for CLI spinner
     const event: LLMStartEvent = {
       ...makeBase('llm:start', this.agentId, this.parentAgentId, this.sessionId),
       data: {
         tier: ctx.run.tier,
         messageCount: ctx.messages.length,
+        toolCount: ctx.tools.length,
+        systemPromptChars,
       },
     } as LLMStartEvent;
     this._emit(event);
+
     return undefined;
   }
 
-  afterLLMCall(_ctx: LLMCtx, result: LLMCallResult): void {
-    const tokensUsed = result.usage
-      ? result.usage.promptTokens + result.usage.completionTokens
-      : 0;
-    this._totalTokens += tokensUsed;
+  afterLLMCall(ctx: LLMCtx, result: LLMCallResult): void {
+    const durationMs = Date.now() - this._llmStartedAt;
+    ctx.run.eventBus.emit('llm:end', {
+      iteration: ctx.run.iteration,
+      promptTokens: result.usage?.promptTokens ?? 0,
+      completionTokens: result.usage?.completionTokens ?? 0,
+      stopReason: result.stopReason ?? 'unknown',
+      hasToolCalls: (result.toolCalls?.length ?? 0) > 0,
+      durationMs,
+    });
 
-    const event: LLMEndEvent = {
-      ...makeBase('llm:end', this.agentId, this.parentAgentId, this.sessionId),
-      data: {
-        tokensUsed,
-        durationMs: Date.now() - this._llmStartedAt,
-        hasToolCalls: (result.toolCalls?.length ?? 0) > 0,
-        content: result.content ?? undefined,
-      },
-    } as LLMEndEvent;
-    this._emit(event);
+    if (ctx.run.debug && this._pendingDebug) {
+      ctx.run.eventBus.emit('llm:debug', {
+        iteration: ctx.run.iteration,
+        systemPrompt: this._pendingDebug.systemPrompt,
+        messages: this._pendingDebug.messages.map(m => ({
+          role: m.role,
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        })),
+        responseContent: result.content,
+      });
+      this._pendingDebug = null;
+    }
   }
 
-  // ── Tool hooks ─────────────────────────────────────────────────────────
+  // ── Tool hooks — emit to bus; also emit tool:start directly for CLI ────
 
   beforeToolExec(ctx: ToolExecCtx): 'execute' {
     this._toolStartedAt.set(ctx.toolName, Date.now());
-    const event: ToolStartEvent = {
+
+    ctx.run.eventBus.emit('tool:start', {
+      iteration: ctx.run.iteration,
+      toolName: ctx.toolName,
+      input: ctx.input,
+    });
+
+    // Also emit tool:start directly to onEvent for CLI rendering
+    this._emit({
       ...makeBase('tool:start', this.agentId, this.parentAgentId, this.sessionId),
       data: {
         toolName: ctx.toolName,
         input: ctx.input,
       },
-    } as ToolStartEvent;
-    this._emit(event);
+    } as AgentEvent);
+
     return 'execute';
   }
 
@@ -231,17 +318,14 @@ export class ObservabilityMiddleware {
     const durationMs = Date.now() - (this._toolStartedAt.get(ctx.toolName) ?? Date.now());
     this._toolStartedAt.delete(ctx.toolName);
 
-    const event: ToolEndEvent = {
-      ...makeBase('tool:end', this.agentId, this.parentAgentId, this.sessionId),
-      toolCallId: result.toolCallId,
-      data: {
-        toolName: ctx.toolName,
-        success: result.success,
-        output: result.output,
-        durationMs,
-      },
-    } as ToolEndEvent;
-    this._emit(event);
+    ctx.run.eventBus.emit('tool:end', {
+      iteration: ctx.run.iteration,
+      toolName: ctx.toolName,
+      success: result.success,
+      durationMs,
+      outputLength: result.output.length,
+    });
+    // tool:end UI event is delivered via bus subscription in onStart
   }
 
   // ── Private ────────────────────────────────────────────────────────────

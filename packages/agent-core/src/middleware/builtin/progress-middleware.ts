@@ -47,6 +47,11 @@ export class ProgressMiddleware {
       ctx.meta.set('progress', 'isStuck', true);
       ctx.meta.set('progress', 'iterationsSinceProgress', this._iterationsSinceProgress);
       this.callbacks.onStuck?.(ctx.iteration, this._iterationsSinceProgress);
+      ctx.eventBus.emit('middleware:event', {
+        name: 'progress',
+        event: 'stuck',
+        data: { iteration: ctx.iteration, iterationsSinceProgress: this._iterationsSinceProgress },
+      });
     }
 
     return 'continue';
@@ -68,6 +73,11 @@ export class ProgressMiddleware {
         ctx.run.meta.set('progress', 'loopDetected', true);
         ctx.run.meta.set('progress', 'repeatedCalls', repeatedCalls);
         this.callbacks.onLoop?.(ctx.iteration, repeatedCalls);
+        ctx.run.eventBus.emit('middleware:event', {
+          name: 'progress',
+          event: 'loop_detected',
+          data: { iteration: ctx.iteration, repeatedCalls },
+        });
       }
     }
 

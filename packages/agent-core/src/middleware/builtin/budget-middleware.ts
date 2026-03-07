@@ -50,6 +50,11 @@ export class BudgetMiddleware {
 
       if (this.policy.hardStop || this.policy.forceSynthesisOnHardLimit) {
         ctx.meta.set('budget', 'forceSynthesis', this.policy.forceSynthesisOnHardLimit);
+        ctx.eventBus.emit('middleware:event', {
+          name: 'budget',
+          event: 'hard_stop',
+          data: { tokensUsed: used, maxTokens: hardLimit },
+        });
         return 'stop';
       }
     }
@@ -69,6 +74,11 @@ export class BudgetMiddleware {
       ctx.run.meta.set('budget', 'convergenceNudgeSent', true);
 
       const utilPct = Math.round((used / this.policy.maxTokens) * 100);
+      ctx.run.eventBus.emit('middleware:event', {
+        name: 'budget',
+        event: 'soft_warning',
+        data: { tokensUsed: used, maxTokens: this.policy.maxTokens, ratio: utilPct },
+      });
       return {
         messages: [
           ...ctx.messages,

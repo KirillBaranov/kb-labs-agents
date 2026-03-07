@@ -89,6 +89,12 @@ export class ContextFilterMiddleware {
       content: `[Context filter: ${dropped} earlier iteration(s) removed to stay within context window]`,
     };
 
+    ctx.run.eventBus.emit('middleware:event', {
+      name: 'context-filter',
+      event: 'trimmed',
+      data: { droppedRounds: dropped, keptRounds: this.slidingWindowSize },
+    });
+
     return { messages: [...prefix, dropNote, ...truncated] };
   }
 
@@ -104,7 +110,7 @@ export class ContextFilterMiddleware {
     const remaining = content.length - this.maxOutputLength;
     return {
       ...msg,
-      content: `${truncated}\n\n... (${remaining} more characters truncated)`,
+      content: `${truncated}\n\n[TRUNCATED: ${remaining} more characters not shown — tool output was cut at ${this.maxOutputLength} chars. If the relevant content may be in the truncated part, use a more specific query or request a smaller range.]`,
     };
   }
 }
