@@ -18,17 +18,25 @@ import type { LLMTier } from '@kb-labs/agent-contracts';
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface AgentEvents {
-  'run:start':       { task: string; tier: LLMTier };
-  'run:end':         { success: boolean; totalTokens: number; durationMs: number };
-  'iteration:start': { iteration: number; maxIterations: number };
-  'iteration:end':   { iteration: number };
-  'llm:start':       { iteration: number; messageCount: number };
-  'llm:end':         { iteration: number; promptTokens: number; completionTokens: number };
-  'tool:start':      { iteration: number; toolName: string; input: Record<string, unknown> };
-  'tool:end':        { iteration: number; toolName: string; success: boolean; durationMs: number };
-  'escalate':        { fromTier: LLMTier; toTier: LLMTier; reason: string };
-  'abort':           { reason: string };
-  'spawn':           { profileId: string; childRunId: string };
+  'run:start':        { task: string; tier: LLMTier };
+  'run:end':          { success: boolean; totalTokens: number; durationMs: number; stopReason: string };
+  'iteration:start':  { iteration: number; maxIterations: number };
+  'iteration:end':    { iteration: number };
+  'llm:start':        { iteration: number; messageCount: number; toolCount: number; systemPromptChars: number };
+  'llm:end':          { iteration: number; promptTokens: number; completionTokens: number;
+                        stopReason: string; hasToolCalls: boolean; durationMs: number };
+  'tool:start':       { iteration: number; toolName: string; input: Record<string, unknown> };
+  'tool:end':         { iteration: number; toolName: string; success: boolean;
+                        durationMs: number; outputLength: number };
+  /** Generic middleware decision event — emitted by any middleware into the bus */
+  'middleware:event': { name: string; event: string; data: Record<string, unknown> };
+  /** Debug-only: full LLM prompt + response (emitted when RunContext.debug = true) */
+  'llm:debug':        { iteration: number; systemPrompt: string;
+                        messages: Array<{ role: string; content: string }>;
+                        responseContent: string };
+  'escalate':         { fromTier: LLMTier; toTier: LLMTier; reason: string };
+  'abort':            { reason: string };
+  'spawn':            { profileId: string; childRunId: string };
 }
 
 export type Unsubscribe = () => void;
