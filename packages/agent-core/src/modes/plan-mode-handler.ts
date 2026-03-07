@@ -366,6 +366,7 @@ export class PlanModeHandler implements ModeHandler {
           durationMs: Date.now() - startMs,
           filesCreated: [],
           filesModified: [],
+          stopReason: 'error',
         },
       });
       throw error;
