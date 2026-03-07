@@ -458,14 +458,14 @@ export class IncrementalTraceWriter implements Tracer {
         const iter = iterations.get(entry.iteration)!;
         iter.eventCount++;
 
-        if (entry.type === 'llm:call') {
+        if (entry.type === 'llm:end') {
           iter.llmCalls++;
           if ('cost' in entry && entry.cost) {
             totalCost += entry.cost.totalCost || 0;
           }
         }
 
-        if (entry.type === 'tool:execution') {
+        if (entry.type === 'tool:end') {
           iter.toolCalls++;
         }
       }

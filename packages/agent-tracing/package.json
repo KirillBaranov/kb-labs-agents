@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@kb-labs/agent-contracts": "workspace:*",
-    "@kb-labs/sdk": "^1.0.0"
+    "@kb-labs/sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.3.3",

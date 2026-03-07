@@ -10,6 +10,7 @@
 
 import type { LLMTier } from '@kb-labs/agent-contracts';
 import type { LLMMessage, LLMTool } from '@kb-labs/sdk';
+import type { AgentEventBus } from './event-bus.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ContextMeta — namespaced side-channel for middleware (no key collisions)
@@ -54,6 +55,10 @@ export interface RunContext {
   sessionId?: string;
   /** Namespaced side-channel metadata for middleware */
   meta: ContextMeta;
+  /** Event bus for middleware-to-middleware and middleware-to-observer communication */
+  eventBus: AgentEventBus;
+  /** Debug mode: middleware emit full prompts/responses via llm:debug events */
+  debug: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,6 +94,8 @@ export interface LLMCallResult {
   content: string;
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
   usage?: { promptTokens: number; completionTokens: number };
+  /** LLM stop reason: 'end_turn' | 'tool_use' | 'max_tokens' | undefined */
+  stopReason?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
