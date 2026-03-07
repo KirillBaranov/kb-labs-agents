@@ -26,6 +26,17 @@
 
 import type { ExecutionLoop, LoopContext, LoopResult, LoopOutput, LLMCallResult, ToolCallInput } from '@kb-labs/agent-sdk';
 
+// ─── Canonical JSON serialization ────────────────────────────────────────────
+// JSON.stringify has non-deterministic key order across JS engines.
+// canonicalJson sorts object keys recursively for stable loop-detection signatures.
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {return JSON.stringify(value);}
+  if (Array.isArray(value)) {return '[' + value.map(canonicalJson).join(',') + ']';}
+  const keys = Object.keys(value as object).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + canonicalJson((value as Record<string, unknown>)[k])).join(',') + '}';
+}
+
 // ─── Internal stop priorities ─────────────────────────────────────────────────
 
 const PRIORITY = {
@@ -56,7 +67,7 @@ class LoopDetector {
 
   /** Record tool calls and return true if a repeat pattern is detected. */
   check(calls: ToolCallInput[]): boolean {
-    const sig = calls.map(c => `${c.name}:${JSON.stringify(c.input)}`).join('|');
+    const sig = calls.map(c => `${c.name}:${canonicalJson(c.input)}`).join('|');
     this.history.push(sig);
     if (this.history.length > this.windowSize) {
       this.history.shift();
@@ -160,14 +171,64 @@ export class LinearExecutionLoop implements ExecutionLoop {
         return failure(`Tool execution failed: ${msg}`);
       }
 
-      // ── Loop detection → escalate ────────────────────────────────────────────
-      if (loopDetector.check(inputs)) {
-        return { outcome: 'escalate', reason: 'Agent is repeating the same tool calls' };
+      // Build compact per-iteration recap so the next LLM call does not "forget"
+      // what already happened in this run.
+      const reads = run.meta.get<string[]>('files', 'read') ?? [];
+      const modified = run.meta.get<string[]>('files', 'modified') ?? [];
+      const created = run.meta.get<string[]>('files', 'created') ?? [];
+      const evidenceCount = reads.length + modified.length + created.length;
+      const prevEvidenceCount = run.meta.get<number>('loop', 'lastEvidenceCount') ?? 0;
+      const newEvidence = evidenceCount > prevEvidenceCount;
+
+      const toolSignature = inputs.map((t) => `${t.name}:${canonicalJson(t.input)}`).join('|');
+      const lastToolSignature = run.meta.get<string>('loop', 'lastToolSignature') ?? '';
+      let repeatsWithoutEvidence = run.meta.get<number>('loop', 'repeatsWithoutEvidence') ?? 0;
+      let repeatNoEvidenceCount = run.meta.get<number>('loop', 'repeatNoEvidenceCount') ?? 0;
+      if (!newEvidence && toolSignature === lastToolSignature) {
+        repeatsWithoutEvidence += 1;
+        repeatNoEvidenceCount += 1;
+      } else {
+        repeatsWithoutEvidence = 0;
       }
 
-      // ── Max iterations → escalate ──────────────────────────────────────────
+      run.meta.set('loop', 'lastEvidenceCount', evidenceCount);
+      run.meta.set('loop', 'lastToolSignature', toolSignature);
+      run.meta.set('loop', 'repeatsWithoutEvidence', repeatsWithoutEvidence);
+      run.meta.set('loop', 'repeatNoEvidenceCount', repeatNoEvidenceCount);
+      run.meta.set(
+        'loop',
+        'lastIterationSummary',
+        `Iteration ${run.iteration}: tools=${inputs.map((t) => t.name).join(', ')}; ` +
+          `evidence=${newEvidence ? 'new' : 'none'}; files(read=${reads.length}, modified=${modified.length}, created=${created.length})`,
+      );
+
+      if (repeatsWithoutEvidence >= 2) {
+        return complete({
+          priority: PRIORITY.LOOP,
+          reasonCode: 'repeated_without_progress',
+          reason: 'Repeated tool intent without new evidence',
+          answer: 'Agent is repeating similar actions without collecting new evidence. Returning partial result to avoid wasted iterations.',
+        });
+      }
+
+      // ── Loop detection → complete with partial result (no forced escalation) ─
+      if (loopDetector.check(inputs)) {
+        return complete({
+          priority: PRIORITY.LOOP,
+          reasonCode: 'loop_detected',
+          reason: 'Agent detected repeated tool-call pattern',
+          answer: 'Agent detected a repeated tool-call loop. Returning partial result; refine scope or constraints to continue.',
+        });
+      }
+
+      // ── Max iterations → complete with partial result (no forced escalation) ─
       if (i + 1 >= run.maxIterations) {
-        return { outcome: 'escalate', reason: `Maximum iterations reached (${run.maxIterations})` };
+        return complete({
+          priority: PRIORITY.MAX_ITER,
+          reasonCode: 'max_iterations',
+          reason: `Maximum iterations reached (${run.maxIterations})`,
+          answer: `Maximum iterations reached (${run.maxIterations}). Returning partial result with collected evidence.`,
+        });
       }
     }
 
@@ -196,10 +257,11 @@ function extractReport(response: LLMCallResult): StopResult | null {
 }
 
 function complete(stop: StopResult): LoopResult {
+  const successfulStops = new Set(['report_complete', 'no_tool_calls']);
   const result: LoopOutput = {
     answer: stop.answer ?? stop.reason,
     reasonCode: stop.reasonCode,
-    success: stop.priority <= PRIORITY.REPORT,
+    success: successfulStops.has(stop.reasonCode),
     metadata: { stopPriority: stop.priority },
   };
   return { outcome: 'complete', result };
