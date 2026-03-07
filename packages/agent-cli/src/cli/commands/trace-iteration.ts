@@ -12,11 +12,13 @@ import type {
   IterationResponse,
   TraceErrorCode,
 } from '@kb-labs/agent-contracts';
-import type { DetailedTraceEntry, LLMCallEvent, ToolExecutionEvent } from '@kb-labs/agent-contracts';
+import type { DetailedTraceEntry } from '@kb-labs/agent-contracts';
 import { loadTrace, formatTraceLoadError } from '@kb-labs/agent-tracing';
+import { normalizeTraceEvents } from './trace-event-normalizer.js';
 
 type TraceIterationInput = {
   taskId?: string;
+  'task-id'?: string;
   iteration?: number;
   json?: boolean;
 };
@@ -31,7 +33,7 @@ export default defineCommand({
     async execute(ctx: PluginContextV3, input: TraceIterationInput): Promise<TraceIterationResult> {
       const logger = useLogger();
       const flags = (input as any).flags ?? input;
-      const taskId = flags.taskId as string | undefined;
+      const taskId = (flags['task-id'] ?? flags.taskId) as string | undefined;
       const iteration = typeof flags.iteration === 'string' ? parseInt(flags.iteration, 10) : (flags.iteration as number | undefined);
 
     if (iteration === undefined || iteration < 1) {
@@ -53,10 +55,8 @@ export default defineCommand({
         return { exitCode: 1, response: err };
       }
 
-      const { events } = loaded;
-
-      // Filter by iteration
-      const filtered = events.filter((e) => (e as any).iteration === iteration);
+      const normalized = normalizeTraceEvents(loaded.events);
+      const filtered = normalized.filter((e) => e.iteration === iteration).map((e) => e.raw);
 
       if (filtered.length === 0) {
         const err = error('INVALID_ITERATION', `No events found for iteration ${iteration}`);
@@ -107,9 +107,18 @@ export default defineCommand({
  * Calculate iteration summary
  */
 function calculateIterationSummary(events: DetailedTraceEntry[]): IterationResponse['summary'] {
-  const llmEvents = events.filter((e) => e.type === 'llm:call') as LLMCallEvent[];
-  const toolEvents = events.filter((e) => e.type === 'tool:execution') as ToolExecutionEvent[];
-  const errorEvents = events.filter((e) => e.type === 'error:captured');
+  const llmEvents = events.filter((e) => {
+    const type = String((e as { type?: unknown }).type ?? '');
+    return type === 'llm:start' || type === 'llm:call' || type === 'llm_call';
+  });
+  const toolEvents = events.filter((e) => {
+    const type = String((e as { type?: unknown }).type ?? '');
+    return type === 'tool:start' || type === 'tool:execution' || type === 'tool_call';
+  });
+  const errorEvents = events.filter((e) => {
+    const type = String((e as { type?: unknown }).type ?? '');
+    return type === 'error:captured' || type === 'agent:error' || type === 'tool:error';
+  });
 
   // Calculate duration (from first to last event timestamp)
   const timestamps = events.map((e) => new Date(e.timestamp).getTime());
@@ -161,13 +170,12 @@ function printHumanReadable(
     ctx.ui.write(`  ${type}: ${typeEvents.length}\n`);
 
     // Show details for important events
-    if (type === 'llm:call' && typeEvents.length > 0) {
-      const llmEvent = typeEvents[0] as LLMCallEvent;
-      ctx.ui.write(`    Model: ${llmEvent.request.model}\n`);
-      ctx.ui.write(`    Tokens: ${llmEvent.response.usage.totalTokens}\n`);
-      ctx.ui.write(`    Cost: $${llmEvent.cost.totalCost.toFixed(6)}\n`);
-    } else if (type === 'tool:execution') {
-      const toolNames = (typeEvents as ToolExecutionEvent[]).map((e) => e.tool.name);
+    if ((type === 'llm:end' || type === 'llm:call') && typeEvents.length > 0) {
+      const llmEvent = typeEvents[0] as any;
+      const tokens = llmEvent?.data?.tokensUsed ?? llmEvent?.response?.usage?.totalTokens ?? 0;
+      ctx.ui.write(`    Tokens: ${tokens}\n`);
+    } else if (type === 'tool:end' || type === 'tool:start' || type === 'tool:execution') {
+      const toolNames = (typeEvents as any[]).map((e) => e?.data?.toolName || e?.tool?.name || 'unknown');
       ctx.ui.write(`    Tools: ${[...new Set(toolNames)].join(', ')}\n`);
     } else if (type === 'error:captured' && typeEvents.length > 0) {
       const errorEvent = typeEvents[0] as any;

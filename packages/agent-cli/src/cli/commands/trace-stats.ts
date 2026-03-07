@@ -14,11 +14,12 @@ import type {
   TraceErrorCode,
   DetailedTraceEntry,
 } from '@kb-labs/agent-contracts';
-import type { LLMCallEvent, ToolExecutionEvent } from '@kb-labs/agent-contracts';
 import { loadTrace, formatTraceLoadError } from '@kb-labs/agent-tracing';
+import { normalizeTraceEvents } from './trace-event-normalizer.js';
 
 type TraceStatsInput = {
   taskId?: string;
+  'task-id'?: string;
   json?: boolean;
 };
 
@@ -32,7 +33,7 @@ export default defineCommand({
     async execute(ctx: PluginContextV3, input: TraceStatsInput): Promise<TraceStatsResult> {
       const logger = useLogger();
       const flags = (input as any).flags ?? input;
-      const taskId = flags.taskId as string | undefined;
+      const taskId = (flags['task-id'] ?? flags.taskId) as string | undefined;
 
     try {
       const loaded = await loadTrace(taskId);
@@ -50,7 +51,7 @@ export default defineCommand({
       const { events } = loaded;
 
       // Calculate stats
-      const stats = calculateStats(events);
+      const stats = calculateStats(events, taskId);
 
       // Build response
       const response: TraceCommandResponse<StatsResponse> = {
@@ -86,45 +87,38 @@ export default defineCommand({
 /**
  * Calculate statistics from trace events
  */
-function calculateStats(events: DetailedTraceEntry[]): StatsResponse {
-  // Find iteration events (supports both new and legacy formats)
-  const iterationEvents = events.filter((e) => e.type === 'iteration:detail');
+function calculateStats(events: DetailedTraceEntry[], taskId?: string): StatsResponse {
+  const normalized = normalizeTraceEvents(events);
+  const iterationSet = new Set<number>();
+  for (const e of normalized) {
+    if (e.iteration > 0) {
+      iterationSet.add(e.iteration);
+    }
+  }
 
-  // Find LLM events (supports both 'llm:call' new format and 'llm_call' legacy format)
-  const llmEvents = events.filter((e) =>
-    e.type === 'llm:call' || (e as any).type === 'llm_call'
-  ) as LLMCallEvent[];
-
-  // Find tool events (supports both 'tool:execution' new format and 'tool_call' legacy format)
-  const toolEvents = events.filter((e) =>
-    e.type === 'tool:execution' || (e as any).type === 'tool_call'
-  ) as ToolExecutionEvent[];
-
-  const errorEvents = events.filter((e) => e.type === 'error:captured');
+  const llmStartEvents = normalized.filter((e) => e.type === 'llm:start' || e.type === 'llm:call' || e.type === 'llm_call');
+  const llmEndEvents = normalized.filter((e) => e.type === 'llm:end' || e.type === 'llm:call');
+  const toolEndEvents = normalized.filter((e) => e.type === 'tool:end' || e.type === 'tool:execution' || e.type === 'tool_result');
+  const errorEvents = normalized.filter((e) => e.type === 'error:captured' || e.type === 'agent:error' || e.type === 'tool:error');
 
   // Calculate LLM stats (handle both new and legacy data structures)
-  const inputTokens = llmEvents.reduce((sum, e) => {
-    // New format: e.response.usage.inputTokens
-    // Legacy format: e.data.tokensUsed (approximate, only has total)
-    const tokens = (e as any).response?.usage?.inputTokens || 0;
+  const inputTokens = llmEndEvents.reduce((sum, e) => {
+    const tokens = (e.raw as any).response?.usage?.inputTokens || 0;
     return sum + tokens;
   }, 0);
 
-  const outputTokens = llmEvents.reduce((sum, e) => {
-    // New format: e.response.usage.outputTokens
-    const tokens = (e as any).response?.usage?.outputTokens || 0;
+  const outputTokens = llmEndEvents.reduce((sum, e) => {
+    const tokens = (e.raw as any).response?.usage?.outputTokens || 0;
     return sum + tokens;
   }, 0);
 
-  // Legacy fallback: if no input/output tokens, use total from legacy format
-  const legacyTotalTokens = llmEvents.reduce((sum, e) => {
-    const tokens = (e as any).data?.tokensUsed || 0;
+  const legacyTotalTokens = llmEndEvents.reduce((sum, e) => {
+    const tokens = (e.data.tokensUsed as number | undefined) || 0;
     return sum + tokens;
   }, 0);
 
-  // Calculate cost (new format only, legacy doesn't have cost data)
-  const totalCost = llmEvents.reduce((sum, e) => {
-    const cost = (e as any).cost?.totalCost || 0;
+  const totalCost = llmEndEvents.reduce((sum, e) => {
+    const cost = (e.raw as any).cost?.totalCost || 0;
     return sum + cost;
   }, 0);
 
@@ -133,15 +127,11 @@ function calculateStats(events: DetailedTraceEntry[]): StatsResponse {
   let successfulTools = 0;
   let failedTools = 0;
 
-  for (const tool of toolEvents) {
-    // New format: tool.tool.name
-    // Legacy format: tool.data.toolName or extract from data
-    const toolName = (tool as any).tool?.name || (tool as any).data?.toolName || 'unknown';
+  for (const tool of toolEndEvents) {
+    const toolName = (tool.raw as any).tool?.name || (tool.data.toolName as string | undefined) || 'unknown';
     toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
 
-    // New format: tool.output.success
-    // Legacy format: tool.data.success (or assume success if no error)
-    const success = (tool as any).output?.success ?? (tool as any).data?.success ?? true;
+    const success = (tool.raw as any).output?.success ?? tool.data.success ?? true;
     if (success) {
       successfulTools++;
     } else {
@@ -157,16 +147,16 @@ function calculateStats(events: DetailedTraceEntry[]): StatsResponse {
   const totalDurationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
 
   return {
-    taskId: 'unknown', // Will be set by caller
+    taskId: taskId || 'unknown',
     status: errorEvents.length > 0 ? 'failed' : 'success',
 
     iterations: {
-      total: iterationEvents.length,
-      completed: iterationEvents.length,
+      total: iterationSet.size,
+      completed: iterationSet.size,
     },
 
     llm: {
-      calls: llmEvents.length,
+      calls: llmStartEvents.length,
       inputTokens,
       outputTokens,
       // Use explicit tokens if available, otherwise fall back to legacy total
@@ -174,7 +164,7 @@ function calculateStats(events: DetailedTraceEntry[]): StatsResponse {
     },
 
     tools: {
-      totalCalls: toolEvents.length,
+      totalCalls: toolEndEvents.length,
       byTool: toolCounts,
       successful: successfulTools,
       failed: failedTools,

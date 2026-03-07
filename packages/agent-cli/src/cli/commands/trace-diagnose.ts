@@ -12,9 +12,11 @@
 import { defineCommand, type PluginContextV3 } from '@kb-labs/sdk';
 import type { TraceCommandResponse, TraceErrorCode } from '@kb-labs/agent-contracts';
 import { loadTrace, formatTraceLoadError } from '@kb-labs/agent-tracing';
+import { normalizeTraceEvents } from './trace-event-normalizer.js';
 
 type TraceDiagnoseInput = {
   taskId?: string;
+  'task-id'?: string;
   json?: boolean;
 };
 
@@ -85,7 +87,7 @@ export default defineCommand({
   handler: {
     async execute(ctx: PluginContextV3, input: TraceDiagnoseInput): Promise<{ exitCode: number }> {
       const flags = (input as any).flags ?? input;
-      const taskId = flags.taskId as string | undefined;
+      const taskId = (flags['task-id'] ?? flags.taskId) as string | undefined;
 
       try {
         const loaded = await loadTrace(taskId);
@@ -113,28 +115,36 @@ export default defineCommand({
 });
 
 function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
+  const normalized = normalizeTraceEvents(events as any[]);
   const issues: DiagnosticIssue[] = [];
 
   // === Summary ===
-  const taskStart = events.find(e => e.type === 'task_start');
-  const taskEnd = events.find(e => e.type === 'task_end');
-  const agentEnd = events.find(e => e.type === 'agent:end');
-  const iterationEnds = events.filter(e => e.type === 'iteration:end');
-  const iterations = iterationEnds.length || (agentEnd?.data?.iterations ?? 0);
-  const totalTokens = agentEnd?.data?.tokensUsed ?? 0;
-  const durationMs = agentEnd?.data?.durationMs ?? 0;
-  const success = taskEnd?.data?.success ?? agentEnd?.data?.success ?? false;
+  const taskStart = events[0];
+  const agentEnd = [...events].reverse().find(e => e.type === 'agent:end');
+  const iterationStarts = normalized.filter(e => e.type === 'iteration:start');
+  const iterations = iterationStarts.length || Math.max(0, ...normalized.map(e => e.iteration));
+  const llmEndTokens = normalized
+    .filter(e => e.type === 'llm:end')
+    .reduce((sum, e) => sum + (Number(e.data.tokensUsed) || 0), 0);
+  const totalTokens = Number(agentEnd?.data?.tokensUsed) || llmEndTokens;
+  const durationMs = Number(agentEnd?.data?.durationMs)
+    || (taskStart && events[events.length - 1]
+      ? new Date(events[events.length - 1].timestamp).getTime() - new Date(taskStart.timestamp).getTime()
+      : 0);
+  const success = Boolean(agentEnd?.data?.success ?? true);
 
   // Confidence from report_to_orchestrator
   let confidence = 0;
-  const toolResults = events.filter(e => e.type === 'tool_result' || e.type === 'tool:execution');
+  const toolResults = normalized.filter(e =>
+    e.type === 'tool:end' || e.type === 'tool_result' || e.type === 'tool:execution'
+  );
   for (const tr of toolResults) {
-    const data = tr.data || tr.output || tr;
+    const data = tr.data || (tr.raw as any).output || tr.raw;
     const output = typeof data?.output === 'string' ? data.output : JSON.stringify(data?.result || '');
     if (output.includes('"confidence"')) {
       try {
         const match = output.match(/"confidence"\s*:\s*([\d.]+)/);
-        if (match) {confidence = parseFloat(match[1]);}
+        if (match?.[1]) {confidence = parseFloat(match[1]);}
       } catch { /* ignore */ }
     }
   }
@@ -167,14 +177,10 @@ function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
 
   // Token growth per iteration (from iteration:end cumulativeTokens)
   const tokenGrowth: Array<{ iteration: number; cumulativeTokens: number }> = [];
-  for (const ie of iterationEnds) {
-    const data = ie.data || ie;
-    if (data.cumulativeTokens != null) {
-      tokenGrowth.push({
-        iteration: data.iteration || 0,
-        cumulativeTokens: data.cumulativeTokens,
-      });
-    }
+  let cumulative = 0;
+  for (const e of normalized.filter(e => e.type === 'llm:end')) {
+    cumulative += Number(e.data.tokensUsed) || 0;
+    tokenGrowth.push({ iteration: e.iteration, cumulativeTokens: cumulative });
   }
 
   // System prompt changes (from context:diff)
@@ -216,12 +222,13 @@ function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
   }
 
   // === Tool Usage ===
-  const toolStarts = events.filter(e => e.type === 'tool:start' || e.type === 'tool_call');
-  const toolEnds = events.filter(e => e.type === 'tool:end' || e.type === 'tool:execution');
-  const toolErrors = events.filter(e =>
-    e.type === 'tool:error' ||
-    (e.type === 'tool:execution' && e.output?.success === false) ||
-    (e.type === 'tool_result' && e.data?.success === false)
+  const toolStarts = normalized.filter(e => e.type === 'tool:start' || e.type === 'tool_call');
+  const toolEnds = normalized.filter(e => e.type === 'tool:end' || e.type === 'tool:execution' || e.type === 'tool_result');
+  const toolErrors = normalized.filter(e =>
+    e.type === 'tool:error'
+      || (e.type === 'tool:end' && e.data?.success === false)
+      || (e.type === 'tool:execution' && (e.raw as any).output?.success === false)
+      || (e.type === 'tool_result' && e.data?.success === false)
   );
 
   const toolBreakdown: Record<string, { calls: number; failures: number; totalDurationMs: number }> = {};
@@ -229,10 +236,10 @@ function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
   const SLOW_THRESHOLD_MS = 5000; // 5s threshold for "slow" calls
 
   for (const te of toolEnds) {
-    const data = te.data || te;
-    const name = data.toolName || data.tool?.name || 'unknown';
-    const dur = data.durationMs || data.timing?.durationMs || 0;
-    const success = data.success ?? data.output?.success ?? true;
+    const data = (te.data || (te.raw as any)) as any;
+    const name = (data.toolName as string | undefined) || (data.tool?.name as string | undefined) || 'unknown';
+    const dur = Number(data.durationMs) || Number(data.timing?.durationMs) || 0;
+    const success = (data.success as boolean | undefined) ?? (data.output?.success as boolean | undefined) ?? true;
 
     if (!toolBreakdown[name]) {
       toolBreakdown[name] = { calls: 0, failures: 0, totalDurationMs: 0 };
@@ -247,7 +254,7 @@ function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
       slowCalls.push({
         tool: name,
         durationMs: dur,
-        iteration: te.iteration || data.iteration || 0,
+        iteration: te.iteration || Number(data.iteration) || 0,
         args,
       });
     }
@@ -264,25 +271,25 @@ function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
 
   // Tool failure issues
   for (const err of toolErrors) {
-    const data = err.data || err;
+    const data = (err.data || (err.raw as any)) as any;
     const name = data.toolName || data.tool?.name || 'unknown';
     const errMsg = data.error || data.output?.error?.message || '';
     issues.push({
       severity: 'warning',
       category: 'tool',
       message: `Tool "${name}" failed: ${typeof errMsg === 'string' ? errMsg.slice(0, 200) : JSON.stringify(errMsg).slice(0, 200)}`,
-      iteration: data.iteration,
+      iteration: Number(data.iteration) || err.iteration,
     });
   }
 
   // === LLM Behavior ===
-  const llmResponses = events.filter(e => e.type === 'llm_response');
-  const llmCalls = events.filter(e => e.type === 'llm:call' || e.type === 'llm_call');
+  const llmResponses = normalized.filter(e => e.type === 'llm:end' || e.type === 'llm_response');
+  const llmCalls = normalized.filter(e => e.type === 'llm:start' || e.type === 'llm:call' || e.type === 'llm_call');
   let emptyResponses = 0;
   const reasoningTexts: DiagnosticReport['llmBehavior']['reasoningTexts'] = [];
 
   for (const lr of llmResponses) {
-    const data = lr.data || lr;
+    const data = (lr.data || (lr.raw as any)) as any;
     const content = data.content || '';
     const hasToolCalls = data.hasToolCalls || false;
 
@@ -292,14 +299,14 @@ function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
         severity: 'warning',
         category: 'llm',
         message: 'LLM returned empty response (no text, no tool calls)',
-        iteration: lr.iteration || data.iteration,
+        iteration: lr.iteration || Number(data.iteration) || 0,
       });
     }
 
     // Capture reasoning text (text before tool calls)
     if (content && content.length > 5 && content !== '[Executing tools...]') {
       reasoningTexts.push({
-        iteration: lr.iteration || data.iteration || 0,
+        iteration: lr.iteration || Number(data.iteration) || 0,
         preview: content.slice(0, 300),
       });
     }
@@ -312,15 +319,15 @@ function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
     .filter(Boolean);
 
   // === Error Detection ===
-  const errors = events.filter(e => e.type === 'error:captured' || e.type === 'agent:error');
+  const errors = normalized.filter(e => e.type === 'error:captured' || e.type === 'agent:error');
   for (const err of errors) {
-    const data = err.data || err;
+    const data = (err.data || (err.raw as any)) as any;
     const msg = data.error?.message || data.error || '';
     issues.push({
       severity: 'critical',
       category: 'error',
       message: typeof msg === 'string' ? msg.slice(0, 300) : JSON.stringify(msg).slice(0, 300),
-      iteration: data.iteration,
+      iteration: Number(data.iteration) || err.iteration,
       details: data.error?.stack || data.agentStack ? JSON.stringify(data.agentStack || {}).slice(0, 200) : undefined,
     });
   }
@@ -330,10 +337,9 @@ function analyzeDiagnostics(taskId: string, events: any[]): DiagnosticReport {
   const repeatedPatterns: string[] = [];
 
   // Check for repeated tool call patterns
-  const toolCallSequence = events
-    .filter(e => e.type === 'tool_call' || e.type === 'tool:start')
+  const toolCallSequence = toolStarts
     .map(e => {
-      const data = e.data || e;
+      const data = (e.data || (e.raw as any)) as any;
       return data.toolName || data.tool?.name || 'unknown';
     });
 
