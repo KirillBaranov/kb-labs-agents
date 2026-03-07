@@ -11,7 +11,8 @@
 import { randomUUID } from 'node:crypto';
 import type { LLMMessage, LLMTool } from '@kb-labs/sdk';
 import type { AgentConfig, LLMTier } from '@kb-labs/agent-contracts';
-import type { ContextMeta, RunContext } from '@kb-labs/agent-sdk';
+import type { AgentEventBus, ContextMeta, RunContext } from '@kb-labs/agent-sdk';
+import { createEventBus } from '../execution/event-bus-impl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ContextMetaImpl
@@ -56,6 +57,8 @@ class RunContextImpl implements RunContext {
   deadlineMs?: number;
   sessionId?: string;
   meta: ContextMeta;
+  eventBus: AgentEventBus;
+  debug: boolean;
 
   /** Mutable backing array — only LoopContextImpl may push to this. */
   readonly _messages: LLMMessage[] = [];
@@ -73,6 +76,8 @@ class RunContextImpl implements RunContext {
     requestId: string,
     sessionId: string | undefined,
     meta: ContextMeta,
+    eventBus: AgentEventBus,
+    debug: boolean,
   ) {
     this.task = task;
     this.tier = tier;
@@ -82,6 +87,8 @@ class RunContextImpl implements RunContext {
     this.requestId = requestId;
     this.sessionId = sessionId;
     this.meta = meta;
+    this.eventBus = eventBus;
+    this.debug = debug;
   }
 }
 
@@ -109,6 +116,7 @@ export function createRunContext(options: CreateRunContextOptions): {
 
   const meta = new ContextMetaImpl();
   const requestId_ = requestId ?? randomUUID();
+  const eventBus = createEventBus();
 
   const impl = new RunContextImpl(
     /* task         */ '',   // set by SDKAgentRunner before loop starts
@@ -119,6 +127,8 @@ export function createRunContext(options: CreateRunContextOptions): {
     /* requestId    */ requestId_,
     /* sessionId    */ config.sessionId,
     /* meta         */ meta,
+    /* eventBus     */ eventBus,
+    /* debug        */ (config as { debug?: boolean }).debug ?? false,
   );
 
   // Wire abort so impl.aborted is kept in sync

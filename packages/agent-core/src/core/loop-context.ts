@@ -88,6 +88,10 @@ export class LoopContextImpl implements LoopContext {
             completionTokens: rawResponse.usage.completionTokens,
           }
         : undefined,
+      // stopReason: top-level field (if adapter exposes it) OR from providerUsage
+      stopReason:
+        (rawResponse as { stopReason?: string }).stopReason ??
+        (rawResponse.usage?.providerUsage as { stopReason?: string } | undefined)?.stopReason,
     };
 
     // Notify token tracking

@@ -68,6 +68,8 @@ export interface RunKpiPayload {
   phaseTransitions: unknown[];
   ledger: { failedSteps: number; pendingSteps: number };
   qualityGate: { status: string; score: number; reasons: string[] } | null;
+  /** Fraction of iterations that repeated intent without new evidence. */
+  repeatNoEvidenceRate?: number;
 }
 
 export interface ToolOutcomeInput {
@@ -193,6 +195,9 @@ export class RunMetricsEmitter {
     if (!ctx.analytics) {
       return;
     }
+    const qualityGateStatus = payload.qualityGate?.status ?? (payload.success ? 'pass' : 'partial');
+    const qualityScore = payload.qualityGate?.score ?? (payload.success ? 1 : 0);
+    const qualityReasons = payload.qualityGate?.reasons ?? [];
 
     const toolCallsTotal = payload.toolCallsTotal;
     const driftRate =
@@ -214,6 +219,11 @@ export class RunMetricsEmitter {
 
     const fullPayload = {
       ...payload,
+      qualityGate: {
+        status: qualityGateStatus,
+        score: qualityScore,
+        reasons: qualityReasons,
+      },
       escalated: this.tierEscalations.length > 0,
       escalationCount: this.tierEscalations.length,
       escalationReasons: this.tierEscalations.map((e) => e.reason),
@@ -233,8 +243,8 @@ export class RunMetricsEmitter {
       iterationsUsed: payload.iterationsUsed,
       iterationBudget: payload.iterationBudget,
       iterationUtilization,
-      qualityScore: payload.qualityGate?.score ?? (payload.success ? 1 : 0),
-      qualityGateStatus: payload.qualityGate?.status ?? 'pass',
+      qualityScore,
+      qualityGateStatus,
     };
 
     await this.emitQualityRegressionEvent(regressionMetrics, ctx);
