@@ -11,11 +11,16 @@
 import { defineCommand, type PluginContextV3 } from '@kb-labs/sdk';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFile = promisify(execFileCb);
 
 type QualityReportInput = {
   days?: number;
   limit?: number;
   sessionId?: string;
+  'session-id'?: string;
   json?: boolean;
 };
 
@@ -95,6 +100,16 @@ type RunSnapshot = {
   escalationPath: string[];
 };
 
+function deriveQualityStatus(payload: KpiRunEvent['payload'] | undefined): 'pass' | 'partial' {
+  if (payload?.qualityGate?.status === 'pass' || payload?.qualityGate?.status === 'partial') {
+    return payload.qualityGate.status;
+  }
+  if (payload?.qualityGateStatus === 'pass' || payload?.qualityGateStatus === 'partial') {
+    return payload.qualityGateStatus;
+  }
+  return payload?.success ? 'pass' : 'partial';
+}
+
 export default defineCommand({
   id: 'quality:report',
   description: 'Show quality control report for agent runs (quality, tokens, tools, drift, regressions)',
@@ -104,7 +119,8 @@ export default defineCommand({
       const flags = (input as any).flags ?? input;
       const days = Number(flags.days ?? 1);
       const limit = Number(flags.limit ?? 200);
-      const sessionIdFilter = typeof flags.sessionId === 'string' ? flags.sessionId : undefined;
+      const rawSessionId = flags['session-id'] ?? flags.sessionId;
+      const sessionIdFilter = typeof rawSessionId === 'string' ? rawSessionId : undefined;
       const json = Boolean(flags.json);
 
       if (!Number.isFinite(days) || days <= 0) {
@@ -122,7 +138,13 @@ export default defineCommand({
       }
 
       const since = Date.now() - days * 24 * 60 * 60 * 1000;
-      const { runs, regressions } = await readEvents(files, since, sessionIdFilter, limit);
+      let { runs, regressions } = await readEvents(files, since, sessionIdFilter, limit);
+      if (runs.length === 0) {
+        const sqlitePath = path.join(process.cwd(), '.kb', 'analytics', 'analytics.sqlite');
+        const sqliteEvents = await readEventsFromSqlite(sqlitePath, since, sessionIdFilter, limit);
+        runs = sqliteEvents.runs;
+        regressions = sqliteEvents.regressions;
+      }
       const report = buildReport(runs, regressions, { days, sessionIdFilter });
 
       if (json) {
@@ -200,7 +222,7 @@ async function readEvents(
           todoUsed: Boolean(p.todoUsed),
           evidenceDensity: Number(p.evidenceDensity || 0),
           driftRate: Number(p.driftRate || 0),
-          qualityStatus: p.qualityGate?.status || p.qualityGateStatus || 'pass',
+          qualityStatus: deriveQualityStatus(p),
           qualityScore: Number(p.qualityGate?.score ?? (p.success ? 1 : 0)),
           qualityReasons: Array.isArray(p.qualityGate?.reasons) ? p.qualityGate!.reasons! : [],
           startTier: (p.startTier === 'small' || p.startTier === 'large') ? p.startTier : 'medium',
@@ -228,6 +250,135 @@ async function readEvents(
   runs.sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
   const trimmedRuns = runs.slice(0, Math.max(1, limit));
   return { runs: trimmedRuns, regressions };
+}
+
+async function readEventsFromSqlite(
+  sqlitePath: string,
+  sinceMs: number,
+  sessionIdFilter: string | undefined,
+  limit: number,
+): Promise<{ runs: RunSnapshot[]; regressions: RegressionEvent[] }> {
+  try {
+    await fs.access(sqlitePath);
+  } catch {
+    return { runs: [], regressions: [] };
+  }
+
+  const sinceIso = new Date(sinceMs).toISOString();
+  const sql = [
+    'SELECT type, ts, payload',
+    'FROM events',
+    `WHERE ts >= '${sinceIso}'`,
+    "  AND type IN ('agent.kpi.run_completed', 'agent.kpi.quality_regression')",
+    'ORDER BY ts DESC',
+    `LIMIT ${Math.max(limit * 5, 500)};`,
+  ].join(' ');
+
+  try {
+    const { stdout } = await execFile('sqlite3', ['-json', sqlitePath, sql], {
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    const rows = JSON.parse(stdout || '[]') as Array<{
+      type?: string;
+      ts?: string;
+      payload?: string;
+    }>;
+    const pseudoFileEvents = rows.map((row) => ({
+      type: row.type ?? '',
+      ts: row.ts,
+      payload: parseJsonSafe(row.payload),
+    }));
+    return readInMemoryEvents(pseudoFileEvents, sinceMs, sessionIdFilter, limit);
+  } catch {
+    return { runs: [], regressions: [] };
+  }
+}
+
+function parseJsonSafe(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object') {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string') {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readInMemoryEvents(
+  rows: Array<{ type: string; ts?: string; payload?: Record<string, unknown> }>,
+  sinceMs: number,
+  sessionIdFilter: string | undefined,
+  limit: number
+): { runs: RunSnapshot[]; regressions: RegressionEvent[] } {
+  const runs: RunSnapshot[] = [];
+  const regressions: RegressionEvent[] = [];
+
+  for (const raw of rows) {
+    const ts = typeof raw.ts === 'string' ? Date.parse(raw.ts) : NaN;
+    if (!Number.isFinite(ts) || ts < sinceMs) {
+      continue;
+    }
+
+    if (raw.type === 'agent.kpi.run_completed') {
+      const p = (raw.payload || {}) as KpiRunEvent['payload'];
+      const sessionId = p?.sessionId || 'unknown';
+      if (sessionIdFilter && sessionId !== sessionIdFilter) {
+        continue;
+      }
+      runs.push({
+        ts: raw.ts || new Date(ts).toISOString(),
+        sessionId,
+        success: Boolean(p?.success),
+        task: p?.task || '',
+        summaryPreview: p?.summaryPreview || '',
+        tokensUsed: Number(p?.tokensUsed || 0),
+        durationMs: Number(p?.durationMs || 0),
+        iterationsUsed: Number(p?.iterationsUsed || 0),
+        iterationBudget: Number(p?.iterationBudget || 0),
+        iterationUtilization: Number(p?.iterationUtilization || 0),
+        toolCallsTotal: Number(p?.toolCallsTotal || 0),
+        toolErrorRate: Number(p?.toolErrorRate || 0),
+        todoUsed: Boolean(p?.todoUsed),
+        evidenceDensity: Number(p?.evidenceDensity || 0),
+        driftRate: Number(p?.driftRate || 0),
+        qualityStatus: deriveQualityStatus(p),
+        qualityScore: Number(p?.qualityGate?.score ?? (p?.success ? 1 : 0)),
+        qualityReasons: Array.isArray(p?.qualityGate?.reasons) ? p?.qualityGate.reasons : [],
+        startTier: (p?.startTier === 'small' || p?.startTier === 'large') ? p.startTier : 'medium',
+        finalTier: (p?.finalTier === 'small' || p?.finalTier === 'large') ? p.finalTier : 'medium',
+        escalated: Boolean(p?.escalated),
+        escalationCount: Number(p?.escalationCount || 0),
+        escalationReasons: Array.isArray(p?.escalationReasons)
+          ? p.escalationReasons.filter((v): v is string => typeof v === 'string')
+          : [],
+        escalationPath: Array.isArray(p?.escalationPath)
+          ? p.escalationPath.filter((v): v is string => typeof v === 'string')
+          : [],
+      });
+      continue;
+    }
+
+    if (raw.type === 'agent.kpi.quality_regression') {
+      const event: RegressionEvent = {
+        type: raw.type,
+        ts: raw.ts,
+        payload: raw.payload as RegressionEvent['payload'],
+      };
+      const sessionId = event.payload?.sessionId;
+      if (sessionIdFilter && sessionId !== sessionIdFilter) {
+        continue;
+      }
+      regressions.push(event);
+    }
+  }
+
+  runs.sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+  return { runs: runs.slice(0, Math.max(1, limit)), regressions };
 }
 
 function buildReport(
