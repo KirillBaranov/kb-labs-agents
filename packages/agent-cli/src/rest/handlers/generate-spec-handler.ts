@@ -129,7 +129,7 @@ export default defineHandler({
       planId: plan.id,
       specId: `spec-${runId}`,
       runId,
-      eventsUrl: `/ws/agents/sessions/${sessionId}/events`,
+      eventsPath: `/ws/plugins/agents/session/${sessionId}`,
       status: 'generating',
       startedAt,
     };

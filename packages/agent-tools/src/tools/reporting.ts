@@ -59,7 +59,7 @@ export function createAskParentTool(_context: ToolContext): Tool {
  * Report findings and exit. Used by agents to provide synthesized answer
  * and signal early exit when task is complete.
  */
-export function createReportTool(_context: ToolContext): Tool {
+export function createReportTool(context: ToolContext): Tool {
   return {
     definition: {
       type: 'function' as const,
@@ -85,6 +85,16 @@ export function createReportTool(_context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const answer = input.answer as string;
       const confidence = input.confidence as number;
+
+      // In plan mode (plan_validate is in the allowed tool set), block report
+      // until the agent has called plan_validate and received a PASSED result.
+      const inPlanMode = context.allowedTools?.has('plan_validate') ?? false;
+      if (inPlanMode && !context.planValidationPassed) {
+        return {
+          success: false,
+          output: 'BLOCKED: You must call plan_validate(task, plan_markdown) first and receive a PASSED result before submitting the plan. Call plan_validate now.',
+        };
+      }
 
       return {
         success: true,

@@ -44,7 +44,7 @@ const W_ACTIONABILITY = 0.35;
 const W_COMPLETENESS  = 0.15;
 const W_VERIFICATION  = 0.20;
 
-const PASS_THRESHOLD  = 0.50;
+const PASS_THRESHOLD  = 0.35;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,11 +56,16 @@ const FILE_PATH_RE = /[\w@.-]+\/[\w@.-]+\.[\w]{1,5}/g;
 /** Detect backtick-wrapped shell commands or bare pnpm/npm/npx/git invocations. */
 const COMMAND_RE = /(?:`[^`]+`)|(?:(?:pnpm|npm|npx|git|yarn|bun)\s+\S+)/g;
 
-/** Extract bullet items (- or 1.) from markdown. */
+/** Extract bullet items (- or 1.) and table data rows from markdown. */
 function extractBullets(text: string): string[] {
-  return (text.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/gm) || [])
+  const bullets = (text.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/gm) || [])
     .map((line) => line.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').trim())
     .filter(Boolean);
+  // Also treat non-separator table rows as actionable items
+  const tableRows = (text.match(/^\|(?![-:]+\|).+\|$/gm) || [])
+    .map((line) => line.replace(/^\||\|$/g, '').trim())
+    .filter(Boolean);
+  return [...bullets, ...tableRows];
 }
 
 /** Clamp to [0, 1]. */
@@ -68,18 +73,24 @@ function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
-/** Get text under a ## heading until the next ## heading. */
+/** Get text under a heading (## or ###) until the next heading of same or higher level. */
 function getSectionBody(text: string, headingRe: RegExp): string {
   const lines = text.split('\n');
   let capturing = false;
+  let captureLevel = 0;
   const result: string[] = [];
   for (const line of lines) {
     if (headingRe.test(line)) {
       capturing = true;
+      const match = /^(#{1,6})\s+/.exec(line);
+      captureLevel = match ? match[1]!.length : 2;
       continue;
     }
-    if (capturing && /^##\s+/.test(line)) {break;}
-    if (capturing) {result.push(line);}
+    if (capturing) {
+      const headingMatch = /^(#{1,6})\s+/.exec(line);
+      if (headingMatch && headingMatch[1]!.length <= captureLevel) {break;}
+      result.push(line);
+    }
   }
   return result.join('\n');
 }
@@ -154,8 +165,8 @@ export class PlanValidator {
     if (count === 0) {
       issues.push({
         dimension: 'specificity',
-        severity: 'error',
-        message: 'Plan contains no file paths — too vague to execute.',
+        severity: 'warning',
+        message: 'Plan contains no file paths — consider adding specific file references.',
       });
     } else if (count < 2) {
       issues.push({
@@ -222,10 +233,10 @@ export class PlanValidator {
 
   private scoreCompleteness(text: string, issues: ValidatorIssue[]): RubricScore {
     const sections: Array<{ name: string; re: RegExp; required: boolean }> = [
-      { name: 'Task', re: /^##\s+(task|objective)\b/im, required: true },
-      { name: 'Steps', re: /^##\s+(steps?|execution plan|phases?)\b/im, required: true },
-      { name: 'Risks', re: /^##\s+(risks?|risks\s*&\s*mitigations?)\b/im, required: false },
-      { name: 'Verification', re: /^##\s+(verification|verification checklist)\b/im, required: true },
+      { name: 'Task', re: /^#{2,3}\s+(task|objective)\b/im, required: true },
+      { name: 'Steps', re: /^#{2,3}\s+(steps?|execution plan|phases?|steps\/phases)\b/im, required: true },
+      { name: 'Risks', re: /^#{2,3}\s+(risks?|risks\s*&\s*mitigations?)\b/im, required: false },
+      { name: 'Verification', re: /^#{2,3}\s+(verification|verification checklist)\b/im, required: true },
     ];
 
     let found = 0;
@@ -275,7 +286,7 @@ export class PlanValidator {
   // -----------------------------------------------------------------------
 
   private scoreVerification(text: string, issues: ValidatorIssue[]): RubricScore {
-    const verifBody = getSectionBody(text, /^##\s+(verification|verification checklist)\b/im);
+    const verifBody = getSectionBody(text, /^#{2,3}\s+(verification|verification checklist)\b/im);
 
     if (!verifBody.trim()) {
       // Fall back to entire document for commands

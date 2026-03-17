@@ -151,6 +151,23 @@ export class FactSheetMiddleware implements AgentMiddleware {
   afterToolExec(ctx: ToolExecCtx, result: ToolOutput): void {
     if (!result.success) {return;}
 
+    // Extract todo summary from todo tool metadata for Status Block
+    const structured = result.metadata?.structured as Record<string, unknown> | undefined;
+    if ((ctx.toolName === 'todo_create' || ctx.toolName === 'todo_update' || ctx.toolName === 'todo_get')
+      && structured?.todoList) {
+      const todoList = structured.todoList as { items?: Array<{ status: string }> };
+      if (Array.isArray(todoList.items)) {
+        const items = todoList.items;
+        ctx.run.meta.set('todo', 'summary', {
+          completed: items.filter(i => i.status === 'completed').length,
+          inProgress: items.filter(i => i.status === 'in-progress').length,
+          pending: items.filter(i => i.status === 'pending').length,
+          blocked: items.filter(i => i.status === 'blocked').length,
+          total: items.length,
+        });
+      }
+    }
+
     const facts = extractHeuristicFacts(ctx.toolName, ctx.input, result.output);
     for (const f of facts) {
       this.sheet.add({
@@ -270,22 +287,72 @@ function buildRunMemoryBlock(run: RunContext): string | null {
   const repeatNoEvidenceCount = run.meta.get<number>('loop', 'repeatNoEvidenceCount') ?? 0;
   const lastEvidenceCount = run.meta.get<number>('loop', 'lastEvidenceCount') ?? 0;
 
-  if (!lastSummary && repeatNoEvidenceCount === 0 && lastEvidenceCount === 0) {
+  // Always emit status block after iteration 1 (even if no evidence yet)
+  if (run.iteration <= 1 && !lastSummary && repeatNoEvidenceCount === 0 && lastEvidenceCount === 0) {
     return null;
   }
 
   const task = (run as unknown as { task?: string }).task ?? '';
-  const lines: string[] = [
-    '# Run Memory (Current Session)',
-    `Task: ${task || '(not set)'}`,
-  ];
-  if (lastSummary) {
-    lines.push(`Last iteration: ${lastSummary}`);
+
+  // ── Iteration progress ────────────────────────────────────────────
+  const iterPct = Math.round((run.iteration / run.maxIterations) * 100);
+
+  // ── Budget ────────────────────────────────────────────────────────
+  const tokensUsed = run.meta.get<number>('budget', 'tokensUsed') ?? 0;
+  const maxTokens = run.meta.get<number>('budget', 'maxTokens') ?? 0;
+  let budgetLine = '';
+  if (maxTokens > 0) {
+    const budgetPct = Math.round((tokensUsed / maxTokens) * 100);
+    const indicator = budgetPct >= 90 ? '[CRITICAL]'
+      : budgetPct >= 70 ? '[WARNING]'
+      : budgetPct >= 50 ? '[CAUTION]'
+      : '[OK]';
+    budgetLine = `Budget: ${tokensUsed.toLocaleString()}/${maxTokens.toLocaleString()} tokens (${budgetPct}%) ${indicator}`;
   }
-  lines.push(`Evidence count so far: ${lastEvidenceCount}`);
-  lines.push(`Repeated-without-evidence events: ${repeatNoEvidenceCount}`);
+
+  // ── Progress status ───────────────────────────────────────────────
+  const isStuck = run.meta.get<boolean>('progress', 'isStuck') ?? false;
+  const itersSinceProgress = run.meta.get<number>('progress', 'iterationsSinceProgress') ?? 0;
+  const progressStatus = isStuck
+    ? `STUCK (${itersSinceProgress} iterations without progress)`
+    : itersSinceProgress > 0
+      ? `active (${itersSinceProgress} iterations since last progress)`
+      : 'active';
+
+  // ── Files ─────────────────────────────────────────────────────────
+  const filesRead = run.meta.get<string[]>('files', 'read') ?? [];
+  const filesModified = run.meta.get<string[]>('files', 'modified') ?? [];
+  const filesCreated = run.meta.get<string[]>('files', 'created') ?? [];
+
+  // ── Todos ──────────────────────────────────────────────────────────
+  const todoSummary = run.meta.get<{ completed: number; inProgress: number; pending: number; blocked: number; total: number }>('todo', 'summary');
+
+  // ── Build status block ────────────────────────────────────────────
+  const lines: string[] = [
+    '# Status Block',
+    `Task: ${task || '(not set)'}`,
+    `Iteration: ${run.iteration}/${run.maxIterations} (${iterPct}%)`,
+  ];
+  if (budgetLine) {
+    lines.push(budgetLine);
+  }
+  lines.push(`Progress: ${progressStatus}`);
+  lines.push(`Files: read=${filesRead.length}, modified=${filesModified.length}, created=${filesCreated.length}`);
+  if (todoSummary) {
+    const parts = [`${todoSummary.completed}/${todoSummary.total} completed`];
+    if (todoSummary.inProgress > 0) {parts.push(`${todoSummary.inProgress} in-progress`);}
+    if (todoSummary.blocked > 0) {parts.push(`${todoSummary.blocked} blocked`);}
+    lines.push(`Todos: ${parts.join(', ')}`);
+  }
+  lines.push(`Evidence: ${lastEvidenceCount} facts collected`);
+  if (lastSummary) {
+    lines.push(`Last: ${lastSummary}`);
+  }
   if (repeatsWithoutEvidence > 0) {
-    lines.push(`Current repeated intent streak: ${repeatsWithoutEvidence}`);
+    lines.push(`Repeated intent streak: ${repeatsWithoutEvidence}`);
+  }
+  if (repeatNoEvidenceCount > 0) {
+    lines.push(`Total repeat-without-evidence events: ${repeatNoEvidenceCount}`);
   }
   lines.push('Rule: if no new evidence appears for repeated actions, change strategy or report partial result.');
 

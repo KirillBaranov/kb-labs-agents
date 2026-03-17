@@ -156,7 +156,7 @@ export default defineHandler({
       sessionId,
       planId: plan.id,
       runId: runResponse.runId,
-      eventsUrl: runResponse.eventsUrl,
+      eventsPath: runResponse.eventsPath,
       status: runResponse.status,
       startedAt: runResponse.startedAt,
     };

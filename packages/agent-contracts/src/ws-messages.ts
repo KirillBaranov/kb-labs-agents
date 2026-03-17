@@ -197,8 +197,11 @@ export interface RunResponse {
   runId: string;
   /** Session ID (existing or newly created) */
   sessionId: string;
-  /** WebSocket URL for event streaming */
-  eventsUrl: string;
+  /**
+   * Relative WebSocket path for event streaming (e.g. "/v1/ws/plugins/agents/session/:id").
+   * Clients construct the full WS URL from their own base URL + this path.
+   */
+  eventsPath: string;
   /** Run status */
   status: 'started' | 'queued';
   /** Timestamp */

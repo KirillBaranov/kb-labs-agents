@@ -40,7 +40,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@kb-labs/devkit": "link:../../../kb-labs-devkit",
+    "@kb-labs/devkit": "workspace:*",
     "@kb-labs/shared-testing": "workspace:*",
     "@types/node": "^24.3.3",
     "eslint": "^9",

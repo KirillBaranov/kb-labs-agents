@@ -15,40 +15,17 @@ import type {
   TaskResult,
   PlanContext,
   Phase,
-  ToolDefinition,
 } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
+import { createToolRegistry, PLAN_READ_ONLY_TOOL_NAMES } from '@kb-labs/agent-tools';
 import type { ModeHandler } from './mode-handler';
 import { AgentSDK, type IAgentRunner } from '@kb-labs/agent-sdk';
 import { createCoreToolPack } from '../tools/index.js';
 import { SessionManager } from '../planning/session-manager';
 import { PlanDocumentService } from '../planning/plan-document-service';
-import { PlanValidator } from '../planning/plan-validator';
+import { TaskMiddleware } from '../middleware/builtin/task-middleware';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-
-const PLAN_READ_ONLY_TOOLS = new Set<string>([
-  'fs_read',
-  'fs_list',
-  'glob_search',
-  'grep_search',
-  'find_definition',
-  'code_stats',
-  'memory_get',
-  'memory_finding',
-  'memory_blocker',
-  'archive_recall',
-  'todo_create',
-  'todo_update',
-  'todo_get',
-  'ask_user',
-  'report',
-]);
-
-interface DelegatedPlanResearchPack {
-  title: string;
-  prompt: string;
-}
 
 class SharedTokenBudget {
   private consumed = 0;
@@ -75,40 +52,6 @@ class SharedTokenBudget {
   }
 }
 
-class ReadOnlyPlanToolRegistry {
-  constructor(
-    private readonly base: ToolRegistry,
-    private readonly allowedNames: Set<string>,
-  ) {}
-
-  get(name: string) {
-    if (!this.allowedNames.has(name)) {return undefined;}
-    return this.base.get(name);
-  }
-
-  getDefinitions(): ToolDefinition[] {
-    return this.base
-      .getDefinitions()
-      .filter((def) => this.allowedNames.has(def.function.name));
-  }
-
-  async execute(name: string, input: Record<string, unknown>) {
-    if (!this.allowedNames.has(name)) {
-      throw new Error(`Tool "${name}" is disabled in plan mode (read-only).`);
-    }
-    return this.base.execute(name, input);
-  }
-
-  getToolNames(): string[] {
-    return this.base
-      .getToolNames()
-      .filter((tool) => this.allowedNames.has(tool));
-  }
-
-  getContext() {
-    return this.base.getContext();
-  }
-}
 
 export class PlanModeHandler implements ModeHandler {
   async execute(
@@ -124,10 +67,12 @@ export class PlanModeHandler implements ModeHandler {
     const complexity = planContext?.complexity || 'medium';
     const existingPlanPath = sessionManager.getSessionPlanPath(sessionId);
     const existingPlan = config.sessionId ? await this.loadPlan(existingPlanPath) : null;
-    const effectiveMaxIterations = Math.max(6, Math.min(config.maxIterations || 10, 12));
+    const complexityDefault = complexity === 'simple' ? 15 : complexity === 'complex' ? 40 : 25;
+    // Plan mode caps iterations — token budget is the real control, not iterations
+    const effectiveMaxIterations = Math.min(config.maxIterations, Math.max(10, complexityDefault));
     const totalPlanBudget = Math.max(
       10_000,
-      Math.floor(config.tokenBudget?.maxTokens ?? 60_000),
+      Math.floor(config.tokenBudget?.maxTokens ?? 1_000_000),
     );
     const sharedBudget = new SharedTokenBudget(totalPlanBudget);
     const planTaskPrompt = this.buildPlanPrompt(
@@ -162,21 +107,62 @@ export class PlanModeHandler implements ModeHandler {
     });
 
     try {
-      const readOnlyRegistry = new ReadOnlyPlanToolRegistry(toolRegistry, PLAN_READ_ONLY_TOOLS) as unknown as ToolRegistry;
-      const delegatedResearch = await this.runDelegatedResearchPacks(
-        task,
-        complexity,
-        existingPlan?.markdown,
-        config,
-        sessionId,
-        readOnlyRegistry,
-        sharedBudget,
-        totalPlanBudget,
-      );
-      const enrichedTaskPrompt = delegatedResearch
-        ? `${planTaskPrompt}\n\nDELEGATED RESEARCH SNAPSHOT:\n${delegatedResearch}\n`
-        : planTaskPrompt;
-      const budgetAwarePrompt = `${enrichedTaskPrompt}\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalPlanBudget} tokens remaining. Be concise, avoid redundant exploration, and prioritize executable plan output.`;
+      // Build the plan-writer's toolRegistry with:
+      // - allowedTools: read-only set + task_submit/task_status/task_collect for async delegation
+      // - taskManager: TaskMiddleware that spawns read-only research sub-agents
+      //   Sub-agents get allowedTools=PLAN_READ_ONLY_TOOL_NAMES but no taskManager
+      //   → task tools won't register for them → no recursion.
+      const planTaskMw = new TaskMiddleware({ maxConcurrent: 5 });
+      planTaskMw.setSpawnFn(async (request) => {
+        const researchRegistry = createToolRegistry({
+          ...toolRegistry.getContext(),
+          allowedTools: PLAN_READ_ONLY_TOOL_NAMES,
+          // no taskManager → task tools not registered → no recursion
+        });
+        const researchRunner = this.createSubRunner(
+          {
+            ...config,
+            mode: undefined,
+            maxIterations: request.maxIterations ?? Math.min(15, Math.max(5, Math.floor(effectiveMaxIterations * 0.25))),
+            workingDir: request.workingDir ?? config.workingDir,
+            tokenBudget: {
+              ...config.tokenBudget,
+              enabled: true,
+              maxTokens: sharedBudget.allocate(Math.floor(sharedBudget.remaining * 0.30), 4000),
+              softLimitRatio: 0.75,
+              hardLimitRatio: 0.95,
+              hardStop: true,
+              forceSynthesisOnHardLimit: true,
+              allowIterationBudgetExtension: false,
+            },
+            onEvent: config.onEvent,
+          },
+          researchRegistry as unknown as ToolRegistry,
+        );
+        const startedAt = Date.now();
+        const result = await researchRunner.execute(request.task);
+        sharedBudget.consume(result.tokensUsed);
+        return {
+          success: result.success,
+          summary: result.summary,
+          filesRead: result.filesRead,
+          filesModified: result.filesModified,
+          filesCreated: result.filesCreated,
+          iterations: result.iterations,
+          tokensUsed: result.tokensUsed,
+          durationMs: Date.now() - startedAt,
+          error: result.error,
+          preset: request.preset ?? 'research' as const,
+        };
+      });
+
+      const planWriterRegistry = createToolRegistry({
+        ...toolRegistry.getContext(),
+        allowedTools: PLAN_READ_ONLY_TOOL_NAMES,
+        taskManager: planTaskMw,
+      });
+
+      const budgetAwarePrompt = `${planTaskPrompt}\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalPlanBudget} tokens remaining. Be concise, avoid redundant exploration, and prioritize executable plan output.`;
       let reportedPlanText = '';
       const childOnEvent: AgentConfig['onEvent'] = (event) => {
         if (event.type === 'tool:end' && event.data?.toolName === 'report') {
@@ -190,7 +176,7 @@ export class PlanModeHandler implements ModeHandler {
         }
         if (event.type === 'llm:end') {
           const content = typeof event.data?.content === 'string' ? event.data.content.trim() : '';
-          if (content && /^#\s+/m.test(content)) {
+          if (content && /^#{1,3}\s+/m.test(content) && content.length > 200) {
             reportedPlanText = content;
           }
         }
@@ -205,8 +191,8 @@ export class PlanModeHandler implements ModeHandler {
           tokenBudget: {
             ...config.tokenBudget,
             enabled: true,
-            maxTokens: sharedBudget.allocate(Math.max(8_000, Math.floor(sharedBudget.remaining * 0.7)), 8000),
-            softLimitRatio: config.tokenBudget?.softLimitRatio ?? 0.75,
+            maxTokens: sharedBudget.allocate(Math.max(8_000, Math.floor(sharedBudget.remaining * 0.9)), 8000),
+            softLimitRatio: config.tokenBudget?.softLimitRatio ?? 0.40,
             hardLimitRatio: config.tokenBudget?.hardLimitRatio ?? 0.95,
             hardStop: config.tokenBudget?.hardStop ?? true,
             forceSynthesisOnHardLimit: config.tokenBudget?.forceSynthesisOnHardLimit ?? true,
@@ -216,7 +202,7 @@ export class PlanModeHandler implements ModeHandler {
           },
           onEvent: childOnEvent,
         },
-        readOnlyRegistry,
+        planWriterRegistry as unknown as ToolRegistry,
       );
 
       const planningResult = await planRunner.execute(budgetAwarePrompt);
@@ -227,11 +213,6 @@ export class PlanModeHandler implements ModeHandler {
         existingPlan?.markdown,
       );
 
-      // Validate plan quality with deterministic rubric
-      const validator = new PlanValidator();
-      const validation = validator.validate(markdown);
-
-      const planFailed = incomplete || !validation.passed;
       const plan = this.buildTaskPlan({
         sessionId,
         task,
@@ -240,8 +221,7 @@ export class PlanModeHandler implements ModeHandler {
         existingPlan,
       });
 
-      // Override status when plan is incomplete or fails quality gate
-      if (planFailed) {
+      if (incomplete) {
         plan.status = 'failed';
       }
 
@@ -252,9 +232,7 @@ export class PlanModeHandler implements ModeHandler {
         data: {
           phase: 'plan',
           progress: 78,
-          message: planFailed
-            ? `Plan quality insufficient (score: ${validation.score.toFixed(2)})`
-            : 'Plan draft ready, persisting artifacts',
+          message: incomplete ? 'Plan generation incomplete' : 'Plan draft ready, persisting artifacts',
           ...budgetSnapshot(),
         },
       });
@@ -268,19 +246,14 @@ export class PlanModeHandler implements ModeHandler {
       const phaseCount = plan.phases.length;
       const stepCount = plan.phases.reduce((sum, phase) => sum + phase.steps.length, 0);
 
-      if (planFailed) {
-        const issuesSummary = validation.issues
-          .filter((i) => i.severity === 'error')
-          .map((i) => i.message)
-          .join('; ');
-
+      if (incomplete) {
         this.emit(config, {
           type: 'status:change',
           timestamp: new Date().toISOString(),
           sessionId,
           data: {
             status: 'error',
-            message: `Plan generation incomplete — quality score ${validation.score.toFixed(2)}`,
+            message: 'Plan generation incomplete — agent did not produce a structured plan',
             ...budgetSnapshot(),
           },
         });
@@ -291,14 +264,14 @@ export class PlanModeHandler implements ModeHandler {
           data: {
             phase: 'plan',
             progress: 100,
-            message: 'Plan mode complete (failed quality gate)',
+            message: 'Plan mode complete (incomplete)',
             ...budgetSnapshot(),
           },
         });
 
         return {
           success: false,
-          summary: `Plan generation incomplete — agent could not produce a concrete plan (score: ${validation.score.toFixed(2)}). ${issuesSummary}`,
+          summary: 'Plan generation incomplete — agent could not produce a concrete plan within the budget.',
           filesCreated: [planPath, draft.path],
           filesModified: [],
           filesRead: planningResult.filesRead,
@@ -333,7 +306,7 @@ export class PlanModeHandler implements ModeHandler {
 
       return {
         success: true,
-        summary: `Plan draft ready (${phaseCount} phases, ${stepCount} steps, quality: ${validation.score.toFixed(2)}). Awaiting approval.`,
+        summary: `Plan draft ready (${phaseCount} phases, ${stepCount} steps). Awaiting approval.`,
         filesCreated: [planPath, draft.path],
         filesModified: [],
         filesRead: planningResult.filesRead,
@@ -409,11 +382,49 @@ ${revisionSection}
 
 BUDGET: You have ~${budget} iterations total. Use ~${researchBudget} for research, then WRITE the plan.
 TOKEN BUDGET: ${remainingText}/${totalText} tokens remaining. Spend tokens carefully and avoid duplicate scans.
-A partial plan with real file paths is ALWAYS better than no plan. Do NOT spend all iterations on research.
+
+RESEARCH QUALITY GATE — before writing the plan, verify:
+1. You found the actual entry point files for the feature (not just files that happen to mention keywords).
+2. If your first search returned 0 results or irrelevant files — search again with different terms or explore the directory structure.
+3. Do NOT reference a file in the plan unless you have read it and confirmed it is relevant.
+4. If you are unsure where something lives — use fs_list on the top-level directories first to orient yourself.
+
+DELEGATION WITH task_submit (ASYNC SUB-AGENTS):
+You have access to async task tools for parallel sub-agent delegation:
+- \`task_submit\` — fire off a sub-agent in the background, get a task ID immediately
+- \`task_status\` — check progress of running tasks (without blocking)
+- \`task_collect\` — wait for a specific task to complete and get its full result
+
+WHEN TO DELEGATE — use task_submit if ANY of these are true:
+- A directory has 3+ files that each need to be read fully (e.g. a whole package or module)
+- You need to find all callers/usages across multiple packages
+- The task involves a large file (500+ lines) AND other files also need reading
+- You can split research into 2-3 independent questions that don't depend on each other
+- The task mentions "ALL repositories" or "all packages" — delegate each repo/group to a sub-agent
+
+HOW TO USE EFFECTIVELY:
+1. Submit 2-5 parallel tasks: \`task_submit({ description: "Analyze kb-labs-core deps", task: "Read all package.json files in kb-labs-core/packages/, list dependencies...", preset: "research" })\`
+2. Continue your own work while sub-agents run in parallel
+3. Collect results: \`task_collect({ taskId: "abc123" })\` — blocks until that task completes
+4. Synthesize all results into the final plan
+
+TIPS:
+- Give each sub-agent ONE focused question with clear deliverables
+- Sub-agents run concurrently — submit multiple before collecting any
+- Sub-agents return findings as text — YOU synthesize and write the plan
+- budgetPercent defaults to 20% per task — adjust if needed
+
+WHEN NOT TO DELEGATE:
+- You only need to read 1-2 small files (<200 lines each)
+- Your token budget is almost exhausted
 
 Output requirements:
 - Final output must be a single markdown document.
 - Include: title, Table of Contents, Task (A -> B), Steps/Phases, Risks, Verification, Approval.
+- The ## Verification section MUST list concrete shell commands wrapped in backticks, e.g.:
+  - \`pnpm --filter @kb-labs/agent-core build\`
+  - \`pnpm --filter @kb-labs/agent-core test\`
+  - \`pnpm --filter @kb-labs/agent-cli run build\`
 - If revising existing plan, update the same plan and preserve useful parts.
 - End with a short line that the plan is ready for user approval.
 
@@ -442,7 +453,22 @@ Examples of GOOD vs BAD steps:
   BAD:  "Ensure the module exports are correct"
   GOOD: "Add \`export { PlanValidator }\` to packages/agent-core/src/planning/index.ts"
 
-When finished, use report tool with the markdown document as the main content.`;
+PLAN VALIDATION — MANDATORY BEFORE report():
+After writing the plan markdown, you MUST validate it before submitting:
+
+1. Call \`plan_validate(task="<original user task>", plan_markdown="<your plan>")\`
+   - The tool will score your plan and return pass/fail with concrete feedback.
+   - If PASSED: call \`report(answer=<plan>)\` immediately.
+   - If FAILED: read the feedback, improve the specific sections it criticizes, then call \`plan_validate\` again.
+   - After 3 consecutive FAILED validations: call \`ask_user(message=<plan + feedback summary>)\` to escalate.
+
+2. NEVER call \`report()\` without a passing \`plan_validate\` first (unless you've exhausted all 3 attempts).
+
+CRITICAL — TOOL USE REQUIRED:
+You MUST call the \`report\` tool as your final action. Do NOT write the plan as plain text without a tool call.
+- A plain-text response without calling \`report()\` is NOT a valid completion — it will fail the quality gate.
+- Call \`report(answer=<your full markdown plan>, confidence=0.7)\` when done.
+- Even if you think you are done, you MUST call \`report\` to submit the plan.`;
   }
 
   private extractMarkdownPlan(summary: string, task: string, existingMarkdown?: string): { markdown: string; incomplete: boolean } {
@@ -453,14 +479,16 @@ When finished, use report tool with the markdown document as the main content.`;
 
     // Check the raw text first — plan may contain internal code fences (```typescript, etc.)
     // that would confuse a greedy fenced-block extraction.
-    if (/^#\s+/m.test(text) && /^##\s+/m.test(text)) {
+    // Accept plans starting with # or ## headings (agents sometimes skip the top-level #)
+    const hasStructure = (t: string) => /^#{1,3}\s+/m.test(t) && t.split('\n').filter(l => /^#{1,3}\s+/.test(l)).length >= 2;
+    if (hasStructure(text)) {
       return { markdown: text, incomplete: false };
     }
 
     // If raw text doesn't look like a plan, try extracting from a wrapping markdown fence
     const fenced = /^```(?:markdown|md)\n([\s\S]*?)```\s*$/i.exec(text);
     const candidate = fenced?.[1]?.trim() || text;
-    if (/^#\s+/m.test(candidate) && /^##\s+/m.test(candidate)) {
+    if (hasStructure(candidate)) {
       return { markdown: candidate, incomplete: false };
     }
 
@@ -591,124 +619,6 @@ When finished, use report tool with the markdown document as the main content.`;
     ].join('\n');
   }
 
-  private async runDelegatedResearchPacks(
-    task: string,
-    complexity: 'simple' | 'medium' | 'complex',
-    existingMarkdown: string | undefined,
-    config: AgentConfig,
-    sessionId: string,
-    toolRegistry: ToolRegistry,
-    sharedBudget: SharedTokenBudget,
-    totalBudget: number,
-  ): Promise<string> {
-    const packs = this.buildDelegatedResearchPacks(task, complexity, existingMarkdown);
-    if (packs.length === 0) {
-      return '';
-    }
-
-    const outputs: string[] = [];
-    for (let i = 0; i < packs.length; i++) {
-      const pack = packs[i]!;
-      this.emit(config, {
-        type: 'progress:update',
-        timestamp: new Date().toISOString(),
-        sessionId,
-        data: {
-          phase: 'plan',
-          progress: Math.min(42, 12 + (i * 10)),
-          message: `Delegated research ${i + 1}/${packs.length}: ${pack.title}`,
-          ...this.buildBudgetSnapshot(sharedBudget, totalBudget),
-        },
-      });
-      let reported = '';
-      const researchRunner = this.createSubRunner(
-        {
-          ...config,
-          mode: undefined,
-          maxIterations: 5,
-          tokenBudget: {
-            ...config.tokenBudget,
-            enabled: true,
-            maxTokens: sharedBudget.allocate(Math.floor(sharedBudget.remaining * 0.25), 3000),
-            softLimitRatio: config.tokenBudget?.softLimitRatio ?? 0.75,
-            hardLimitRatio: config.tokenBudget?.hardLimitRatio ?? 0.95,
-            hardStop: config.tokenBudget?.hardStop ?? true,
-            forceSynthesisOnHardLimit: config.tokenBudget?.forceSynthesisOnHardLimit ?? true,
-            restrictBroadExplorationAtSoftLimit:
-              config.tokenBudget?.restrictBroadExplorationAtSoftLimit ?? true,
-            allowIterationBudgetExtension: false,
-          },
-          onEvent: (event: AgentEvent) => {
-            if (event.type === 'tool:end' && event.data?.toolName === 'report') {
-              const metadataAnswer = (event.data?.metadata as { answer?: unknown } | undefined)?.answer;
-              const output = typeof event.data?.output === 'string' ? event.data.output : '';
-              const answer = typeof metadataAnswer === 'string' ? metadataAnswer : '';
-              const captured = answer.trim() || output.trim();
-              if (captured) {
-                reported = captured;
-              }
-            }
-            config.onEvent?.(event);
-          },
-        },
-        toolRegistry,
-      );
-
-      const budgetAwarePrompt = `${pack.prompt}\n\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalBudget} tokens remaining. Keep output compact and high-signal.`;
-      const result = await researchRunner.execute(budgetAwarePrompt);
-      sharedBudget.consume(result.tokensUsed);
-      const text = (reported || result.summary || '').trim();
-      if (text) {
-        outputs.push(`### ${pack.title}\n${text.slice(0, 2200)}`);
-      }
-    }
-
-    return outputs.join('\n\n');
-  }
-
-  private buildDelegatedResearchPacks(
-    task: string,
-    complexity: 'simple' | 'medium' | 'complex',
-    existingMarkdown?: string,
-  ): DelegatedPlanResearchPack[] {
-    const maxPacks = complexity === 'complex' ? 3 : complexity === 'medium' ? 2 : 1;
-    const packs: DelegatedPlanResearchPack[] = [
-      {
-        title: 'Repository Map',
-        prompt: [
-          'Research the repository structure and identify concrete modules likely related to this task.',
-          `Task: ${task}`,
-          'Return file paths, entry points, and why they matter.',
-          'Be budget-aware: avoid broad scans and prioritize the most relevant files first.',
-          'Use report tool with concise markdown bullets.',
-        ].join('\n'),
-      },
-      {
-        title: 'Change Strategy',
-        prompt: [
-          'Research implementation strategy options.',
-          `Task: ${task}`,
-          existingMarkdown
-            ? `Existing draft hints:\n${existingMarkdown.slice(0, 1800)}`
-            : '',
-          'Return concrete action candidates with file paths and trade-offs.',
-          'Be budget-aware: focus on high-impact decisions and skip low-value exploration.',
-          'Use report tool with concise markdown bullets.',
-        ].join('\n'),
-      },
-      {
-        title: 'Verification & Risks',
-        prompt: [
-          'Research verification commands and high-risk areas for this task.',
-          `Task: ${task}`,
-          'Return runnable commands and key risks/blockers with file references.',
-          'Be budget-aware: list only the most reliable checks and highest-impact risks.',
-          'Use report tool with concise markdown bullets.',
-        ].join('\n'),
-      },
-    ];
-    return packs.slice(0, maxPacks);
-  }
 
   private createSubRunner(config: AgentConfig, toolRegistry: ToolRegistry): IAgentRunner {
     return new AgentSDK()

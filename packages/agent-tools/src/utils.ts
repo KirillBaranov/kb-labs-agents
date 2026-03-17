@@ -74,3 +74,32 @@ ATTEMPTED_PATH: ${resolved}`,
 
   return { valid: true, resolved };
 }
+
+/**
+ * Suggest a similar directory when the requested one doesn't exist.
+ *
+ * Handles common agent mistakes like nested paths (e.g. "foo/bar" when "foo-bar/" exists).
+ * Returns null if no good suggestion found.
+ */
+export function suggestDirectory(workingDir: string, requestedDir: string): string | null {
+  // Normalize: strip leading ./ and trailing /
+  const clean = requestedDir.replace(/^\.\//, '').replace(/\/$/, '');
+  if (!clean || clean === '.') {return null;}
+
+  // Only suggest for paths that look like nested mistakes (contain /)
+  const parts = clean.split('/');
+  if (parts.length < 2) {return null;}
+
+  // Strategy: join first two segments with - instead of /
+  // e.g. "kb-labs/agents" → "kb-labs-agents"
+  const candidate = `${parts[0]}-${parts[1]}`;
+  const rest = parts.slice(2).join('/');
+  const fullCandidate = rest ? path.join(candidate, rest) : candidate;
+  const resolved = path.resolve(workingDir, fullCandidate);
+
+  if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+    return fullCandidate;
+  }
+
+  return null;
+}

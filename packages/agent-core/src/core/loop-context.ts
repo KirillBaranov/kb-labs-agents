@@ -49,6 +49,10 @@ export class LoopContextImpl implements LoopContext {
     return this.pipeline.beforeIteration(this.run);
   }
 
+  async afterIteration(): Promise<void> {
+    await this.pipeline.afterIteration(this.run);
+  }
+
   async callLLM(): Promise<LLMCallResult> {
     const llmCtx: LLMCtx = {
       run: this.run,
@@ -62,6 +66,7 @@ export class LoopContextImpl implements LoopContext {
     const messages = patch.messages ?? llmCtx.messages;
     const tools = patch.tools ?? llmCtx.tools;
     const temperature = patch.temperature;
+    const toolChoice = patch.toolChoice;
 
     // Call LLM
     let rawResponse: Awaited<ReturnType<NonNullable<ILLM['chatWithTools']>>>;
@@ -69,6 +74,7 @@ export class LoopContextImpl implements LoopContext {
       rawResponse = await this.llm.chatWithTools!(messages, {
         tools,
         ...(temperature !== undefined ? { temperature } : {}),
+        ...(toolChoice !== undefined ? { toolChoice } : {}),
       });
     } catch (err) {
       throw err;

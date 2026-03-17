@@ -5,11 +5,14 @@
  */
 
 import { defineHandler, useAnalytics, useCache, useConfig, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
-import { SessionManager, createCoreToolPack } from '@kb-labs/agent-core';
+import { SessionManager, createCoreToolPack, bootstrapAgentSDK } from '@kb-labs/agent-core';
 import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
+
+// Register SDKAgentRunner as the RunnerFactory (idempotent — runs once per process)
+bootstrapAgentSDK();
 import { AgentSDK } from '@kb-labs/agent-sdk';
 import { createToolRegistry } from '@kb-labs/agent-tools';
-import type { RunRequest, RunResponse, AgentsPluginConfig, FileChangeSummary } from '@kb-labs/agent-contracts';
+import type { RunRequest, RunResponse, AgentsPluginConfig } from '@kb-labs/agent-contracts';
 import path from 'node:path';
 import fs from 'node:fs';
 import {
@@ -244,25 +247,9 @@ export default defineHandler({
         }
 
         // Attach file change summaries to the turn so the UI can show rollback/approve panel
-        // TODO: restore file history tracking via ObservabilityMiddleware once SDKAgentRunner
-        //       populates run.meta with file changes (tracked by legacy Agent.getFileHistory())
-        const legacyAgent = agent as unknown as { getFileHistory?: () => Array<{ runId: string; id: string; filePath: string; operation: 'write' | 'patch' | 'delete'; timestamp: string; metadata?: { linesAdded?: number; linesRemoved?: number }; before: unknown; after: { size: number }; approved: boolean }> };
-        if (typeof legacyAgent.getFileHistory === 'function') {
-          const fileHistory = legacyAgent.getFileHistory().filter((c) => c.runId === runId);
-          if (fileHistory.length > 0) {
-            const fileChanges: FileChangeSummary[] = fileHistory.map((c) => ({
-              changeId: c.id,
-              filePath: c.filePath,
-              operation: c.operation,
-              timestamp: c.timestamp,
-              linesAdded: c.metadata?.linesAdded,
-              linesRemoved: c.metadata?.linesRemoved,
-              isNew: !c.before,
-              sizeAfter: c.after.size,
-              approved: c.approved,
-            }));
-            await sessionManager.attachFileChangesToTurn(finalSessionId, runId, fileChanges);
-          }
+        // Populated by ChangeTrackingMiddleware via run.meta → TaskResult.fileChanges
+        if (result.fileChanges && result.fileChanges.length > 0) {
+          await sessionManager.attachFileChangesToTurn(finalSessionId, runId, result.fileChanges);
         }
 
         await RunManager.updateStatus(runId, result.success ? 'completed' : 'failed', {
@@ -310,14 +297,14 @@ export default defineHandler({
       }
     })();
 
-    // Build WebSocket URL — session-level stream (persistent, survives multiple runs)
+    // Return relative WS path — clients construct the full URL from their own base URL.
     const wsPath = AGENTS_WS_CHANNELS.SESSION_STREAM.replace(':sessionId', finalSessionId);
-    const eventsUrl = `ws://localhost:${process.env.KB_REST_PORT || 5050}${AGENTS_WS_BASE_PATH}${wsPath}`;
+    const eventsPath = `${AGENTS_WS_BASE_PATH}${wsPath}`;
 
     return {
       runId,
       sessionId: finalSessionId,
-      eventsUrl,
+      eventsPath,
       status: 'started',
       startedAt: run.startedAt,
     };

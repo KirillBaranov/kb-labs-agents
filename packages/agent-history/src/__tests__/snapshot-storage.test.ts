@@ -34,6 +34,7 @@ describe('SnapshotStorage', () => {
     id: `change-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     sessionId: sessionId,
     agentId: 'test-agent',
+    runId: 'test-run',
     filePath: 'test.ts',
     operation: 'write',
     timestamp: new Date().toISOString(),

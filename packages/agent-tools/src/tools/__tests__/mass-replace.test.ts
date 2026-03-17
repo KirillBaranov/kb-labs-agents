@@ -262,44 +262,6 @@ describe('mass_replace — regex mode', () => {
   });
 });
 
-// ─── File change tracker ───────────────────────────────────
-
-describe('mass_replace — file change tracker', () => {
-  it('calls fileChangeTracker.captureChange when provided', async () => {
-    mockExists.mockReturnValue(true);
-    mockStat.mockImplementation(scopeAndFileStat);
-    mockGlob.mockResolvedValue(['a.ts']);
-    mockReadFile.mockReturnValue('old value');
-
-    const captureChange = vi.fn().mockResolvedValue(undefined);
-    const fileChangeTracker = { captureChange };
-
-    const tool = createMassReplaceTool(ctx({ fileChangeTracker }));
-    await tool.executor({ pattern: 'old', replacement: 'new', scope: 'src', files: '**/*.ts' });
-
-    expect(captureChange).toHaveBeenCalledOnce();
-    expect(captureChange).toHaveBeenCalledWith(
-      expect.stringContaining('a.ts'),
-      'write',
-      'old value',
-      'new value',
-      expect.objectContaining({ isMassReplace: true }),
-    );
-  });
-
-  it('skips captureChange when tracker is not provided', async () => {
-    mockExists.mockReturnValue(true);
-    mockStat.mockImplementation(scopeAndFileStat);
-    mockGlob.mockResolvedValue(['a.ts']);
-    mockReadFile.mockReturnValue('old value');
-
-    const tool = createMassReplaceTool(ctx()); // no fileChangeTracker
-    const result = await tool.executor({ pattern: 'old', replacement: 'new', scope: 'src', files: '**/*.ts' }) as ToolResult;
-
-    expect(result.success).toBe(true);
-    expect(mockWriteFile).toHaveBeenCalledOnce();
-  });
-});
 
 // ─── Tool definition ───────────────────────────────────────
 

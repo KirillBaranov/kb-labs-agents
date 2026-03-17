@@ -6,4 +6,5 @@ export {
   createEventRenderer,
   createMinimalRenderer,
   createDetailedRenderer,
+  createDebugRenderer,
 } from './event-renderer.js';

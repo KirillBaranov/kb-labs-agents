@@ -14,7 +14,7 @@ import * as crypto from 'node:crypto';
 import type { Tool, ToolContext } from '../types.js';
 import { toolError } from './tool-error.js';
 import { FILESYSTEM_CONFIG } from '../config.js';
-import { normalizeOffsetLimit, validatePath } from '../utils.js';
+import { normalizeOffsetLimit, validatePath, suggestDirectory } from '../utils.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Constants (sourced from centralized config)
@@ -26,6 +26,21 @@ const DEFAULT_LINES = FILESYSTEM_CONFIG.defaultLines;
 const MAX_WRITE_SIZE = FILESYSTEM_CONFIG.maxWriteSize;
 const DEFAULT_LIST_LIMIT = FILESYSTEM_CONFIG.defaultListLimit;
 const MAX_LIST_LIMIT = FILESYSTEM_CONFIG.maxListLimit;
+const MAX_OUTPUT_CHARS = FILESYSTEM_CONFIG.maxOutputChars;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Output trimming
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Trim output to maxChars, appending a clear continuation hint.
+ * Always shown when output is large — tells agent exactly what to do next.
+ */
+function trimOutput(output: string, maxChars: number, continuationHint: string): string {
+  if (output.length <= maxChars) {return output;}
+  const trimmed = output.slice(0, maxChars);
+  return `${trimmed}\n\n⚠️ OUTPUT TRIMMED (${output.length.toLocaleString()} chars → ${maxChars.toLocaleString()} shown)\n${continuationHint}`;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -67,7 +82,7 @@ export function createFsReadTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_read',
-        description: `Read file contents. Supports offset/limit for large files. Default: ${DEFAULT_LINES} lines, max: ${MAX_LINES_PER_READ} lines per read.`,
+        description: `Read file contents. Default: ${DEFAULT_LINES} lines. Max: ${MAX_LINES_PER_READ} lines per call. IMPORTANT: Large files must be read in chunks — use offset+limit to paginate. The output will tell you how many lines remain and the exact next call to make.`,
         parameters: {
           type: 'object',
           properties: {
@@ -81,7 +96,7 @@ export function createFsReadTool(context: ToolContext): Tool {
             },
             limit: {
               type: 'number',
-              description: `Number of lines to read (default: ${DEFAULT_LINES}, max: ${MAX_LINES_PER_READ})`,
+              description: `Number of lines to read (default: ${DEFAULT_LINES}, max: ${MAX_LINES_PER_READ}). For large files, read in chunks of 200-500 lines.`,
             },
           },
           required: ['path'],
@@ -177,23 +192,26 @@ export function createFsReadTool(context: ToolContext): Tool {
       if (requestedLimit > MAX_LINES_PER_READ) {
         warnings.push(`⚠️ Limit capped at ${MAX_LINES_PER_READ} (you requested ${requestedLimit})`);
       }
-      if (hasMore && linesRemaining > 100) {
-        warnings.push(`⚠️ File has ${linesRemaining} more lines after this section`);
-        warnings.push(`💡 To read more: fs_read(path="${filePath}", offset=${endIndex + 1}, limit=1000)`);
-        warnings.push(`💡 Or request specific sections based on what you need`);
+      if (hasMore) {
+        warnings.push(`⚠️ PARTIAL READ: ${linesRemaining} lines unread. Next chunk: fs_read(path="${filePath}", offset=${endIndex + 1})`);
       }
 
       const header = [
         `File: ${filePath}`,
         `Lines: ${offset}-${endIndex} of ${totalLines}`,
-        hasMore ? `(${linesRemaining} more lines after this)` : '(end of file)',
+        hasMore ? `(${Math.round(((endIndex - offset + 1) / totalLines) * 100)}% read so far — ${linesRemaining} lines remain)` : '(end of file ✓)',
         ...warnings,
         '─'.repeat(60),
       ].filter(Boolean).join('\n');
 
+      const rawOutput = `${header}\n${numberedLines.join('\n')}`;
+      const continuationHint = hasMore
+        ? `Next chunk: fs_read(path="${filePath}", offset=${endIndex + 1})`
+        : '';
+
       return {
         success: true,
-        output: `${header}\n${numberedLines.join('\n')}`,
+        output: trimOutput(rawOutput, MAX_OUTPUT_CHARS, continuationHint),
         metadata: {
           filePath,
           totalLines,
@@ -270,21 +288,7 @@ HOW TO FIX: Split the content into smaller files, or write in chunks.`,
 
       // Check if overwriting existing file
       const isOverwrite = fs.existsSync(fullPath);
-
-      // CAPTURE SNAPSHOT BEFORE WRITE
-      if (context.fileChangeTracker) {
-        const beforeContent = isOverwrite
-          ? fs.readFileSync(fullPath, 'utf-8')
-          : null;
-
-        await context.fileChangeTracker.captureChange(
-          filePath,
-          'write',
-          beforeContent,
-          content,
-          { isOverwrite }
-        );
-      }
+      const beforeContent = isOverwrite ? fs.readFileSync(fullPath, 'utf-8') : undefined;
 
       // Create parent directories if needed
       const dir = path.dirname(fullPath);
@@ -309,6 +313,13 @@ Lines: ${lineCount}`,
           lines: lineCount,
           isOverwrite,
           uiHint: 'code',
+          // Consumed by ChangeTrackingMiddleware
+          changeSnapshot: {
+            operation: 'write' as const,
+            beforeContent,
+            afterContent: content,
+            isOverwrite,
+          },
         },
       };
     },
@@ -448,22 +459,6 @@ export function createFsPatchTool(context: ToolContext): Tool {
       const addedCount = newLines.length;
       const netChange = addedCount - removedCount;
 
-      // CAPTURE SNAPSHOT BEFORE PATCH
-      if (context.fileChangeTracker) {
-        await context.fileChangeTracker.captureChange(
-          filePath,
-          'patch',
-          currentContent,
-          patchedContent,
-          {
-            startLine,
-            endLine,
-            linesAdded: addedCount,
-            linesRemoved: removedCount,
-          }
-        );
-      }
-
       // Write updated content
       fs.writeFileSync(fullPath, patchedContent, 'utf-8');
 
@@ -492,6 +487,16 @@ File now has ${beforeLines.length + newLines.length + afterLines.length} lines (
           netChange,
           totalLinesBefore: totalLines,
           totalLinesAfter: beforeLines.length + newLines.length + afterLines.length,
+          // Consumed by ChangeTrackingMiddleware
+          changeSnapshot: {
+            operation: 'patch' as const,
+            beforeContent: currentContent,
+            afterContent: patchedContent,
+            startLine,
+            endLine,
+            linesAdded: addedCount,
+            linesRemoved: removedCount,
+          },
         },
       };
     },
@@ -511,7 +516,7 @@ export function createFsListTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_list',
-        description: `List files and directories at a path. Non-recursive by default.`,
+        description: `List files and directories at a path. Non-recursive by default. IMPORTANT: node_modules/, dist/, .git/, build/, .next/ are hidden by default — they contain no useful source code. Use include_ignored=true only if you specifically need to inspect build artifacts.`,
         parameters: {
           type: 'object',
           properties: {
@@ -522,6 +527,10 @@ export function createFsListTool(context: ToolContext): Tool {
             recursive: {
               type: 'boolean',
               description: 'Include subdirectories recursively (default: false, max depth: 3)',
+            },
+            include_ignored: {
+              type: 'boolean',
+              description: 'Include normally-hidden dirs: node_modules, dist, build, .next, .git (default: false). Only use when you explicitly need to inspect build artifacts or dependencies.',
             },
             offset: {
               type: 'number',
@@ -538,7 +547,11 @@ export function createFsListTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const dirPath = (input.path as string) || '.';
       const recursive = (input.recursive as boolean) || false;
+      const includeIgnored = (input.include_ignored as boolean) || false;
       const { offset, limit } = normalizeListWindow(input);
+
+      // Directories hidden by default — contain no useful source code
+      const IGNORED_DIRS = new Set(['node_modules', 'dist', 'build', '.next', '.git', '.pnpm', '.cache', 'coverage', '__pycache__']);
 
       // Validate path
       const pathValidation = validatePath(context.workingDir, dirPath);
@@ -556,11 +569,14 @@ export function createFsListTool(context: ToolContext): Tool {
 
       // Check exists
       if (!fs.existsSync(fullPath)) {
+        const suggestion = suggestDirectory(context.workingDir, dirPath);
         return toolError({
           code: 'DIRECTORY_NOT_FOUND',
           message: `"${dirPath}" does not exist.`,
           retryable: true,
-          hint: 'Use fs_list on parent directory to discover valid paths.',
+          hint: suggestion
+            ? `Did you mean "${suggestion}"?`
+            : 'Use fs_list on parent directory to discover valid paths.',
           details: { path: dirPath, workingDir: context.workingDir },
         });
       }
@@ -580,18 +596,27 @@ export function createFsListTool(context: ToolContext): Tool {
       // List contents
       const entries = fs.readdirSync(fullPath, { withFileTypes: true });
 
-      // Separate and sort
+      // Separate and sort — filter ignored dirs unless include_ignored=true
       const files = entries
         .filter(e => e.isFile())
         .map(e => e.name)
-        .filter(name => !name.startsWith('.')) // Hide hidden files
+        .filter(name => !name.startsWith('.')) // Hide dotfiles
         .sort();
 
       const dirs = entries
         .filter(e => e.isDirectory())
         .map(e => e.name)
-        .filter(name => !name.startsWith('.') && name !== 'node_modules')
+        .filter(name => {
+          if (name.startsWith('.')) {return false;}
+          if (!includeIgnored && IGNORED_DIRS.has(name)) {return false;}
+          return true;
+        })
         .sort();
+
+      // Track how many ignored dirs exist so agent knows they're there
+      const hiddenDirCount = includeIgnored ? 0 : entries
+        .filter(e => e.isDirectory() && IGNORED_DIRS.has(e.name))
+        .length;
 
       const combinedEntries = [
         ...dirs.map((name) => ({ type: 'dir' as const, name })),
@@ -604,10 +629,15 @@ export function createFsListTool(context: ToolContext): Tool {
       const pageFiles = pageEntries.filter((entry) => entry.type === 'file');
 
       // Format output
+      const ignoredNote = hiddenDirCount > 0
+        ? `[${hiddenDirCount} ignored dir(s) hidden: node_modules/dist/build/etc — use include_ignored=true to show]`
+        : '';
+
       const outputParts = [
         `📁 ${dirPath === '.' ? 'Working Directory' : dirPath} (showing ${pageEntries.length}/${combinedEntries.length}, offset=${offset}, limit=${limit})`,
+        ignoredNote,
         '',
-      ];
+      ].filter(Boolean);
 
       if (pageDirs.length > 0) {
         outputParts.push(`Directories (${dirs.length}):`);
@@ -668,14 +698,14 @@ export function createFsListTool(context: ToolContext): Tool {
         }
       }
 
-      if (hasMore) {
-        outputParts.push('');
-        outputParts.push(`Next page: fs_list(path="${dirPath}", recursive=${recursive ? 'true' : 'false'}, offset=${nextOffset}, limit=${limit})`);
-      }
+      const rawOutput = outputParts.join('\n');
+      const continuationHint = hasMore
+        ? `Next page: fs_list(path="${dirPath}", offset=${nextOffset}, limit=${limit})`
+        : '';
 
       return {
         success: true,
-        output: outputParts.join('\n'),
+        output: trimOutput(rawOutput, MAX_OUTPUT_CHARS, continuationHint),
         metadata: {
           path: dirPath,
           directoryCount: dirs.length,

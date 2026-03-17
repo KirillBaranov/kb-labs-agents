@@ -28,6 +28,7 @@ function makeRunCtx(overrides: Partial<RunContext> = {}): RunContext {
     abortSignal: new AbortController().signal,
     requestId: 'req-1',
     meta: makeMeta(),
+    eventBus: { emit: vi.fn() },
     ...overrides,
   } as RunContext;
 }
@@ -90,7 +91,7 @@ describe('BudgetMiddleware', () => {
       const patch = mw.beforeLLMCall(llmCtx);
       expect(patch).toBeDefined();
       expect(patch?.messages).toHaveLength(2);
-      expect(patch?.messages?.[1]?.content).toContain('Token budget checkpoint');
+      expect(patch?.messages?.[1]?.content).toContain('TOKEN BUDGET');
       expect(mw.convergenceNudgeSent).toBe(true);
     });
 

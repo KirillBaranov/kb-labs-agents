@@ -12,6 +12,22 @@ const todoLists = new Map<string, TodoList>();
 const TODO_CACHE_PREFIX = TODO_CONFIG.cachePrefix;
 const TODO_CACHE_TTL_MS = TODO_CONFIG.cacheTtlMs;
 
+/**
+ * Get a summary of the todo list for a session.
+ * Used by Status Block (FactSheetMiddleware) to display todo progress.
+ */
+export function getTodoSummary(sessionId: string): { completed: number; total: number; inProgress: number; pending: number; blocked: number } | null {
+  const list = todoLists.get(sessionId);
+  if (!list || list.items.length === 0) {return null;}
+  return {
+    completed: list.items.filter(i => i.status === 'completed').length,
+    inProgress: list.items.filter(i => i.status === 'in-progress').length,
+    pending: list.items.filter(i => i.status === 'pending').length,
+    blocked: list.items.filter(i => i.status === 'blocked').length,
+    total: list.items.length,
+  };
+}
+
 function getTodoCacheKey(sessionId: string): string {
   return `${TODO_CACHE_PREFIX}${sessionId}`;
 }

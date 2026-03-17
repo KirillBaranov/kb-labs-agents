@@ -8,6 +8,15 @@ import type { Tool, ToolContext } from '../types.js';
 import { toolError } from './tool-error.js';
 import { SHELL_CONFIG } from '../config.js';
 
+const MAX_OUTPUT_CHARS = 8_000;
+
+function trimOutput(output: string, label: 'stdout' | 'stderr'): string {
+  if (output.length <= MAX_OUTPUT_CHARS) {return output;}
+  const head = output.slice(0, MAX_OUTPUT_CHARS * 0.3);
+  const tail = output.slice(-Math.floor(MAX_OUTPUT_CHARS * 0.7));
+  return `${head}\n\n⚠️ ${label.toUpperCase()} TRIMMED (${output.length.toLocaleString()} chars, showing head+tail)\n💡 Pipe through grep/head/tail in your command to get focused output.\n\n...${tail}`;
+}
+
 /**
  * Execute shell command
  */
@@ -60,11 +69,14 @@ export function createShellExecTool(context: ToolContext): Tool {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
 
+        const trimmed = trimOutput(output || '', 'stdout');
         return {
           success: true,
-          output: `[cwd: ${resolvedCwd}]\n${output || '(command completed with no output)'}`,
+          output: `[cwd: ${resolvedCwd}]\n${trimmed || '(command completed with no output)'}`,
           metadata: {
             cwd: resolvedCwd,
+            outputLength: output?.length ?? 0,
+            trimmed: (output?.length ?? 0) > MAX_OUTPUT_CHARS,
           },
         };
       } catch (error: any) {
@@ -104,16 +116,19 @@ export function createShellExecTool(context: ToolContext): Tool {
           });
         }
 
+        const stdoutDisplay = trimOutput(stdout, 'stdout');
+        const stderrDisplay = trimOutput(stderr, 'stderr');
+
         return toolError({
           code: 'NON_ZERO_EXIT',
           message: `Command failed with exit code ${exitCode}`,
           retryable: true,
-          hint: 'Inspect stderr/stdout tails and adjust command or cwd.',
+          hint: 'Inspect stderr/stdout below. Pipe output through grep/head/tail to narrow it down.',
           details: {
             cwd: resolvedCwd,
             exitCode,
-            stdoutTail: stdout.slice(-1000),
-            stderrTail: stderr.slice(-1000),
+            stdout: stdoutDisplay || undefined,
+            stderr: stderrDisplay || undefined,
           },
         });
       }

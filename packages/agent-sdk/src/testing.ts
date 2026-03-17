@@ -138,6 +138,7 @@ export function makeLoopCtx(opts: LoopCtxOptions = {}): LoopContext {
       opts.toolOutputs ?? [],
     ),
     beforeIteration: vi.fn(async () => 'continue' as const),
+    afterIteration: vi.fn(async () => {}),
   };
 }
 

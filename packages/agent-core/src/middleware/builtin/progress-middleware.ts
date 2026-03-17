@@ -9,7 +9,7 @@
  * fail-open: progress tracking errors never break execution.
  */
 
-import type { RunContext, ToolExecCtx, ToolOutput, ControlAction } from '@kb-labs/agent-sdk';
+import type { RunContext, LLMCtx, LLMCallPatch, ToolExecCtx, ToolOutput, ControlAction } from '@kb-labs/agent-sdk';
 
 export interface ProgressCallbacks {
   onProgress?: (iteration: number) => void;
@@ -26,6 +26,9 @@ export class ProgressMiddleware {
   private readonly callbacks: ProgressCallbacks;
   private _iterationsSinceProgress = 0;
   private _recentToolCalls: string[] = [];
+  private _lastIterNudgeSent = false;
+  /** Tracks which stuck nudge level was last sent (0 = none) */
+  private _stuckNudgeLevel = 0;
 
   constructor(stuckThreshold = 4, callbacks: ProgressCallbacks = {}) {
     this.stuckThreshold = stuckThreshold;
@@ -57,6 +60,120 @@ export class ProgressMiddleware {
     return 'continue';
   }
 
+  beforeLLMCall(ctx: LLMCtx): LLMCallPatch | undefined {
+    if (this._lastIterNudgeSent) {return undefined;}
+
+    const { iteration, maxIterations } = ctx.run;
+    // Fire on the last iteration (agent has no more turns after this)
+    if (iteration >= maxIterations) {
+      this._lastIterNudgeSent = true;
+      ctx.run.eventBus.emit('middleware:event', {
+        name: 'progress',
+        event: 'last_iteration_nudge',
+        data: { iteration, maxIterations },
+      });
+      return {
+        messages: [
+          ...ctx.messages,
+          {
+            role: 'system' as const,
+            content:
+              `⚠️ FINAL ITERATION (${iteration}/${maxIterations}): You MUST call the \`report\` tool now with your complete final answer. No other tool calls are allowed.`,
+          },
+        ],
+        toolChoice: { type: 'function' as const, function: { name: 'report' } },
+      };
+    }
+
+    // ── Graduated stuck recovery nudges ──────────────────────────────
+    // Level 1: gentle suggestion at stuckThreshold (default 4)
+    // Level 2: stronger guidance at stuckThreshold + 2
+    // Level 3: forced convergence at stuckThreshold + 4
+    const sinceProgress = this._iterationsSinceProgress;
+
+    if (sinceProgress >= this.stuckThreshold && this._stuckNudgeLevel < 3) {
+      const level3Threshold = this.stuckThreshold + 4;
+      const level2Threshold = this.stuckThreshold + 2;
+
+      if (sinceProgress >= level3Threshold && this._stuckNudgeLevel < 3) {
+        this._stuckNudgeLevel = 3;
+        ctx.run.eventBus.emit('middleware:event', {
+          name: 'progress',
+          event: 'stuck_nudge',
+          data: { level: 3, iteration, sinceProgress },
+        });
+        return {
+          messages: [
+            ...ctx.messages,
+            {
+              role: 'user' as const,
+              content:
+                `⚠️ STUCK (${sinceProgress} iterations without progress): You MUST either call \`report\` with whatever findings you have, or call \`ask_user\` for help. Do not continue your current approach — it is not working.`,
+            },
+          ],
+          toolChoice: { type: 'function' as const, function: { name: 'report' } },
+        };
+      }
+
+      if (sinceProgress >= level2Threshold && this._stuckNudgeLevel < 2) {
+        this._stuckNudgeLevel = 2;
+        ctx.run.eventBus.emit('middleware:event', {
+          name: 'progress',
+          event: 'stuck_nudge',
+          data: { level: 2, iteration, sinceProgress },
+        });
+        return {
+          messages: [
+            ...ctx.messages,
+            {
+              role: 'user' as const,
+              content:
+                `⚠️ Still stuck (${sinceProgress} iterations without new evidence). Consider: (1) call \`report\` with partial results, (2) call \`ask_user\` for clarification, (3) narrow your scope and try a simpler approach.`,
+            },
+          ],
+        };
+      }
+
+      if (this._stuckNudgeLevel < 1) {
+        this._stuckNudgeLevel = 1;
+        ctx.run.eventBus.emit('middleware:event', {
+          name: 'progress',
+          event: 'stuck_nudge',
+          data: { level: 1, iteration, sinceProgress },
+        });
+        return {
+          messages: [
+            ...ctx.messages,
+            {
+              role: 'user' as const,
+              content:
+                `⚠️ No progress in ${sinceProgress} iterations. Try a different approach: use different search terms, explore different files, or simplify your goal.`,
+            },
+          ],
+        };
+      }
+    }
+
+    // ── Loop detection nudge ─────────────────────────────────────────
+    const loopDetected = ctx.run.meta.get<boolean>('progress', 'loopDetected');
+    if (loopDetected) {
+      // Clear the flag so we don't re-nudge every iteration
+      ctx.run.meta.set('progress', 'loopDetected', false);
+      return {
+        messages: [
+          ...ctx.messages,
+          {
+            role: 'user' as const,
+            content:
+              '⚠️ Loop detected: you are repeating the same tool calls. Stop and try a completely different strategy, or call `report` with your current findings.',
+          },
+        ],
+      };
+    }
+
+    return undefined;
+  }
+
   afterToolExec(ctx: ToolExecCtx, result: ToolOutput): void {
     const sig = `${ctx.toolName}:${JSON.stringify(ctx.input)}`;
     this._recentToolCalls.push(sig);
@@ -84,6 +201,7 @@ export class ProgressMiddleware {
     // Progress: successful tool with output resets the stuck counter
     if (result.success && result.output && result.output.length > 0) {
       this._iterationsSinceProgress = 0;
+      this._stuckNudgeLevel = 0;
       this.callbacks.onProgress?.(ctx.iteration);
     }
   }
@@ -91,5 +209,7 @@ export class ProgressMiddleware {
   reset(): void {
     this._iterationsSinceProgress = 0;
     this._recentToolCalls = [];
+    this._lastIterNudgeSent = false;
+    this._stuckNudgeLevel = 0;
   }
 }

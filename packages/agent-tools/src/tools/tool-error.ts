@@ -8,10 +8,9 @@ export function toolError(input: {
   details?: Record<string, unknown>;
 }): ToolResult {
   const header = `${input.code}: ${input.message}`;
-  const hintBlock = input.hint ? `\n\nHint: ${input.hint}` : '';
   return {
     success: false,
-    error: `${header}${hintBlock}`,
+    error: header,
     errorDetails: {
       code: input.code,
       message: input.message,

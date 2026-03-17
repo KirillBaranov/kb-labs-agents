@@ -16,6 +16,10 @@ function makeMeta() {
   };
 }
 
+function makeEventBus() {
+  return { emit: vi.fn() };
+}
+
 function makeRunCtx(overrides: Partial<RunContext> = {}): RunContext {
   return {
     task: 'test',
@@ -28,6 +32,7 @@ function makeRunCtx(overrides: Partial<RunContext> = {}): RunContext {
     abortSignal: new AbortController().signal,
     requestId: 'req-1',
     meta: makeMeta(),
+    eventBus: makeEventBus(),
     ...overrides,
   } as RunContext;
 }

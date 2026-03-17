@@ -312,6 +312,21 @@ export class ToolManager {
     return null;
   }
 
+  // ── Filtering ─────────────────────────────────────────────────
+
+  /**
+   * Remove all resolved tools whose short name is NOT in the allowlist.
+   * Used by sub-agents with preset-based tool restrictions.
+   */
+  applyAllowlist(allowedTools: string[]): void {
+    const allowed = new Set(allowedTools);
+    for (const [name, tool] of this.resolvedTools) {
+      if (!allowed.has(tool.shortName)) {
+        this.resolvedTools.delete(name);
+      }
+    }
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────
 
   /**

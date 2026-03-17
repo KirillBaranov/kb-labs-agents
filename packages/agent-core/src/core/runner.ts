@@ -46,14 +46,14 @@ import {
   type LLMTool,
 } from '@kb-labs/sdk';
 import { AGENT_ANALYTICS_EVENTS } from '@kb-labs/agent-contracts';
-import type { AgentConfig, LLMTier, TaskResult } from '@kb-labs/agent-contracts';
+import type { AgentConfig, LLMTier, TaskResult, SpawnAgentRequest, SpawnAgentResult, SubAgentPreset } from '@kb-labs/agent-contracts';
 import type { Turn } from '@kb-labs/agent-contracts';
 import type { AgentSDK, IAgentRunner } from '@kb-labs/agent-sdk';
 import { LinearExecutionLoop } from '../execution/linear-execution-loop.js';
 import { MiddlewarePipeline } from '../middleware/pipeline.js';
 import { ToolManager } from '../tools/tool-manager.js';
 import { SystemPromptBuilder } from '../prompt/system-prompt-builder.js';
-import { SubAgentOrchestrator } from '../agents/orchestrator.js';
+
 import { createRunContext } from './run-context.js';
 import { ToolExecutor } from './tool-executor.js';
 import { LoopContextImpl } from './loop-context.js';
@@ -63,8 +63,11 @@ import { BudgetMiddleware } from '../middleware/builtin/budget-middleware.js';
 import { ProgressMiddleware } from '../middleware/builtin/progress-middleware.js';
 import { FactSheetMiddleware } from '../middleware/builtin/factsheet-middleware.js';
 import { AnalyticsMiddleware } from '../middleware/builtin/analytics-middleware.js';
+import { ChangeTrackingMiddleware, getFileChangeSummaries } from '../middleware/builtin/change-tracking-middleware.js';
+import { TaskMiddleware } from '../middleware/builtin/task-middleware.js';
 import { discoverWorkspace } from '../execution/workspace-discovery.js';
 import { ToolInputNormalizer } from '../tools/tool-input-normalizer.js';
+import { createAsyncTaskToolPack } from '../tools/async-task-pack.js';
 import { SessionManager } from '../planning/session-manager.js';
 import { RunMetricsEmitter, getKpiBaselineKey } from '../analytics/index.js';
 import type { RunKpiPayload } from '../analytics/index.js';
@@ -109,6 +112,8 @@ export class SDKAgentRunner implements IAgentRunner {
   private readonly abortController: AbortController;
   private readonly injectedMessages: LLMMessage[] = [];
   private readonly runMetricsEmitter = new RunMetricsEmitter();
+  /** Accumulated token count for the current execution. Promoted to class field for budget cap access by spawnChildAgent. */
+  private totalTokens = 0;
 
   constructor(
     private readonly config: AgentConfig,
@@ -128,9 +133,27 @@ export class SDKAgentRunner implements IAgentRunner {
   async execute(task: string): Promise<TaskResult> {
     const mode = this.config.mode?.mode ?? 'execute';
 
-    // Non-execute modes delegate to legacy ModeHandler
+    // Non-execute modes delegate to ModeHandler — each handler owns its lifecycle.
     if (mode !== 'execute') {
       return this.runWithModeHandler(task);
+    }
+
+    // Execute mode: if there's an approved plan for this session, route through
+    // ExecuteModeHandler so it can inject the plan and track lifecycle status.
+    if (this.config.sessionId && this.config.workingDir) {
+      const { SessionManager } = await import('../planning/session-manager.js');
+      const { promises: fs } = await import('node:fs');
+      try {
+        const sessionManager = new SessionManager(this.config.workingDir);
+        const planPath = sessionManager.getSessionPlanPath(this.config.sessionId);
+        const raw = await fs.readFile(planPath, 'utf-8');
+        const plan = JSON.parse(raw);
+        if (plan.status === 'approved' || plan.status === 'draft') {
+          return this.runWithModeHandler(task);
+        }
+      } catch {
+        // No plan found — proceed with direct execution
+      }
     }
 
     return this.runExecuteMode(task);
@@ -265,7 +288,20 @@ export class SDKAgentRunner implements IAgentRunner {
     for (const pack of this.sdk.packs) {
       toolManager.register(pack);
     }
+
+    // Register async task tools (only for parent agents that can spawn sub-agents)
+    const taskMw = new TaskMiddleware({ maxConcurrent: 5 });
+    if (!this.config.parentAgentId) {
+      taskMw.setSpawnFn((req) => this.spawnChildAgent(req));
+      toolManager.register(createAsyncTaskToolPack(taskMw));
+    }
+
     await toolManager.initializeAll();
+
+    // Apply tool allowlist for sub-agents (preset-based filtering)
+    if (this.config.allowedTools && this.config.allowedTools.length > 0) {
+      toolManager.applyAllowlist(this.config.allowedTools);
+    }
 
     // ── 3. ToolExecutor (normalizers + guards + processors) ───────────────────
     const coreNormalizer = new ToolInputNormalizer({
@@ -280,7 +316,8 @@ export class SDKAgentRunner implements IAgentRunner {
 
     // ── 4. Core middlewares ───────────────────────────────────────────────────
 
-    let totalTokens = 0;
+    // Reset token counter for this tier attempt (class field for budget cap access)
+    this.totalTokens = 0;
 
     // ObservabilityMiddleware — events + file tracking (order=5)
     const observabilityMw = new ObservabilityMiddleware(
@@ -291,24 +328,27 @@ export class SDKAgentRunner implements IAgentRunner {
     );
 
     // BudgetMiddleware — token enforcement (order=10)
-    // Only active when config.tokenBudget.enabled = true.
+    // Default: 1M tokens per run. Token budget is the primary execution control;
+    // maxIterations is only a safety net.
     const budgetCfg = this.config.tokenBudget;
+    const defaultMaxTokens = 1_000_000;
     const budgetMw = new BudgetMiddleware(
       {
-        active: !!(budgetCfg?.enabled),
-        maxTokens: budgetCfg?.maxTokens ?? 0,
-        softLimitRatio: budgetCfg?.softLimitRatio ?? 0.7,
+        active: true,
+        maxTokens: budgetCfg?.maxTokens ?? defaultMaxTokens,
+        softLimitRatio: budgetCfg?.softLimitRatio ?? 0.8,
         hardLimitRatio: budgetCfg?.hardLimitRatio ?? 1.0,
         hardStop: budgetCfg?.hardStop ?? false,
         forceSynthesisOnHardLimit: budgetCfg?.forceSynthesisOnHardLimit ?? true,
       },
-      () => totalTokens,
+      () => this.totalTokens,
     );
 
-    // ContextFilterMiddleware — sliding window + output truncation (order=15)
+    // ContextFilterMiddleware — sliding window + output truncation + compaction (order=15)
     const contextFilterMw = new ContextFilterMiddleware({
       maxOutputLength: 8000,
       slidingWindowSize: 10,
+      enableCompaction: true,
     });
 
     // FactSheetMiddleware — structured working memory (order=20)
@@ -317,6 +357,13 @@ export class SDKAgentRunner implements IAgentRunner {
         ? `${this.config.workingDir}/.kb/memory/sessions/${this.config.sessionId}`
         : undefined,
       summarizationInterval: 5,
+    });
+
+    // ChangeTrackingMiddleware — file snapshot capture + rollback support (order=8)
+    const changeTrackingMw = new ChangeTrackingMiddleware({
+      agentId: this.agentId,
+      sessionId: this.config.sessionId,
+      workingDir: this.config.workingDir,
     });
 
     // ProgressMiddleware — stuck/loop detection (order=50)
@@ -364,7 +411,7 @@ export class SDKAgentRunner implements IAgentRunner {
       tierEscalation: true,
     };
     const pipeline = new MiddlewarePipeline(
-      [observabilityMw, budgetMw, contextFilterMw, factSheetMw, progressMw, analyticsMw, ...this.sdk.middlewares],
+      [observabilityMw, changeTrackingMw, budgetMw, contextFilterMw, factSheetMw, taskMw, progressMw, analyticsMw, ...this.sdk.middlewares],
       {
         featureFlags,
         onError: (middlewareName, hookName, error) => {
@@ -374,29 +421,7 @@ export class SDKAgentRunner implements IAgentRunner {
       },
     );
 
-    // ── 8. Sub-agent orchestrator ────────────────────────────────────────────
-    //  (injected via spawn_agent tool in CoreToolPack — not wired here directly,
-    //   but we build it so it's available when tool packs request it)
-    const _orchestrator = new SubAgentOrchestrator(
-      async (request, _tokenBudget, _signal) => {
-        const res = await this.spawnChildAgent(task, request.task, {
-          maxIterations: request.maxIterations,
-          workingDir: request.workingDir,
-        });
-        return {
-          task: request.task,
-          agentType: request.agentType ?? 'researcher',
-          success: res.success,
-          result: res.result,
-          iterations: res.iterations,
-          tokensUsed: res.tokensUsed,
-        };
-      },
-      this.abortController.signal,
-      { strategy: 'sequential', executor: {}, depth: (this.config.parentAgentId ? 1 : 0) },
-    );
-
-    // ── 9. RunContext ────────────────────────────────────────────────────────
+    // ── 8. RunContext ──────────────────────────────────────────────────────
     const requestId = randomUUID();
     const tools = this.buildLLMTools(toolManager);
 
@@ -410,15 +435,12 @@ export class SDKAgentRunner implements IAgentRunner {
     (run as { task: string }).task = task;
 
     // ── 10. System prompt (memory + workspace discovery) ──────────────────────
-    // WorkspaceDiscovery: only for top-level agents (not sub-agents) to avoid noise
-    const workspaceDiscovery = !this.config.parentAgentId
-      ? await discoverWorkspace(this.config.workingDir).catch(() => null)
-      : null;
+    const workspaceDiscovery = await discoverWorkspace(this.config.workingDir).catch(() => null);
     const sessionManager = this.config.sessionId
       ? new SessionManager(this.config.workingDir)
       : null;
     const lastAnswerHint = await this.getLastAnswerHint(task);
-    const continuityEnabled = this.shouldInjectContinuity(task, lastAnswerHint.lastTask);
+    const continuityEnabled = !!this.config.sessionId;
     const traceArtifactsContext = continuityEnabled && this.config.sessionId && sessionManager
       ? await sessionManager.getTraceArtifactsContext(this.config.sessionId).catch(() => '')
       : '';
@@ -464,8 +486,22 @@ export class SDKAgentRunner implements IAgentRunner {
       llm,
       pipeline,
       toolExecutor,
-      (delta) => { totalTokens += delta; },
+      (delta) => { this.totalTokens += delta; },
     );
+
+    // Enrich observability with budget + workspace for agent:start trace event
+    observabilityMw.startMeta = {
+      budget: {
+        maxTokens: budgetMw['policy'].maxTokens,
+        softLimitRatio: budgetMw['policy'].softLimitRatio,
+        hardLimitRatio: budgetMw['policy'].hardLimitRatio,
+      },
+      workspaceTopology: workspaceDiscovery?.repos.map(r => {
+        const rel = r.path.replace(this.config.workingDir + '/', '') || '.';
+        return `${rel} (${r.reasons.join(', ')})`;
+      }),
+      workingDir: this.config.workingDir,
+    };
 
     await pipeline.onStart(run);
 
@@ -521,6 +557,9 @@ export class SDKAgentRunner implements IAgentRunner {
     const filesModified = run.meta.get<string[]>('files', 'modified') ?? [];
     const filesCreated = run.meta.get<string[]>('files', 'created') ?? [];
 
+    // Read file change summaries from run.meta (populated by ChangeTrackingMiddleware)
+    const fileChanges = getFileChangeSummaries(run);
+
     const taskResult: TaskResult = {
       success: output.success,
       summary: output.answer,
@@ -528,8 +567,9 @@ export class SDKAgentRunner implements IAgentRunner {
       filesModified,
       filesRead,
       iterations: run.iteration,
-      tokensUsed: totalTokens,
+      tokensUsed: this.totalTokens,
       sessionId: this.config.sessionId,
+      fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
       metrics: {
         stopReasonCode: output.reasonCode,
         repeatNoEvidenceCount: run.meta.get<number>('loop', 'repeatNoEvidenceCount') ?? 0,
@@ -615,28 +655,78 @@ export class SDKAgentRunner implements IAgentRunner {
     }));
   }
 
-  private async spawnChildAgent(
-    _parentTask: string,
-    childTask: string,
-    spawnConfig?: { maxIterations?: number; workingDir?: string },
-  ): Promise<{ success: boolean; result: string; iterations: number; tokensUsed: number }> {
+  /**
+   * Spawn a child agent with budget cap, tool filtering, and structured results.
+   *
+   * Budget cap: childBudget = parentRemainingBudget × request.budgetFraction.
+   * If parent has no budget (maxTokens=0), child also runs without budget.
+   *
+   * Tool filtering: request.allowedTools → childConfig.allowedTools → child's
+   * ToolContext.allowedTools, which gates tool registration in createToolRegistry().
+   */
+  private async spawnChildAgent(request: SpawnAgentRequest): Promise<SpawnAgentResult> {
+    const startedAt = Date.now();
+
+    // Budget cap: compute child token budget from parent's remaining budget
+    const parentBudget = this.config.tokenBudget;
+    const parentMaxTokens = parentBudget?.maxTokens ?? 0;
+    const parentRemaining = parentMaxTokens > 0 ? Math.max(0, parentMaxTokens - this.totalTokens) : 0;
+    const budgetFraction = request.budgetFraction ?? 0.5;
+    const childMaxTokens = parentMaxTokens > 0 ? Math.floor(parentRemaining * budgetFraction) : 0;
+
     const childConfig: AgentConfig = {
       ...this.config,
       agentId: randomUUID(),
       parentAgentId: this.agentId,
-      maxIterations: spawnConfig?.maxIterations ?? this.config.maxIterations,
-      workingDir: spawnConfig?.workingDir ?? this.config.workingDir,
+      maxIterations: request.maxIterations ?? 100,
+      workingDir: request.workingDir ?? this.config.workingDir,
       abortSignal: this.abortController.signal,
+      allowedTools: request.allowedTools,
+      // Child budget: capped at fraction of parent's remaining budget
+      tokenBudget: childMaxTokens > 0
+        ? {
+          enabled: true,
+          maxTokens: childMaxTokens,
+          softLimitRatio: parentBudget?.softLimitRatio ?? 0.7,
+          hardLimitRatio: parentBudget?.hardLimitRatio ?? 1.0,
+          hardStop: parentBudget?.hardStop ?? false,
+          forceSynthesisOnHardLimit: parentBudget?.forceSynthesisOnHardLimit ?? true,
+        }
+        : this.config.tokenBudget,
     };
+
     const childSDK = this.sdk.extend();
     const childRunner = new SDKAgentRunner(childConfig, childSDK);
-    const result = await childRunner.execute(childTask);
-    return {
-      success: result.success,
-      result: result.summary,
-      iterations: result.iterations,
-      tokensUsed: result.tokensUsed,
-    };
+    const preset: SubAgentPreset = request.preset ?? 'research';
+
+    try {
+      const result = await childRunner.execute(request.task);
+      return {
+        success: result.success,
+        summary: result.summary,
+        filesRead: result.filesRead,
+        filesModified: result.filesModified,
+        filesCreated: result.filesCreated,
+        iterations: result.iterations,
+        tokensUsed: result.tokensUsed,
+        durationMs: Date.now() - startedAt,
+        error: result.error,
+        preset,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        summary: '',
+        filesRead: [],
+        filesModified: [],
+        filesCreated: [],
+        iterations: 0,
+        tokensUsed: 0,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+        preset,
+      };
+    }
   }
 
   private async runWithModeHandler(task: string): Promise<TaskResult> {
@@ -836,34 +926,6 @@ export class SDKAgentRunner implements IAgentRunner {
     return { hint, lastTask: last.task };
   }
 
-  private shouldInjectContinuity(task: string, previousTask?: string): boolean {
-    const normalizedTask = task.toLowerCase();
-    const followUpHints = [
-      'предыдущ',
-      'выше',
-      'до этого',
-      'тот же',
-      'этот же',
-      'прошл',
-      'follow-up',
-      'previous',
-      'earlier',
-      'same task',
-      'same as before',
-      'again',
-      'remind',
-      'напомни',
-    ];
-    if (followUpHints.some((hint) => normalizedTask.includes(hint))) {
-      return true;
-    }
-    if (!previousTask) {
-      return false;
-    }
-    const overlap = lexicalOverlap(task, previousTask);
-    return overlap >= 2;
-  }
-
   private async getSessionFactsHint(sessionManager: SessionManager, sessionId: string): Promise<string> {
     const turns = await sessionManager.getTurns(sessionId).catch(() => []);
     if (turns.length === 0) {
@@ -1037,21 +1099,3 @@ export class SDKAgentRunner implements IAgentRunner {
   }
 }
 
-function lexicalOverlap(a: string, b: string): number {
-  const wa = extractLexicalTokens(a);
-  const wb = extractLexicalTokens(b);
-  let count = 0;
-  for (const token of wa) {
-    if (wb.has(token)) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function extractLexicalTokens(input: string): Set<string> {
-  const tokens = (input.toLowerCase().match(/[\\p{L}\\p{N}_-]+/gu) ?? [])
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 4 && !/^\\d+$/.test(t));
-  return new Set(tokens);
-}

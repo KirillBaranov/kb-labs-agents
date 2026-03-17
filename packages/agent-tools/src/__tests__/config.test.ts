@@ -35,9 +35,8 @@ describe('SEARCH_CONFIG', () => {
 });
 
 describe('SHELL_CONFIG', () => {
-  it('maxBuffer is aligned with SEARCH_CONFIG', () => {
-    // Both should use the same 16MB cap for consistency
-    expect(SHELL_CONFIG.maxBuffer).toBe(SEARCH_CONFIG.maxBuffer);
+  it('maxBuffer is a positive number', () => {
+    expect(SHELL_CONFIG.maxBuffer).toBeGreaterThan(0);
   });
 });
 

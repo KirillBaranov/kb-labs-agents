@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "updatedAt": "2026-03-14T06:21:03.851Z",
+  "driftRateEma": 0,
+  "evidenceDensityEma": 0,
+  "toolErrorRateEma": 0,
+  "samples": 1,
+  "tokenHistory": [
+    33736
+  ],
+  "iterationUtilizationHistory": [
+    0.3333333333333333
+  ],
+  "qualityScoreHistory": [
+    0.75
+  ]
+}

@@ -13,15 +13,17 @@ export const FILESYSTEM_CONFIG = {
   /** Hard cap on file size to read (500KB) — prevents context overflow */
   maxFileSize: 500_000,
   /** Hard cap on lines returned per read — prevents context overflow */
-  maxLinesPerRead: 1_000,
-  /** Default lines to return when not specified */
-  defaultLines: 100,
+  maxLinesPerRead: 2_000,
+  /** Default lines to return when not specified — enough for most functions, not whole files */
+  defaultLines: 200,
   /** Hard cap on content size for write operations (1MB) */
   maxWriteSize: 1_000_000,
   /** Default limit for directory listing */
-  defaultListLimit: 100,
+  defaultListLimit: 50,
   /** Maximum limit for directory listing */
   maxListLimit: 200,
+  /** Max output characters before trimming (prevents context explosion) */
+  maxOutputChars: 12_000,
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -29,15 +31,21 @@ export const FILESYSTEM_CONFIG = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const SEARCH_CONFIG = {
-  /** Timeout for search commands (30s) */
-  timeoutMs: 30_000,
-  /** Max stdout buffer for search commands (16MB) */
-  maxBuffer: 16 * 1024 * 1024,
-  /** Default result limit */
-  defaultResultLimit: 100,
+  /** Timeout for search commands (15s) — fail fast, don't burn iterations */
+  timeoutMs: 15_000,
+  /** Max stdout buffer for search commands (8MB) */
+  maxBuffer: 8 * 1024 * 1024,
+  /** Default result limit — enough for actionable results */
+  defaultResultLimit: 50,
   /** Maximum result limit */
   maxResultLimit: 200,
-  /** Directories excluded from search by default */
+  /** Max output characters before trimming */
+  maxOutputChars: 8_000,
+  /**
+   * Directories excluded from search by default.
+   * These are never useful for code understanding and often huge.
+   * Pass exclude=[] to override entirely, or exclude=[...custom] to replace the list.
+   */
   defaultExcludes: [
     'node_modules', '.git', 'dist', 'build', '.next',
     '.kb', '.pnpm', 'coverage', '__pycache__', '.venv', '.cache',
@@ -69,8 +77,59 @@ export const TODO_CONFIG = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const DELEGATION_CONFIG = {
-  /** Default max iterations for spawned sub-agents */
-  defaultMaxIterations: 10,
+  /** Default max iterations for spawned sub-agents (safety net — token budget is primary control) */
+  defaultMaxIterations: 100,
+  /** Default budget fraction (50% of parent remaining — sub-agents need real budget) */
+  defaultBudgetFraction: 0.5,
+} as const;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sub-agent presets
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Sub-agent tool allowlists and iteration defaults per preset.
+ *
+ * Single source of truth: lives in agent-tools because it knows tool names.
+ * agent-core receives these as `allowedTools: string[]` data via SpawnAgentRequest
+ * (no import from agent-tools needed — correct dependency direction).
+ */
+export const SUB_AGENT_PRESETS = {
+  /** Read-only exploration and evidence gathering. */
+  research: {
+    tools: new Set<string>([
+      'fs_read', 'fs_list',
+      'glob_search', 'grep_search', 'find_definition', 'code_stats',
+      'memory_get', 'memory_finding', 'archive_recall',
+      'todo_get',
+      'report',
+    ]),
+    maxIterations: 50,
+  },
+  /** Full read/write capabilities for implementation tasks. */
+  execute: {
+    tools: new Set<string>([
+      'fs_read', 'fs_write', 'fs_patch', 'fs_list', 'mass_replace',
+      'glob_search', 'grep_search', 'find_definition', 'code_stats',
+      'shell_exec',
+      'memory_get', 'memory_finding', 'memory_blocker', 'memory_correction',
+      'todo_create', 'todo_update', 'todo_get',
+      'ask_user', 'report',
+    ]),
+    maxIterations: 100,
+  },
+  /** Code review and verification: read + shell (linters, tests). */
+  review: {
+    tools: new Set<string>([
+      'fs_read', 'fs_list',
+      'glob_search', 'grep_search', 'find_definition', 'code_stats',
+      'shell_exec',
+      'memory_get', 'memory_finding', 'archive_recall',
+      'todo_get',
+      'report',
+    ]),
+    maxIterations: 50,
+  },
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -83,6 +142,39 @@ export const MASS_REPLACE_CONFIG = {
   /** Maximum number of files to process in one operation */
   maxFiles: 100,
 } as const;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Plan mode tool allowlist
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Tools available in plan mode — read-only exploration + async task delegation.
+ * Used as `allowedTools` in ToolContext for both the plan-writer and any
+ * research sub-agents it spawns via task_submit. Single source of truth:
+ * lives in agent-tools so both agent-core and tests can import it without
+ * creating a circular dependency.
+ */
+export const PLAN_READ_ONLY_TOOL_NAMES = new Set<string>([
+  'fs_read',
+  'fs_list',
+  'glob_search',
+  'grep_search',
+  'find_definition',
+  'code_stats',
+  'memory_get',
+  'memory_finding',
+  'memory_blocker',
+  'archive_recall',
+  'todo_create',
+  'todo_update',
+  'todo_get',
+  'ask_user',
+  'report',
+  'task_submit',    // plan-writer can delegate research to async sub-agents
+  'task_status',    // check progress of delegated tasks
+  'task_collect',   // wait for and collect sub-agent results
+  'plan_validate',  // LLM-based plan quality gate (agent calls this to self-assess before report)
+]);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Source file extensions — single source of truth

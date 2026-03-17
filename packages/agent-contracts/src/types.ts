@@ -95,9 +95,9 @@ export interface AgentSmartTieringConfig {
 export interface AgentTokenBudgetConfig {
   /** Enables token-budget policy. When false, current behavior is preserved. */
   enabled?: boolean;
-  /** Optional absolute token cap. If omitted, KPI-derived budget is used. */
+  /** Absolute token cap per run. Default: 1,000,000. Token budget is the primary execution control. */
   maxTokens?: number;
-  /** Soft-limit ratio for convergence nudges (default: 0.7). */
+  /** Soft-limit ratio for convergence nudges (default: 0.8). */
   softLimitRatio?: number;
   /** Hard-limit ratio for stop/synthesis (default: 1.0). */
   hardLimitRatio?: number;
@@ -326,6 +326,8 @@ export interface AgentConfig {
   parentAgentId?: string;
   /** Abort signal from parent — when aborted, this agent stops between iterations */
   abortSignal?: AbortSignal;
+  /** Tool filter for sub-agents: only these tools will be registered in child's ToolContext. */
+  allowedTools?: string[];
 }
 
 /**
@@ -355,6 +357,8 @@ export interface TaskResult {
   spec?: TaskSpec;
   /** Plan ID (if executing from plan) */
   planId?: string;
+  /** File change summaries captured by ChangeTrackingMiddleware */
+  fileChanges?: import('./turn.js').FileChangeSummary[];
 
   // ═══════════════════════════════════════════════════════════════════════
   // Verification (Anti-Hallucination)
@@ -1224,8 +1228,8 @@ export interface ExecuteSessionPlanResponse {
   planId: string;
   /** Run ID */
   runId: string;
-  /** WS events URL */
-  eventsUrl: string;
+  /** Relative WebSocket path for event streaming */
+  eventsPath: string;
   /** Run status */
   status: 'started' | 'queued';
   /** Start timestamp */
@@ -1264,8 +1268,8 @@ export interface GenerateSpecResponse {
   spec?: TaskSpec;
   /** Start timestamp */
   startedAt: string;
-  /** WebSocket URL for event streaming */
-  eventsUrl?: string;
+  /** Relative WebSocket path for event streaming */
+  eventsPath?: string;
 }
 
 /**
@@ -1276,4 +1280,42 @@ export interface GetSpecResponse {
   sessionId: string;
   /** Spec, or null if not yet generated */
   spec: TaskSpec | null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Async Task System
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Status of an async task */
+export type AsyncTaskStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+/**
+ * An asynchronous task spawned by the agent.
+ * Tasks run concurrently via sub-agents and can be polled or awaited.
+ */
+export interface AsyncTask {
+  /** Unique task ID */
+  id: string;
+  /** Human-readable task description */
+  description: string;
+  /** Current status */
+  status: AsyncTaskStatus;
+  /** When the task was submitted */
+  submittedAt: string;
+  /** When the task started running */
+  startedAt?: string;
+  /** When the task completed or failed */
+  completedAt?: string;
+  /** Result summary (available when completed) */
+  result?: string;
+  /** Error message (available when failed) */
+  error?: string;
+  /** Sub-agent preset used */
+  preset?: string;
+  /** Token usage */
+  tokensUsed?: number;
+  /** Files read by the sub-agent */
+  filesRead?: string[];
+  /** Files modified by the sub-agent */
+  filesModified?: string[];
 }

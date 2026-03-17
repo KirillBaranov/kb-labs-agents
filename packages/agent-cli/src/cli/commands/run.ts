@@ -18,7 +18,7 @@ import { createToolRegistry } from '@kb-labs/agent-tools';
 import type { AgentConfig, ModeConfig, AgentMode, AgentEvent, AgentsPluginConfig } from '@kb-labs/agent-contracts';
 import type { TaskPlan } from '@kb-labs/agent-contracts';
 import { promises as fs } from 'node:fs';
-import { createEventRenderer, createMinimalRenderer, createDetailedRenderer } from '../ui/index.js';
+import { createEventRenderer, createMinimalRenderer, createDetailedRenderer, createDebugRenderer } from '../ui/index.js';
 
 // Register SDKAgentRunner as the RunnerFactory (idempotent — runs once per process)
 bootstrapAgentSDK();
@@ -42,11 +42,16 @@ type RunInput = {
   spec?: boolean;
   'dry-run'?: boolean;
   debug?: boolean;
+  /** Abort execution after this many seconds (0 or undefined = no timeout). */
+  timeout?: number;
+  /** Override token budget (e.g. 300000 for heavy tasks). Overrides config value. */
+  budget?: number;
   argv?: string[];
 };
 
 type RunResult = {
   exitCode: number;
+  sessionId?: string;
   result?: {
     success: boolean;
     summary: string;
@@ -85,7 +90,7 @@ export default defineCommand({
       const {
         task,
         workingDir = ctx.cwd || process.cwd(),
-        maxIterations = 25,
+        maxIterations = 200,
         temperature = 0.1,
         verbose: verboseRaw = true,
         quiet: quietRaw = false,
@@ -100,6 +105,8 @@ export default defineCommand({
         spec: specRaw = false,
         'dry-run': dryRunRaw = false,
         debug: debugRaw = false,
+        timeout: timeoutSeconds,
+        budget: budgetOverride,
       } = flags;
 
       const verbose = parseBooleanFlag(verboseRaw, true);
@@ -110,8 +117,65 @@ export default defineCommand({
       const dryRun = parseBooleanFlag(dryRunRaw, false);
       const debug = parseBooleanFlag(debugRaw, false);
 
+      // Build an AbortController when --timeout is specified.
+      // The signal is passed into AgentConfig so the runner can honour it.
+      const timeoutSecs = typeof timeoutSeconds === 'number' && timeoutSeconds > 0
+        ? timeoutSeconds
+        : undefined;
+
+      const abortController = timeoutSecs !== undefined ? new AbortController() : undefined;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+      if (abortController && timeoutSecs !== undefined) {
+        timeoutHandle = setTimeout(() => {
+          abortController.abort(
+            new Error(`Agent execution timed out after ${timeoutSecs}s (--timeout=${timeoutSecs})`)
+          );
+        }, timeoutSecs * 1000);
+        // Unref so the timer never prevents the Node.js process from exiting naturally
+        // when the agent finishes before the deadline.
+        timeoutHandle.unref?.();
+      }
+
+      // Helper: always clear the timer once execution finishes (success or error).
+      const clearTimeout_ = () => {
+        if (timeoutHandle !== undefined) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = undefined;
+        }
+      };
+
+      // Allow --approve without --task when --session-id is provided (approve existing plan)
       if (!task) {
+        if (approve && sessionId) {
+          const sessionManager = new SessionManager(workingDir as string || ctx.cwd || process.cwd());
+          const planPath = sessionManager.getSessionPlanPath(sessionId as string);
+          try {
+            const raw = await fs.readFile(planPath, 'utf-8');
+            const plan: TaskPlan = JSON.parse(raw);
+            if (plan.status !== 'draft') {
+              ctx.ui?.warn?.(`Plan is not in draft state (current: ${plan.status}). Nothing to approve.`);
+              clearTimeout_();
+              return { exitCode: 1 };
+            }
+            const approvedAt = new Date().toISOString();
+            const approvedPlan = { ...plan, status: 'approved' as const, approvedAt, approvalComment: 'Approved via CLI --approve', updatedAt: approvedAt };
+            await fs.writeFile(planPath, JSON.stringify(approvedPlan, null, 2), 'utf-8');
+            const planDocumentService = new PlanDocumentService(workingDir as string || ctx.cwd || process.cwd());
+            const planDocPath = planDocumentService.getPlanPath(plan);
+            await planDocumentService.appendExecutionLog(planDocPath, `- ${approvedAt}: Plan approved via CLI (--approve).`).catch(() => {});
+            ctx.ui?.success?.(`Plan approved: ${approvedPlan.id} (session: ${sessionId})`);
+            ctx.ui?.info?.(`Ready to execute: kb agent run --session-id=${sessionId}`);
+            clearTimeout_();
+            return { exitCode: 0, sessionId: sessionId as string };
+          } catch {
+            ctx.ui?.error?.(`No plan found for session: ${sessionId}`);
+            clearTimeout_();
+            return { exitCode: 1 };
+          }
+        }
         ctx.ui?.error?.('Error: --task is required');
+        clearTimeout_();
         return { exitCode: 1 };
       }
 
@@ -134,6 +198,8 @@ export default defineCommand({
       let eventRenderer;
       if (quiet) {
         eventRenderer = createMinimalRenderer();
+      } else if (debug) {
+        eventRenderer = createDebugRenderer();
       } else if (detailed) {
         eventRenderer = createDetailedRenderer();
       } else {
@@ -187,6 +253,9 @@ export default defineCommand({
           filesReadHash,
         });
         const agentsConfig = await useConfig<AgentsPluginConfig>();
+        const effectiveBudget = typeof budgetOverride === 'number' && budgetOverride > 0
+          ? { ...(agentsConfig?.tokenBudget ?? {}), enabled: true, maxTokens: budgetOverride }
+          : agentsConfig?.tokenBudget;
         const analytics = useAnalytics() ?? null;
         const taskId = `task-${Date.now()}`;
         const tracer = new IncrementalTraceWriter(taskId);
@@ -228,8 +297,9 @@ export default defineCommand({
                 sessionId: effectiveSessionId,
                 tier,
                 analytics,
-                tokenBudget: agentsConfig?.tokenBudget,
+                tokenBudget: effectiveBudget,
                 onEvent: specEventCallback,
+                abortSignal: abortController?.signal,
               };
               const specHandler = new SpecModeHandler();
               const specResult = await specHandler.execute(planData, specConfig, toolRegistry);
@@ -245,8 +315,10 @@ export default defineCommand({
                 ctx.ui?.warn?.(`Spec generation failed: ${specResult.summary}`);
               }
               const specSucceeded = specResult.success;
+              clearTimeout_();
               return {
                 exitCode: specSucceeded ? 0 : 1,
+                sessionId: effectiveSessionId,
                 result: {
                   success: specSucceeded,
                   summary: specResult.summary,
@@ -301,13 +373,22 @@ export default defineCommand({
           mode: modeConfig,
           onEvent: compositeEventCallback,
           debug,
+          abortSignal: abortController?.signal,
         };
 
+        // Announce the active timeout so the user knows about the deadline.
+        if (timeoutSecs !== undefined && !quiet) {
+          ctx.ui?.info?.(`⏱  Timeout active: agent will abort after ${timeoutSecs}s (--timeout=${timeoutSecs})`);
+        }
+
         // Create and execute agent via SDK
-        const runner = new AgentSDK()
-          .register(createCoreToolPack(toolRegistry))
-          .createRunner(config);
+        const sdk = new AgentSDK();
+        sdk.register(createCoreToolPack(toolRegistry));
+        const runner = sdk.createRunner(config);
         const result = await runner.execute(task);
+
+        // Execution finished — cancel the timer immediately so it doesn't fire.
+        clearTimeout_();
 
         // Flush pending session writes (ensures agent:end is persisted before exit)
         await pendingSessionWrite;
@@ -366,7 +447,13 @@ export default defineCommand({
         if (detailedTrace.length > 0) {
           await sessionManager.storeTraceArtifacts(effectiveSessionId, runId, detailedTrace);
         }
-        // Optional: auto-approve generated plan in plan mode
+
+        // Attach file change summaries to turn for UI rollback/approve panel
+        if (result.fileChanges && result.fileChanges.length > 0) {
+          await sessionManager.attachFileChangesToTurn(effectiveSessionId, runId, result.fileChanges);
+        }
+
+        // Auto-approve generated plan in plan mode (--mode=plan --approve)
         if (approve) {
           if (mode !== 'plan') {
             ctx.ui?.warn?.('--approve is currently supported only with --mode=plan');
@@ -393,6 +480,7 @@ export default defineCommand({
             );
 
             ctx.ui?.success?.(`Plan approved: ${approvedPlan.id}`);
+            ctx.ui?.info?.(`Execute: kb agent run --session-id=${effectiveSessionId}`);
 
             // Optional: generate spec after auto-approve
             if (spec && approvedPlan) {
@@ -418,6 +506,7 @@ export default defineCommand({
         const runSucceeded = result.success;
         return {
           exitCode: runSucceeded ? 0 : 1,
+          sessionId: effectiveSessionId,
           result: {
             success: runSucceeded,
             summary: result.summary,
@@ -429,6 +518,15 @@ export default defineCommand({
           },
         };
       } catch (error) {
+        clearTimeout_();
+        // Surface a clear message when the timeout fired.
+        if (abortController?.signal.aborted) {
+          const reason = abortController.signal.reason instanceof Error
+            ? abortController.signal.reason.message
+            : `Agent execution timed out after ${timeoutSecs}s`;
+          console.error(`\n⏱  ${reason}\n`);
+          return { exitCode: 124 }; // 124 mirrors the POSIX timeout(1) exit code
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`\n❌ Agent execution failed: ${errorMessage}\n`);
         return { exitCode: 1 };

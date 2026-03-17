@@ -24,10 +24,12 @@ export interface AgentEvents {
   'iteration:end':    { iteration: number };
   'llm:start':        { iteration: number; messageCount: number; toolCount: number; systemPromptChars: number };
   'llm:end':          { iteration: number; promptTokens: number; completionTokens: number;
-                        stopReason: string; hasToolCalls: boolean; durationMs: number };
+                        stopReason: string; hasToolCalls: boolean; toolCallCount: number;
+                        durationMs: number; content?: string };
   'tool:start':       { iteration: number; toolName: string; input: Record<string, unknown> };
   'tool:end':         { iteration: number; toolName: string; success: boolean;
-                        durationMs: number; outputLength: number };
+                        durationMs: number; outputLength: number;
+                        output?: string; metadata?: Record<string, unknown> };
   /** Generic middleware decision event — emitted by any middleware into the bus */
   'middleware:event': { name: string; event: string; data: Record<string, unknown> };
   /** Debug-only: full LLM prompt + response (emitted when RunContext.debug = true) */

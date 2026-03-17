@@ -54,65 +54,72 @@ import { createAskUserTool } from './interaction.js';
 // Reporting tools (sub-agent ↔ parent communication)
 import { createAskParentTool, createReportTool } from './reporting.js';
 
-// Delegation tools
-import { createSpawnAgentTool } from './delegation.js';
-
 // Archive recall tool (Tier 2: Cold Storage)
 import { createArchiveRecallTool } from './archive-recall.js';
+
+// Async task tools (fire-and-forget sub-agents)
+import { createTaskSubmitTool, createTaskStatusTool, createTaskCollectTool } from './async-tasks.js';
+
+// Plan validation tool (LLM-based plan quality gate)
+import { createPlanValidateTool } from './plan-validate.js';
 
 /**
  * Create and register all tools
  */
 export function createToolRegistry(context: ToolContext): ToolRegistry {
+  const allowed = context.allowedTools;
+  const allow = (name: string) => !allowed || allowed.has(name);
   const registry = new ToolRegistry(context);
 
   // Register filesystem tools
-  registry.register(createFsWriteTool(context));
-  registry.register(createFsReadTool(context));
-  registry.register(createFsPatchTool(context));
-  registry.register(createFsListTool(context));
-  registry.register(createMassReplaceTool(context));
+  if (allow('fs_write')) {registry.register(createFsWriteTool(context));}
+  if (allow('fs_read')) {registry.register(createFsReadTool(context));}
+  if (allow('fs_patch')) {registry.register(createFsPatchTool(context));}
+  if (allow('fs_list')) {registry.register(createFsListTool(context));}
+  if (allow('mass_replace')) {registry.register(createMassReplaceTool(context));}
 
-  // Register search tools (list_files removed — duplicates fs_list)
-  registry.register(createGlobSearchTool(context));
-  registry.register(createGrepSearchTool(context));
-  registry.register(createFindDefinitionTool(context));
-  registry.register(createCodeStatsTool(context));
+  // Register search tools
+  if (allow('glob_search')) {registry.register(createGlobSearchTool(context));}
+  if (allow('grep_search')) {registry.register(createGrepSearchTool(context));}
+  if (allow('find_definition')) {registry.register(createFindDefinitionTool(context));}
+  if (allow('code_stats')) {registry.register(createCodeStatsTool(context));}
 
   // Register shell tool
-  registry.register(createShellExecTool(context));
+  if (allow('shell_exec')) {registry.register(createShellExecTool(context));}
 
   // Register memory tools
-  // Shared memory (persistent)
-  registry.register(createMemoryGetTool(context));
-  registry.register(createMemoryPreferenceTool(context));
-  registry.register(createMemoryConstraintTool(context));
-  registry.register(createSessionSaveTool(context));
-  // Session memory (session-scoped)
-  registry.register(createMemoryCorrectionTool(context));
-  registry.register(createMemoryFindingTool(context));
-  registry.register(createMemoryBlockerTool(context));
-  // Archive recall (Tier 2: Cold Storage)
-  if (context.archiveMemory) {
+  if (allow('memory_get')) {registry.register(createMemoryGetTool(context));}
+  if (allow('memory_preference')) {registry.register(createMemoryPreferenceTool(context));}
+  if (allow('memory_constraint')) {registry.register(createMemoryConstraintTool(context));}
+  if (allow('session_save')) {registry.register(createSessionSaveTool(context));}
+  if (allow('memory_correction')) {registry.register(createMemoryCorrectionTool(context));}
+  if (allow('memory_finding')) {registry.register(createMemoryFindingTool(context));}
+  if (allow('memory_blocker')) {registry.register(createMemoryBlockerTool(context));}
+  if (context.archiveMemory && allow('archive_recall')) {
     registry.register(createArchiveRecallTool(context));
   }
 
   // Register TODO tools
-  registry.register(createTodoCreateTool(context));
-  registry.register(createTodoUpdateTool(context));
-  registry.register(createTodoGetTool(context));
+  if (allow('todo_create')) {registry.register(createTodoCreateTool(context));}
+  if (allow('todo_update')) {registry.register(createTodoUpdateTool(context));}
+  if (allow('todo_get')) {registry.register(createTodoGetTool(context));}
 
   // Register interaction tools
-  registry.register(createAskUserTool(context));
+  if (allow('ask_user')) {registry.register(createAskUserTool(context));}
 
   // Register reporting tools (sub-agent ↔ parent communication)
-  registry.register(createAskParentTool(context));
-  registry.register(createReportTool(context));
+  if (allow('ask_parent')) {registry.register(createAskParentTool(context));}
+  if (allow('report')) {registry.register(createReportTool(context));}
 
-  // Register delegation tools (only for main agent — sub-agents don't get spawn_agent)
-  if (context.spawnAgent) {
-    registry.register(createSpawnAgentTool(context));
+  // Register async task tools (only when taskManager is provided AND allowed)
+  if (context.taskManager) {
+    if (allow('task_submit')) { registry.register(createTaskSubmitTool(context)); }
+    if (allow('task_status')) { registry.register(createTaskStatusTool(context)); }
+    if (allow('task_collect')) { registry.register(createTaskCollectTool(context)); }
   }
+
+  // Register plan validation tool (LLM-based quality gate for plan mode)
+  if (allow('plan_validate')) { registry.register(createPlanValidateTool(context)); }
 
   return registry;
 }
@@ -146,6 +153,9 @@ export {
   createAskUserTool,
   createAskParentTool,
   createReportTool,
-  createSpawnAgentTool,
   createArchiveRecallTool,
+  createTaskSubmitTool,
+  createTaskStatusTool,
+  createTaskCollectTool,
+  createPlanValidateTool,
 };

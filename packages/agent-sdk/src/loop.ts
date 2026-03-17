@@ -48,6 +48,13 @@ export interface LoopContext {
    * Returns 'continue', 'stop', or 'escalate'.
    */
   beforeIteration(): Promise<ControlAction>;
+
+  /**
+   * Runs afterIteration middleware hooks.
+   * Should be called at the end of every iteration (before checking stop conditions
+   * that return early, call this just before returning).
+   */
+  afterIteration(): Promise<void>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -84,6 +84,8 @@ export interface LLMCallPatch {
   messages?: LLMMessage[];
   tools?: LLMTool[];
   temperature?: number;
+  /** Force a specific tool choice. Use to require the LLM to call a specific tool. */
+  toolChoice?: 'auto' | 'required' | 'none' | { type: 'function'; function: { name: string } };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

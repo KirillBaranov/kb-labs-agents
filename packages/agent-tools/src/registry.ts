@@ -34,12 +34,39 @@ export class ToolRegistry {
   }
 
   /**
-   * Execute a tool
+   * Execute a tool with automatic required-argument validation.
+   * Returns a structured error if required args are missing/null/undefined,
+   * so the agent understands what went wrong and can correct its call.
    */
   async execute(name: string, input: Record<string, unknown>) {
     const tool = this.tools.get(name);
     if (!tool) {
-      throw new Error(`Unknown tool: ${name}`);
+      return {
+        success: false,
+        output: `UNKNOWN_TOOL: "${name}" is not a registered tool. Available tools: ${this.getToolNames().join(', ')}`,
+      };
+    }
+
+    // Validate required parameters against JSON schema
+    const required: string[] = tool.definition.function.parameters?.required ?? [];
+    const missing = required.filter(
+      (key) => input[key] === undefined || input[key] === null,
+    );
+    if (missing.length > 0) {
+      const params = tool.definition.function.parameters?.properties ?? {};
+      const details = missing
+        .map((k) => {
+          const desc = (params[k] as { description?: string } | undefined)?.description ?? '';
+          return `  - ${k}${desc ? ': ' + desc : ''}`;
+        })
+        .join('\n');
+      return {
+        success: false,
+        output:
+          `MISSING_REQUIRED_ARGUMENTS for tool "${name}":\n${details}\n\n` +
+          `Hint: if a string argument is missing, your response may have been cut off by the output token limit (stop_reason=max_tokens). ` +
+          `For large content, write in multiple smaller calls instead of one large call.`,
+      };
     }
 
     return tool.executor(input);

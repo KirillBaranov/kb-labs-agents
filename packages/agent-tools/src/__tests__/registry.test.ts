@@ -69,10 +69,12 @@ describe('ToolRegistry', () => {
     expect(result).toEqual({ success: true, output: 'received: value' });
   });
 
-  it('should throw when executing unknown tool', async () => {
+  it('should return error result when executing unknown tool', async () => {
     const registry = new ToolRegistry(createMockContext());
 
-    await expect(registry.execute('missing', {})).rejects.toThrow('Unknown tool: missing');
+    const result = await registry.execute('missing', {});
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('missing');
   });
 
   it('should return context from constructor', () => {

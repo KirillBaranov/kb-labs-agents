@@ -53,6 +53,7 @@ function makeCtx(runCtx: RunContext, llmResponses: LLMCallResult[]): LoopContext
   return {
     run: runCtx,
     beforeIteration: vi.fn(async (): Promise<ControlAction> => 'continue'),
+    afterIteration: vi.fn(async (): Promise<void> => {}),
     appendMessage: vi.fn(),
     callLLM: vi.fn(async () => {
       const r = llmResponses[callIndex];
@@ -214,6 +215,7 @@ describe('LinearExecutionLoop', () => {
       const ctx: LoopContext = {
         run,
         beforeIteration: vi.fn(async (): Promise<ControlAction> => 'continue'),
+        afterIteration: vi.fn(async (): Promise<void> => {}),
         appendMessage: vi.fn(),
         callLLM: vi.fn(async () => { throw new Error('Rate limit exceeded'); }),
         executeTools: vi.fn(async () => []),
@@ -253,6 +255,7 @@ describe('LinearExecutionLoop', () => {
       const ctx: LoopContext = {
         run,
         beforeIteration: vi.fn(async (): Promise<ControlAction> => 'continue'),
+        afterIteration: vi.fn(async (): Promise<void> => {}),
         appendMessage: vi.fn(),
         callLLM: vi.fn(async () => {
           iterations.push(run.iteration);

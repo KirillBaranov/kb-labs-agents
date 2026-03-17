@@ -370,6 +370,28 @@ export class TurnAssembler {
         return false;
       }
 
+      case 'agent:end': {
+        // Add a TextStep from the final summary only if no TextStep exists yet.
+        // When the agent uses the report tool, llm:end has empty content — summary is the only source.
+        // When the agent ends with a text-only LLM reply, llm:end already added the TextStep.
+        const hasTextStep = turn.steps.some((s) => s.type === 'text');
+        if (!hasTextStep) {
+          const summary = (event.data?.summary as string | undefined)?.trim();
+          if (summary) {
+            const step: TextStep = {
+              type: 'text',
+              id: `step-${turn.steps.length + 1}`,
+              timestamp: event.timestamp,
+              content: summary,
+              role: 'assistant',
+            };
+            turn.steps.push(step);
+            return true;
+          }
+        }
+        return false;
+      }
+
       case 'agent:error': {
         turn.status = 'failed';
         turn.completedAt = event.timestamp;
@@ -464,19 +486,28 @@ export class TurnAssembler {
    */
   private applyToolEnd(step: ToolUseStep, event: ToolEndEvent): void {
     step.status = 'done';
+    step.success = event.data?.success;
     step.output = event.data?.output;
     step.durationMs = event.data?.durationMs;
     const m = event.data?.metadata;
     if (m) {
       step.metadata = {
         filePath: m.filePath,
+        fileContent: m.fileContent,
         diff: m.diff,
+        oldContent: m.oldContent,
+        newContent: m.newContent,
         linesChanged: m.linesChanged,
         linesAdded: m.linesAdded,
         linesRemoved: m.linesRemoved,
         resultCount: m.resultCount,
+        results: m.results,
         confidence: m.confidence,
+        query: m.query,
         exitCode: m.exitCode,
+        command: m.command,
+        stdout: m.stdout,
+        stderr: m.stderr,
         summary: m.summary,
         uiHint: m.uiHint,
         structured: m.structured,

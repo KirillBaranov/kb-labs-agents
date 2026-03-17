@@ -1,11 +1,10 @@
 /**
- * GET /sessions/:sessionId/changes/:changeId/diff
- * Returns unified diff for a specific file change snapshot.
+ * GET /sessions/:sessionId/changes/:changeId/diff — Unified diff for a file change snapshot.
  */
 
 import { defineHandler, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
 import { SessionManager } from '@kb-labs/agent-core';
-import { SnapshotStorage, generateUnifiedDiff, countDiffLines } from '@kb-labs/agent-history';
+import { ChangeStore, generateUnifiedDiff, countDiffLines } from '@kb-labs/agent-history';
 
 interface GetFileDiffResponse {
   changeId: string;
@@ -21,35 +20,22 @@ interface GetFileDiffResponse {
 }
 
 export default defineHandler({
-  async execute(
-    ctx: PluginContextV3,
-    input: RestInput
-  ): Promise<GetFileDiffResponse> {
+  async execute(ctx: PluginContextV3, input: RestInput): Promise<GetFileDiffResponse> {
     const params = input.params as Record<string, string> | undefined;
     const sessionId = params?.sessionId;
     const changeId = params?.changeId;
-
     if (!sessionId) {throw new Error('Session ID is required');}
     if (!changeId) {throw new Error('Change ID is required');}
 
-    // Resolve session's own workingDir for snapshot lookup
     const sessionManager = new SessionManager(ctx.cwd);
     const session = await sessionManager.loadSession(sessionId);
     const workingDir = session?.workingDir || ctx.cwd;
 
-    const storage = new SnapshotStorage(workingDir);
-    const change = await storage.loadSnapshot(sessionId, changeId);
+    const store = new ChangeStore(workingDir);
+    const change = await store.get(sessionId, changeId);
+    if (!change) {throw new Error(`Change not found: ${changeId} in session ${sessionId}`);}
 
-    if (!change) {
-      throw new Error(`Change not found: ${changeId} in session ${sessionId}`);
-    }
-
-    const diff = generateUnifiedDiff(
-      change.filePath,
-      change.before?.content,
-      change.after.content,
-      change.operation
-    );
+    const diff = generateUnifiedDiff(change.filePath, change.before?.content, change.after.content, change.operation);
     const { added, removed } = countDiffLines(diff);
 
     return {

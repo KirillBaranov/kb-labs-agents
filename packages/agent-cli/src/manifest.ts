@@ -63,6 +63,14 @@ const runFlags = {
     description: 'Enable debug mode: emit full prompts and responses as llm:debug events',
     default: false,
   },
+  timeout: {
+    type: 'number',
+    description: 'Abort agent execution after this many seconds (exit code 124). No timeout by default.',
+  },
+  budget: {
+    type: 'number',
+    description: 'Override token budget (e.g. 300000 for heavy tasks). Overrides config value.',
+  },
 } as const;
 
 /**
@@ -129,6 +137,7 @@ export const manifest = {
           'kb agent run --mode=plan --task="Add auth" --approve',
           'kb agent run --mode=edit --task="Fix bug" --files src/auth.ts',
           'kb agent run --mode=debug --task="Why crash?" --trace .kb/traces/trace-123.json',
+          'kb agent run --task="Refactor auth module" --timeout=120',
         ],
       },
       // Trace debugging commands (AI-friendly)

@@ -67,7 +67,13 @@ class LoopDetector {
 
   /** Record tool calls and return true if a repeat pattern is detected. */
   check(calls: ToolCallInput[]): boolean {
-    const sig = calls.map(c => `${c.name}:${canonicalJson(c.input)}`).join('|');
+    // Normalize pagination params so that repeated scans with different offsets are detected
+    const sig = calls.map(c => {
+      const normalized = { ...c.input as Record<string, unknown> };
+      delete normalized['offset'];
+      delete normalized['limit'];
+      return `${c.name}:${canonicalJson(normalized)}`;
+    }).join('|');
     this.history.push(sig);
     if (this.history.length > this.windowSize) {
       this.history.shift();
@@ -144,11 +150,77 @@ export class LinearExecutionLoop implements ExecutionLoop {
       // ── Report tool (priority 1 — always wins post-LLM) ─────────────────────
       const reportStop = extractReport(response);
       if (reportStop) {
+        // Execute the report tool through middleware so tool:start/tool:end events
+        // are emitted — plan-mode-handler and session tracing depend on them.
+        const reportCall = response.toolCalls?.find(tc => tc.name === 'report');
+        if (reportCall) {
+          const reportInput: ToolCallInput = {
+            id: reportCall.id,
+            name: reportCall.name,
+            input: reportCall.input,
+          };
+          let reportBlocked = false;
+          try {
+            const toolResults = await ctx.executeTools([reportInput]);
+            // If report tool returned success=false (e.g. plan_validate gate),
+            // do NOT complete — let the agent see the error and continue.
+            const reportResult = toolResults?.find(r => r.toolCallId === reportCall.id);
+            if (reportResult && reportResult.success === false) {
+              reportBlocked = true;
+            }
+          } catch {
+            // fail-open: report tool execution error should not prevent completion
+          }
+          if (reportBlocked) {
+            await ctx.afterIteration();
+            continue;
+          }
+        }
+        await ctx.afterIteration();
         return complete(reportStop);
       }
 
-      // ── No tool calls → natural completion ──────────────────────────────────
+      // ── No tool calls → force report if there's content ─────────────────────
       if (toolCalls.length === 0) {
+        if (response.content && response.content.trim().length > 0) {
+          // LLM responded with text instead of calling report.
+          // Nudge it once with tool_choice=required forcing a report call.
+          let nudgedResponse: LLMCallResult | null = null;
+          try {
+            // Inject a reminder message and re-call with forced tool choice
+            ctx.appendMessage({
+              role: 'user',
+              content: 'You must call the `report` tool with your answer. Do NOT respond with plain text.',
+            });
+            nudgedResponse = await ctx.callLLM();
+          } catch {
+            // fail-open: nudge failed, fall through to no_tool_calls
+          }
+
+          if (nudgedResponse) {
+            const nudgedReport = extractReport(nudgedResponse);
+            if (nudgedReport) {
+              const reportCall = nudgedResponse.toolCalls?.find(tc => tc.name === 'report');
+              if (reportCall) {
+                try {
+                  await ctx.executeTools([{ id: reportCall.id, name: reportCall.name, input: reportCall.input }]);
+                } catch { /* fail-open */ }
+              }
+              await ctx.afterIteration();
+              return complete(nudgedReport);
+            }
+            // Nudge didn't produce report either — fall through with nudged content or original
+            await ctx.afterIteration();
+            return complete({
+              priority: PRIORITY.NO_TOOLS,
+              reasonCode: 'no_tool_calls',
+              reason: 'LLM produced no tool calls after nudge',
+              answer: nudgedResponse.content || response.content,
+            });
+          }
+        }
+
+        await ctx.afterIteration();
         return complete({
           priority: PRIORITY.NO_TOOLS,
           reasonCode: 'no_tool_calls',
@@ -168,6 +240,7 @@ export class LinearExecutionLoop implements ExecutionLoop {
         await ctx.executeTools(inputs);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        await ctx.afterIteration();
         return failure(`Tool execution failed: ${msg}`);
       }
 
@@ -178,9 +251,16 @@ export class LinearExecutionLoop implements ExecutionLoop {
       const created = run.meta.get<string[]>('files', 'created') ?? [];
       const evidenceCount = reads.length + modified.length + created.length;
       const prevEvidenceCount = run.meta.get<number>('loop', 'lastEvidenceCount') ?? 0;
+
       const newEvidence = evidenceCount > prevEvidenceCount;
 
-      const toolSignature = inputs.map((t) => `${t.name}:${canonicalJson(t.input)}`).join('|');
+      // Keep offset in signature: chunk-reads of a large file (same path, different offsets)
+      // must be treated as distinct calls, not repeats. Only strip limit (size hint, not identity).
+      const toolSignature = inputs.map((t) => {
+        const normalized = { ...t.input as Record<string, unknown> };
+        delete normalized['limit'];
+        return `${t.name}:${canonicalJson(normalized)}`;
+      }).join('|');
       const lastToolSignature = run.meta.get<string>('loop', 'lastToolSignature') ?? '';
       let repeatsWithoutEvidence = run.meta.get<number>('loop', 'repeatsWithoutEvidence') ?? 0;
       let repeatNoEvidenceCount = run.meta.get<number>('loop', 'repeatNoEvidenceCount') ?? 0;
@@ -201,6 +281,8 @@ export class LinearExecutionLoop implements ExecutionLoop {
         `Iteration ${run.iteration}: tools=${inputs.map((t) => t.name).join(', ')}; ` +
           `evidence=${newEvidence ? 'new' : 'none'}; files(read=${reads.length}, modified=${modified.length}, created=${created.length})`,
       );
+
+      await ctx.afterIteration();
 
       if (repeatsWithoutEvidence >= 2) {
         return complete({

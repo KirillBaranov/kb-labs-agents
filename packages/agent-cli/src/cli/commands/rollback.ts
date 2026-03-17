@@ -1,539 +1,139 @@
 /**
- * agent:rollback - Rollback file changes
+ * agent:rollback — Rollback file changes made by agents.
+ *
+ * Uses ChangeStore from @kb-labs/agent-history.
+ * All rollback logic is in ChangeTrackingMiddleware.rollbackRun() or handled here via ChangeStore.
  *
  * Usage:
- *   pnpm kb agent:rollback --change-id={id}
- *   pnpm kb agent:rollback --file=src/index.ts
- *   pnpm kb agent:rollback --agent-id={id}
+ *   pnpm kb agent:rollback --run-id={id} --session-id={id}
+ *   pnpm kb agent:rollback --file=src/index.ts --session-id={id}
  *   pnpm kb agent:rollback --session-id={id}
- *   pnpm kb agent:rollback --after="2026-02-16T10:00:00Z"
+ *   pnpm kb agent:rollback --run-id={id} --session-id={id} --dry-run
  */
 
 import { defineCommand, useLogger } from '@kb-labs/sdk';
 import type { PluginContextV3 } from '@kb-labs/sdk';
-import { promises as fs } from 'fs';
-import path from 'path';
+import { ChangeStore } from '@kb-labs/agent-history';
+import type { FileChange } from '@kb-labs/agent-history';
+import { promises as fsp } from 'node:fs';
+import path from 'node:path';
 
 type RollbackInput = {
-  changeId?: string;
-  'change-id'?: string;
-  file?: string;
-  agentId?: string;
-  'agent-id'?: string;
-  sessionId?: string;
+  'run-id'?: string;
+  runId?: string;
   'session-id'?: string;
-  after?: string;
-  force?: boolean;
-  dryRun?: boolean;
+  sessionId?: string;
+  file?: string;
   'dry-run'?: boolean;
+  dryRun?: boolean;
   json?: boolean;
 };
 
-type RollbackResult = { exitCode: number; response?: any };
-
 export default defineCommand({
   id: 'rollback',
-  description: 'Rollback file changes made by agents',
+  description: 'Rollback file changes made by agents in a session or run',
 
   handler: {
-    async execute(ctx: PluginContextV3, input: RollbackInput): Promise<RollbackResult> {
+    async execute(ctx: PluginContextV3, input: RollbackInput): Promise<{ exitCode: number }> {
       const logger = useLogger();
-      const flags = (input as any).flags ?? input;
-      const normalizedFlags = {
-        ...flags,
-        changeId: flags['change-id'] ?? flags.changeId,
-        agentId: flags['agent-id'] ?? flags.agentId,
-        sessionId: flags['session-id'] ?? flags.sessionId,
-        dryRun: flags['dry-run'] ?? flags.dryRun,
-      };
+      const flags = ((input as Record<string, unknown>).flags ?? input) as Record<string, unknown>;
+
+      const sessionId = (flags['session-id'] ?? flags['sessionId']) as string | undefined;
+      const runId = (flags['run-id'] ?? flags['runId']) as string | undefined;
+      const filePath = flags['file'] as string | undefined;
+      const dryRun = Boolean(flags['dry-run'] ?? flags['dryRun']);
+      const asJson = Boolean(flags['json']);
+
+      if (!sessionId) {
+        return output(ctx, asJson, { success: false, error: 'Missing --session-id' }, 1);
+      }
+
+      const workingDir = process.cwd();
+      const store = new ChangeStore(workingDir);
 
       try {
-        const basePath = path.join(process.cwd(), '.kb', 'agents', 'sessions');
+        let changes: FileChange[];
 
-        // Rollback specific change
-        if (normalizedFlags.changeId) {
-          return await rollbackChange(ctx, basePath, normalizedFlags.changeId, normalizedFlags);
+        if (runId && !filePath) {
+          changes = await store.listRun(sessionId, runId);
+        } else if (filePath) {
+          changes = await store.listFile(sessionId, filePath);
+          if (runId) {
+            changes = changes.filter((c) => c.runId === runId);
+          }
+        } else {
+          changes = await store.listSession(sessionId);
         }
 
-        // Rollback all changes to specific file
-        if (normalizedFlags.file) {
-          return await rollbackFile(ctx, basePath, normalizedFlags.file, normalizedFlags);
+        if (changes.length === 0) {
+          return output(ctx, asJson, { success: true, rolledBack: 0, message: 'No changes to rollback' }, 0);
         }
 
-        // Rollback all changes by specific agent
-        if (normalizedFlags.agentId) {
-          return await rollbackAgent(ctx, basePath, normalizedFlags.agentId, normalizedFlags);
+        // Process in reverse chronological order
+        const ordered = [...changes].sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+        );
+
+        if (dryRun) {
+          const preview = ordered.map((c) => ({
+            filePath: c.filePath,
+            operation: c.operation,
+            action: !c.before ? 'delete (was new file)' : 'restore to before state',
+          }));
+          return output(ctx, asJson, { success: true, dryRun: true, wouldRollback: preview }, 0);
         }
 
-        // Rollback all changes in session
-        if (normalizedFlags.sessionId) {
-          return await rollbackSession(ctx, basePath, normalizedFlags.sessionId, normalizedFlags);
+        let rolledBack = 0;
+        const errors: string[] = [];
+
+        for (const change of ordered) {
+          const fullPath = path.join(workingDir, change.filePath);
+          try {
+            if (!change.before) {
+              // File was created by agent — delete it
+              await fsp.unlink(fullPath).catch((e: NodeJS.ErrnoException) => {
+                if (e.code !== 'ENOENT') {throw e;}
+              });
+            } else {
+              // Restore to before state
+              await fsp.mkdir(path.dirname(fullPath), { recursive: true });
+              await fsp.writeFile(fullPath, change.before.content, 'utf-8');
+            }
+            rolledBack++;
+          } catch (e) {
+            errors.push(`${change.filePath}: ${String(e)}`);
+          }
         }
 
-        // Rollback all changes after timestamp
-        if (normalizedFlags.after) {
-          return await rollbackAfter(ctx, basePath, normalizedFlags.after, normalizedFlags);
-        }
-
-        // No flags provided
-        const err = {
-          success: false,
-          error: 'Missing rollback target. Provide one of: --change-id, --file, --agent-id, --session-id, --after',
-        };
-        ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-        return { exitCode: 1, response: err };
-      } catch (err) {
-        logger.error('agent:rollback error:', err instanceof Error ? err : undefined);
-        const errResponse = {
-          success: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
-        ctx.ui.write(JSON.stringify(errResponse, null, 2) + '\n');
-        return { exitCode: 1, response: errResponse };
+        return output(ctx, asJson, { success: errors.length === 0, rolledBack, errors }, errors.length > 0 ? 1 : 0);
+      } catch (e) {
+        logger.error('agent:rollback error', e instanceof Error ? e : undefined);
+        return output(ctx, asJson, { success: false, error: String(e) }, 1);
       }
     },
   },
 });
 
-/**
- * Rollback specific change by ID
- */
-async function rollbackChange(
-  ctx: PluginContextV3,
-  basePath: string,
-  changeId: string,
-  flags: any
-): Promise<RollbackResult> {
-  // Find the change
-  const sessions = await fs.readdir(basePath);
-  let snapshot = null;
-  let foundSessionId = null;
-
-  for (const sessionId of sessions) {
-    const snapshotPath = path.join(basePath, sessionId, 'snapshots', `${changeId}.json`);
-
-    try {
-      const content = await fs.readFile(snapshotPath, 'utf-8');
-      snapshot = JSON.parse(content);
-      foundSessionId = sessionId;
-      break;
-    } catch {
-      continue;
-    }
-  }
-
-  if (!snapshot) {
-    const err = { success: false, error: `Change not found: ${changeId}` };
-    ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-    return { exitCode: 1, response: err };
-  }
-
-  // Check if we can rollback
-  if (!snapshot.before && snapshot.operation === 'write') {
-    // New file - delete it
-    if (flags.dryRun) {
-      ctx.ui.write(`[DRY RUN] Would delete file: ${snapshot.filePath}\n`);
+function output(ctx: PluginContextV3, asJson: boolean, data: unknown, exitCode: number): { exitCode: number } {
+  if (asJson) {
+    ctx.ui.write(JSON.stringify(data, null, 2) + '\n');
+  } else {
+    const d = data as Record<string, unknown>;
+    if (d['success']) {
+      if (d['dryRun']) {
+        ctx.ui.write(`[DRY RUN] Would rollback:\n`);
+        for (const p of (d['wouldRollback'] as Array<Record<string, string>>) ?? []) {
+          ctx.ui.write(`  ${p['operation']?.toUpperCase()} ${p['filePath']} → ${p['action']}\n`);
+        }
+      } else {
+        ctx.ui.write(`✅ Rolled back ${d['rolledBack']} change(s)\n`);
+        for (const e of (d['errors'] as string[]) ?? []) {
+          ctx.ui.write(`  ⚠️  ${e}\n`);
+        }
+      }
     } else {
-      const fullPath = path.join(process.cwd(), snapshot.filePath);
-      await fs.unlink(fullPath);
-      ctx.ui.write(`✅ Deleted file: ${snapshot.filePath}\n`);
-    }
-  } else if (snapshot.before) {
-    // Restore previous content
-    if (flags.dryRun) {
-      ctx.ui.write(`[DRY RUN] Would restore file: ${snapshot.filePath}\n`);
-      ctx.ui.write(`  Before size: ${snapshot.before.size} bytes\n`);
-      ctx.ui.write(`  Current size: ${snapshot.after.size} bytes\n`);
-    } else {
-      const fullPath = path.join(process.cwd(), snapshot.filePath);
-      await fs.writeFile(fullPath, snapshot.before.content, 'utf-8');
-      ctx.ui.write(`✅ Restored file: ${snapshot.filePath}\n`);
-    }
-  } else {
-    const err = { success: false, error: 'Cannot rollback: no previous state available' };
-    ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-    return { exitCode: 1, response: err };
-  }
-
-  const response = {
-    success: true,
-    action: 'rollback-change',
-    changeId,
-    filePath: snapshot.filePath,
-    dryRun: flags.dryRun || false,
-  };
-
-  if (flags.json) {
-    ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
-  }
-
-  return { exitCode: 0, response };
-}
-
-/**
- * Rollback all changes to specific file
- */
-async function rollbackFile(
-  ctx: PluginContextV3,
-  basePath: string,
-  filePath: string,
-  flags: any
-): Promise<RollbackResult> {
-  // Find all changes to this file
-  const sessions = await fs.readdir(basePath);
-  const allChanges = [];
-
-  for (const sessionId of sessions) {
-    const snapshotsDir = path.join(basePath, sessionId, 'snapshots');
-
-    try {
-      const files = await fs.readdir(snapshotsDir);
-
-      for (const file of files) {
-        if (!file.endsWith('.json')) {continue;}
-
-        const content = await fs.readFile(path.join(snapshotsDir, file), 'utf-8');
-        const snapshot = JSON.parse(content);
-
-        if (snapshot.filePath === filePath) {
-          allChanges.push({ ...snapshot, sessionId });
-        }
-      }
-    } catch {
-      continue;
+      ctx.ui.write(`❌ ${d['error']}\n`);
     }
   }
-
-  if (allChanges.length === 0) {
-    const err = { success: false, error: `No changes found for file: ${filePath}` };
-    ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-    return { exitCode: 1, response: err };
-  }
-
-  // Sort by timestamp (newest first)
-  allChanges.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-  // Get earliest state
-  const earliestChange = allChanges[allChanges.length - 1]!;
-
-  if (flags.dryRun) {
-    ctx.ui.write(`[DRY RUN] Would rollback ${allChanges.length} changes to: ${filePath}\n`);
-    ctx.ui.write(`  Earliest state: ${earliestChange.before ? 'restore' : 'delete'}\n`);
-  } else {
-    // Rollback to earliest state
-    if (earliestChange.before) {
-      const fullPath = path.join(process.cwd(), filePath);
-      await fs.writeFile(fullPath, earliestChange.before.content, 'utf-8');
-      ctx.ui.write(`✅ Restored ${allChanges.length} changes to: ${filePath}\n`);
-    } else {
-      // File was created - delete it
-      const fullPath = path.join(process.cwd(), filePath);
-      await fs.unlink(fullPath);
-      ctx.ui.write(`✅ Deleted file (created during session): ${filePath}\n`);
-    }
-  }
-
-  const response = {
-    success: true,
-    action: 'rollback-file',
-    filePath,
-    changesRolledBack: allChanges.length,
-    dryRun: flags.dryRun || false,
-  };
-
-  if (flags.json) {
-    ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
-  }
-
-  return { exitCode: 0, response };
-}
-
-/**
- * Rollback all changes by specific agent
- */
-async function rollbackAgent(
-  ctx: PluginContextV3,
-  basePath: string,
-  agentId: string,
-  flags: any
-): Promise<RollbackResult> {
-  // Find all changes by this agent
-  const sessions = await fs.readdir(basePath);
-  const allChanges = [];
-
-  for (const sessionId of sessions) {
-    const snapshotsDir = path.join(basePath, sessionId, 'snapshots');
-
-    try {
-      const files = await fs.readdir(snapshotsDir);
-
-      for (const file of files) {
-        if (!file.endsWith('.json')) {continue;}
-
-        const content = await fs.readFile(path.join(snapshotsDir, file), 'utf-8');
-        const snapshot = JSON.parse(content);
-
-        if (snapshot.agentId === agentId) {
-          allChanges.push({ ...snapshot, sessionId });
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  if (allChanges.length === 0) {
-    const err = { success: false, error: `No changes found for agent: ${agentId}` };
-    ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-    return { exitCode: 1, response: err };
-  }
-
-  // Group by file
-  const byFile = new Map<string, any[]>();
-  for (const change of allChanges) {
-    if (!byFile.has(change.filePath)) {
-      byFile.set(change.filePath, []);
-    }
-    byFile.get(change.filePath)!.push(change);
-  }
-
-  if (flags.dryRun) {
-    ctx.ui.write(`[DRY RUN] Would rollback changes by agent: ${agentId}\n`);
-    ctx.ui.write(`  Files affected: ${byFile.size}\n`);
-    ctx.ui.write(`  Total changes: ${allChanges.length}\n`);
-  } else {
-    let rolledBack = 0;
-
-    for (const [filePath, fileChanges] of byFile.entries()) {
-      // Sort by timestamp (oldest first)
-      fileChanges.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-      const earliestChange = fileChanges[0]!;
-
-      try {
-        if (earliestChange.before) {
-          const fullPath = path.join(process.cwd(), filePath);
-          await fs.writeFile(fullPath, earliestChange.before.content, 'utf-8');
-          rolledBack++;
-        } else {
-          // File was created - delete it
-          const fullPath = path.join(process.cwd(), filePath);
-          await fs.unlink(fullPath);
-          rolledBack++;
-        }
-      } catch (err) {
-        ctx.ui.write(`⚠️  Failed to rollback ${filePath}: ${err}\n`);
-      }
-    }
-
-    ctx.ui.write(`✅ Rolled back ${rolledBack} files by agent: ${agentId}\n`);
-  }
-
-  const response = {
-    success: true,
-    action: 'rollback-agent',
-    agentId,
-    filesAffected: byFile.size,
-    changesRolledBack: allChanges.length,
-    dryRun: flags.dryRun || false,
-  };
-
-  if (flags.json) {
-    ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
-  }
-
-  return { exitCode: 0, response };
-}
-
-/**
- * Rollback all changes in session
- */
-async function rollbackSession(
-  ctx: PluginContextV3,
-  basePath: string,
-  sessionId: string,
-  flags: any
-): Promise<RollbackResult> {
-  const snapshotsDir = path.join(basePath, sessionId, 'snapshots');
-
-  try {
-    await fs.access(snapshotsDir);
-  } catch {
-    const err = { success: false, error: `Session not found: ${sessionId}` };
-    ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-    return { exitCode: 1, response: err };
-  }
-
-  // Read all snapshots
-  const files = await fs.readdir(snapshotsDir);
-  const snapshots = [];
-
-  for (const file of files) {
-    if (!file.endsWith('.json')) {continue;}
-
-    const content = await fs.readFile(path.join(snapshotsDir, file), 'utf-8');
-    const snapshot = JSON.parse(content);
-    snapshots.push(snapshot);
-  }
-
-  // Group by file
-  const byFile = new Map<string, any[]>();
-  for (const snapshot of snapshots) {
-    if (!byFile.has(snapshot.filePath)) {
-      byFile.set(snapshot.filePath, []);
-    }
-    byFile.get(snapshot.filePath)!.push(snapshot);
-  }
-
-  if (flags.dryRun) {
-    ctx.ui.write(`[DRY RUN] Would rollback session: ${sessionId}\n`);
-    ctx.ui.write(`  Files affected: ${byFile.size}\n`);
-    ctx.ui.write(`  Total changes: ${snapshots.length}\n`);
-  } else {
-    let rolledBack = 0;
-
-    for (const [filePath, fileChanges] of byFile.entries()) {
-      // Sort by timestamp (oldest first)
-      fileChanges.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-      const earliestChange = fileChanges[0]!;
-
-      try {
-        if (earliestChange.before) {
-          const fullPath = path.join(process.cwd(), filePath);
-          await fs.writeFile(fullPath, earliestChange.before.content, 'utf-8');
-          rolledBack++;
-        } else {
-          // File was created - delete it
-          const fullPath = path.join(process.cwd(), filePath);
-          await fs.unlink(fullPath);
-          rolledBack++;
-        }
-      } catch (err) {
-        ctx.ui.write(`⚠️  Failed to rollback ${filePath}: ${err}\n`);
-      }
-    }
-
-    ctx.ui.write(`✅ Rolled back ${rolledBack} files in session: ${sessionId}\n`);
-  }
-
-  const response = {
-    success: true,
-    action: 'rollback-session',
-    sessionId,
-    filesAffected: byFile.size,
-    changesRolledBack: snapshots.length,
-    dryRun: flags.dryRun || false,
-  };
-
-  if (flags.json) {
-    ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
-  }
-
-  return { exitCode: 0, response };
-}
-
-/**
- * Rollback all changes after timestamp
- */
-async function rollbackAfter(
-  ctx: PluginContextV3,
-  basePath: string,
-  after: string,
-  flags: any
-): Promise<RollbackResult> {
-  const afterDate = new Date(after);
-
-  if (isNaN(afterDate.getTime())) {
-    const err = { success: false, error: `Invalid timestamp: ${after}` };
-    ctx.ui.write(JSON.stringify(err, null, 2) + '\n');
-    return { exitCode: 1, response: err };
-  }
-
-  // Find all changes after timestamp
-  const sessions = await fs.readdir(basePath);
-  const allChanges = [];
-
-  for (const sessionId of sessions) {
-    const snapshotsDir = path.join(basePath, sessionId, 'snapshots');
-
-    try {
-      const files = await fs.readdir(snapshotsDir);
-
-      for (const file of files) {
-        if (!file.endsWith('.json')) {continue;}
-
-        const content = await fs.readFile(path.join(snapshotsDir, file), 'utf-8');
-        const snapshot = JSON.parse(content);
-
-        const changeDate = new Date(snapshot.timestamp);
-        if (changeDate > afterDate) {
-          allChanges.push({ ...snapshot, sessionId });
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  if (allChanges.length === 0) {
-    ctx.ui.write(`No changes found after: ${after}\n`);
-    return { exitCode: 0, response: { success: true, changesRolledBack: 0 } };
-  }
-
-  // Group by file
-  const byFile = new Map<string, any[]>();
-  for (const change of allChanges) {
-    if (!byFile.has(change.filePath)) {
-      byFile.set(change.filePath, []);
-    }
-    byFile.get(change.filePath)!.push(change);
-  }
-
-  if (flags.dryRun) {
-    ctx.ui.write(`[DRY RUN] Would rollback changes after: ${after}\n`);
-    ctx.ui.write(`  Files affected: ${byFile.size}\n`);
-    ctx.ui.write(`  Total changes: ${allChanges.length}\n`);
-  } else {
-    let rolledBack = 0;
-
-    for (const [filePath, fileChanges] of byFile.entries()) {
-      // Sort by timestamp (oldest first)
-      fileChanges.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-      const earliestChange = fileChanges[0]!;
-
-      try {
-        if (earliestChange.before) {
-          const fullPath = path.join(process.cwd(), filePath);
-          await fs.writeFile(fullPath, earliestChange.before.content, 'utf-8');
-          rolledBack++;
-        } else {
-          // File was created - delete it
-          const fullPath = path.join(process.cwd(), filePath);
-          await fs.unlink(fullPath);
-          rolledBack++;
-        }
-      } catch (err) {
-        ctx.ui.write(`⚠️  Failed to rollback ${filePath}: ${err}\n`);
-      }
-    }
-
-    ctx.ui.write(`✅ Rolled back ${rolledBack} files after: ${after}\n`);
-  }
-
-  const response = {
-    success: true,
-    action: 'rollback-after',
-    after,
-    filesAffected: byFile.size,
-    changesRolledBack: allChanges.length,
-    dryRun: flags.dryRun || false,
-  };
-
-  if (flags.json) {
-    ctx.ui.write(JSON.stringify(response, null, 2) + '\n');
-  }
-
-  return { exitCode: 0, response };
+  return { exitCode };
 }

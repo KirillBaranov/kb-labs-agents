@@ -11,7 +11,6 @@ const DEFAULT_CONFIG: Required<StorageConfig> = {
   maxSessions: 30,
   maxAgeDays: 30,
   maxTotalSizeMb: 500,
-  compressOldSnapshots: true,
 };
 
 /**

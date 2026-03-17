@@ -37,6 +37,9 @@ export class SystemPromptBuilder {
   async build(input: SystemPromptInput): Promise<string> {
     let prompt = buildCorePrompt(input.responseMode);
 
+    // Inject working directory so agent knows the base for relative paths
+    prompt += `\n\n# Working directory\nYour current working directory is: \`${input.workingDir}\`\nAll relative file paths resolve against this directory. When a task asks you to work in a specific folder, use that folder's absolute path (or a path relative to working directory) for ALL file operations.`;
+
     if (!input.isSubAgent) {
       prompt += DELEGATION_SECTION;
     }
@@ -116,11 +119,30 @@ function buildWorkspaceDiscoveryPrompt(
     return null;
   }
   const root = discovery.rootDir;
-  const lines = discovery.repos.slice(0, 16).map((repo) => {
+  const lines = discovery.repos.slice(0, 24).map((repo) => {
     const rel = path.relative(root, repo.path) || '.';
-    return `- ${rel} (${repo.reasons.join(', ')})`;
+    const parts: string[] = [`- \`${rel}/\``];
+    // Show what's inside
+    if (repo.packages.length > 0) {
+      const pkgList = repo.packages.length <= 5
+        ? repo.packages.join(', ')
+        : repo.packages.slice(0, 4).join(', ') + ` +${repo.packages.length - 4} more`;
+      parts.push(`— packages: ${pkgList}`);
+    } else if (repo.dirs.length > 0) {
+      // No packages/ — show top-level dirs so agent knows what's there
+      const hasSrc = repo.dirs.includes('src') || repo.dirs.includes('packages');
+      if (!hasSrc) {
+        parts.push(`— dirs: ${repo.dirs.slice(0, 5).join(', ')} (no source code)`);
+      }
+    }
+    return parts.join(' ');
   });
-  return `# Workspace topology (auto-discovered)\nUse this map to pick initial scope quickly and avoid cross-repo drift.\n${lines.join('\n')}`;
+  return [
+    '# Workspace topology (auto-discovered)',
+    `Root = \`.\` (absolute: \`${root}\`). All paths are relative to root.`,
+    '',
+    ...lines,
+  ].join('\n');
 }
 
 async function getMemoryContext(memory: AgentMemory): Promise<string> {
@@ -183,14 +205,18 @@ async function getOriginalTaskContext(
 }
 
 const DELEGATION_SECTION = `
-## Delegation
-- **spawn_agent** — spawn a sub-agent for a subtask. The sub-agent works independently with its own iteration loop and returns the result. Use for: research in a different directory, isolated fixes, or multi-part analysis. Parameters: task (required string — be specific, sub-agent has no context), maxIterations (default 10), directory (optional, relative path for sub-agent workingDir).
+## Delegation (async sub-agents)
+- **task_submit** — start a sub-agent in the background. Returns immediately with a task ID. Parameters: description (short label), task (detailed instructions — be specific, sub-agent has no context), preset ("research"/"execute"/"review"), budgetPercent (default 20).
+- **task_status** — check progress of one or all background tasks (without blocking).
+- **task_collect** — wait for a specific task to complete and get its full result.
 
 ## For complex multi-part tasks:
 1. Break down: identify independent subtasks
-2. Delegate: use spawn_agent for each subtask (sub-agents work independently)
-3. Combine: merge sub-agent results into a unified answer
-4. Report: report the combined findings
+2. Delegate: use task_submit for each subtask (sub-agents run concurrently in background)
+3. Continue working while sub-agents execute
+4. Collect: use task_collect to gather results from each task
+5. Combine: merge sub-agent results into a unified answer
+6. Report: report the combined findings
 `;
 
 function buildCorePrompt(responseMode: 'auto' | 'brief' | 'deep'): string {
@@ -203,6 +229,7 @@ function buildCorePrompt(responseMode: 'auto' | 'brief' | 'deep'): string {
 - Verify your work. After editing, read the file back to confirm changes applied correctly.
 - Prefer editing existing files over creating new ones.
 - When stuck, try a different approach. Don't repeat the same failed action.
+- If the task specifies a target directory or working path, use it as the base for ALL file operations. Never write files to the current working directory when a different target path was given.
 - Iteration contract: each iteration must either (a) produce new evidence, (b) make one concrete narrowing step, or (c) report partial/final result.
 - If two consecutive iterations do not add evidence, stop broad exploration and either change strategy explicitly or finish with a bounded answer.
 

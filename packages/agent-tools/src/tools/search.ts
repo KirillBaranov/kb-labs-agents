@@ -8,10 +8,21 @@ import * as path from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
 import { toolError } from './tool-error.js';
 import { SEARCH_CONFIG, ALL_SOURCE_EXTENSIONS, toRgIncludes, toFindNames } from '../config.js';
-import { normalizeOffsetLimit as _normalizeOffsetLimit } from '../utils.js';
+import { normalizeOffsetLimit as _normalizeOffsetLimit, suggestDirectory } from '../utils.js';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Output trimming
+// ═══════════════════════════════════════════════════════════════════════════
+
+function trimOutput(output: string, maxChars: number, continuationHint: string): string {
+  if (output.length <= maxChars) {return output;}
+  const trimmed = output.slice(0, maxChars);
+  return `${trimmed}\n\n⚠️ OUTPUT TRIMMED (${output.length.toLocaleString()} chars → ${maxChars.toLocaleString()} shown)\n${continuationHint}`;
+}
 
 /** Default directories to exclude from search (sourced from centralized config) */
 const DEFAULT_EXCLUDES = SEARCH_CONFIG.defaultExcludes;
+const MAX_OUTPUT_CHARS = SEARCH_CONFIG.maxOutputChars;
 
 /**
  * Build find exclude flags from exclude list
@@ -59,7 +70,9 @@ function validateDirectory(workingDir: string, directory: string): string | null
     }
   } catch { /* ignore */ }
 
-  return `Directory "${directory}" not found (resolved to ${fullPath}). Use "." to search from project root.${hint}`;
+  const suggestion = suggestDirectory(workingDir, directory);
+  const didYouMean = suggestion ? `\nDid you mean: "${suggestion}"?` : '';
+  return `Directory "${directory}" not found (resolved to ${fullPath}). Use "." to search from project root.${hint}${didYouMean}`;
 }
 
 function normalizeOffsetLimit(input: Record<string, unknown>): { offset: number; limit: number } {
@@ -85,7 +98,7 @@ export function createGlobSearchTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'glob_search',
-        description: 'Find files by name pattern (glob). Pattern matches filename only — use "*.ts" or "user.ts", not bare words. Returns up to 50 results.',
+        description: `Find files by name pattern (glob). Pattern matches filename only — use "*.ts" or "user.ts", not bare words. IMPORTANT: node_modules/, dist/, build/, .git/ are excluded by default — they contain no source code. Omit directory to search the entire working directory. Returns up to ${DEFAULT_RESULT_LIMIT} results.`,
         parameters: {
           type: 'object',
           properties: {
@@ -95,12 +108,12 @@ export function createGlobSearchTool(context: ToolContext): Tool {
             },
             directory: {
               type: 'string',
-              description: 'Directory to search in (default: ".")',
+              description: 'Directory to search in (default: working directory root). Narrow to a subfolder when you already know the scope.',
             },
             exclude: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Directories to exclude (default: node_modules, dist, .git, build, .next, .kb, .pnpm, coverage). Override to search in excluded dirs.',
+              description: 'Extra directories to exclude on top of defaults (node_modules, dist, .git, build, .next, .kb, .pnpm, coverage are always excluded). Rarely needed.',
             },
             offset: {
               type: 'number',
@@ -118,7 +131,8 @@ export function createGlobSearchTool(context: ToolContext): Tool {
     executor: async (input: Record<string, unknown>) => {
       const pattern = input.pattern as string;
       const directory = (input.directory as string) || '.';
-      const excludes = (input.exclude as string[] | undefined) || DEFAULT_EXCLUDES;
+      const extra = input.exclude as string[] | undefined;
+      const excludes = extra && extra.length > 0 ? [...new Set([...DEFAULT_EXCLUDES, ...extra])] : DEFAULT_EXCLUDES;
       const { offset, limit } = normalizeOffsetLimit(input);
 
       try {
@@ -153,17 +167,22 @@ export function createGlobSearchTool(context: ToolContext): Tool {
         }
 
         const page = paginate(files, offset, limit);
+        const excludeNote = `[Excluded: ${DEFAULT_EXCLUDES.join(', ')}${extra && extra.length > 0 ? ` + ${extra.join(', ')}` : ''}]`;
         const result = [
-          `Found ${files.length} file(s) matching "${pattern}" (showing ${page.page.length}, offset=${offset}, limit=${limit}):`,
+          `Found ${files.length} file(s) matching "${pattern}" in "${directory}" (showing ${page.page.length}, offset=${offset}, limit=${limit})`,
+          excludeNote,
           '',
           ...page.page.map(f => `  ${f}`),
           page.hasMore ? '' : '',
-          page.hasMore ? `Next page: glob_search(pattern="${pattern}", directory="${directory}", offset=${page.nextOffset}, limit=${limit})` : '',
-        ].join('\n');
+        ].filter(s => s !== undefined).join('\n');
+
+        const continuationHint = page.hasMore
+          ? `Next page: glob_search(pattern="${pattern}", directory="${directory}", offset=${page.nextOffset}, limit=${limit})`
+          : '';
 
         return {
           success: true,
-          output: result,
+          output: trimOutput(result, MAX_OUTPUT_CHARS, continuationHint),
           metadata: {
             totalMatches: files.length,
             offset,
@@ -212,7 +231,7 @@ export function createGrepSearchTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'grep_search',
-        description: 'Search for exact text/regex in files. Returns file paths, line numbers, and matching lines. Up to 100 matches.',
+        description: `Search for text/regex in files. Returns file:line matches. IMPORTANT: node_modules/, dist/, build/ excluded by default. Omit directory to search the entire working directory. Add filePattern (e.g. "*.ts") to limit to specific file types. Returns up to ${DEFAULT_RESULT_LIMIT} matches.`,
         parameters: {
           type: 'object',
           properties: {
@@ -222,16 +241,16 @@ export function createGrepSearchTool(context: ToolContext): Tool {
             },
             directory: {
               type: 'string',
-              description: 'Directory to search in (default: ".")',
+              description: 'Directory to search in (default: working directory root). Narrow to a subfolder when you already know the scope.',
             },
             filePattern: {
               type: 'string',
-              description: 'Filter by file pattern (e.g., "*.ts")',
+              description: 'Filter by file extension (e.g., "*.ts", "*.md"). STRONGLY RECOMMENDED: always set this to avoid scanning binary/generated files.',
             },
             exclude: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Directories to exclude (default: node_modules, dist, .git, build, .next, .kb, .pnpm, coverage). Override to search in excluded dirs.',
+              description: 'Extra directories to exclude on top of defaults (node_modules, dist, .git, build, .next, .kb, .pnpm, coverage are always excluded). Rarely needed.',
             },
             mode: {
               type: 'string',
@@ -255,7 +274,8 @@ export function createGrepSearchTool(context: ToolContext): Tool {
       const pattern = input.pattern as string;
       const directory = (input.directory as string) || '.';
       const filePattern = input.filePattern as string | undefined;
-      const excludes = (input.exclude as string[] | undefined) || DEFAULT_EXCLUDES;
+      const extra = input.exclude as string[] | undefined;
+      const excludes = extra && extra.length > 0 ? [...new Set([...DEFAULT_EXCLUDES, ...extra])] : DEFAULT_EXCLUDES;
       const mode = ((input.mode as string) || 'auto').toLowerCase();
       const { offset, limit } = normalizeOffsetLimit(input);
 
@@ -320,8 +340,10 @@ export function createGrepSearchTool(context: ToolContext): Tool {
         }
 
         const page = paginate(lines, offset, limit);
+        const excludeNote = `[Excluded: ${DEFAULT_EXCLUDES.join(', ')}${extra && extra.length > 0 ? ` + ${extra.join(', ')}` : ''}]`;
         const result = [
-          `Found ${lines.length} match(es) for "${pattern}"${usedLiteralFallback ? ' (literal fallback)' : ''} (showing ${page.page.length}, offset=${offset}, limit=${limit}):`,
+          `Found ${lines.length} match(es) for "${pattern}" in "${directory}"${filePattern ? ` (${filePattern})` : ''}${usedLiteralFallback ? ' (literal fallback)' : ''} (showing ${page.page.length}, offset=${offset}, limit=${limit})`,
+          excludeNote,
           '',
           ...page.page.map(line => {
             const match = line.match(/^(.+?):(\d+):(.+)$/);
@@ -333,12 +355,15 @@ export function createGrepSearchTool(context: ToolContext): Tool {
             return `  ${line}`;
           }),
           page.hasMore ? '' : '',
-          page.hasMore ? `Next page: grep_search(pattern="${pattern}", directory="${directory}", offset=${page.nextOffset}, limit=${limit})` : '',
-        ].join('\n');
+        ].filter(s => s !== undefined).join('\n');
+
+        const continuationHint = page.hasMore
+          ? `Next page: grep_search(pattern="${pattern}", directory="${directory}", offset=${page.nextOffset}, limit=${limit})`
+          : '';
 
         return {
           success: true,
-          output: result,
+          output: trimOutput(result, MAX_OUTPUT_CHARS, continuationHint),
           metadata: {
             totalMatches: lines.length,
             offset,

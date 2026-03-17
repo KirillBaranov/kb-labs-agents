@@ -7,8 +7,7 @@
  * - 'parallel'   — spawn all sub-agents concurrently (via ParallelExecutor)
  *
  * The orchestrator composes AgentRegistry + ParallelExecutor and provides
- * the `spawnAgent` callback injected into ToolContext (replacing the inline
- * closure in agent.ts lines 364-446).
+ * the spawn function used by TaskMiddleware for async sub-agent delegation.
  */
 
 import type { AgentRegistry} from './agent-registry.js';
@@ -39,8 +38,8 @@ export interface OrchestratorConfig {
 }
 
 /**
- * A single spawn request from the tool layer (matches existing ToolContext.spawnAgent signature).
- * This is the public API kept stable for backward compatibility.
+ * A single spawn request from the tool layer.
+ * Used by TaskMiddleware's spawnFn to create sub-agents.
  */
 export interface LegacySpawnRequest {
   task: string;
@@ -84,7 +83,7 @@ export class SubAgentOrchestrator {
   }
 
   /**
-   * Spawn a single sub-agent (backward-compatible API for ToolContext.spawnAgent).
+   * Spawn a single sub-agent.
    */
   async spawnOne(req: LegacySpawnRequest): Promise<LegacySpawnResult> {
     const subReq: SubAgentRequest = {

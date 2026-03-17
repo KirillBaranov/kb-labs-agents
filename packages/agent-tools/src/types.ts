@@ -2,7 +2,7 @@
  * Tool types and interfaces
  */
 
-import type { ToolDefinition, ToolResult } from '@kb-labs/agent-contracts';
+import type { ToolDefinition, ToolResult, SpawnAgentRequest, SpawnAgentResult, AsyncTask } from '@kb-labs/agent-contracts';
 import type { ICache } from '@kb-labs/core-platform';
 
 /**
@@ -16,20 +16,6 @@ export type ToolExecutor = (input: Record<string, unknown>) => Promise<ToolResul
 export interface Tool {
   definition: ToolDefinition;
   executor: ToolExecutor;
-}
-
-/**
- * Interface for file change tracking (matches FileChangeTracker from agent-core).
- * Defined here to avoid circular dependency: agent-tools cannot import agent-core.
- */
-export interface IFileChangeTracker {
-  captureChange(
-    filePath: string,
-    operation: 'write' | 'patch' | 'delete',
-    beforeContent: string | null,
-    afterContent: string,
-    metadata?: Record<string, unknown>,
-  ): Promise<unknown>;
 }
 
 /**
@@ -59,16 +45,32 @@ export interface ToolContext {
   filesRead?: Set<string>;
   /** File content hashes from when files were read (for change detection) */
   filesReadHash?: Map<string, string>;
-  /** File change tracker for history (optional - injected by Agent) */
-  fileChangeTracker?: IFileChangeTracker;
   /** Agent ID for attribution */
   agentId?: string;
   /** Archive memory for cold storage recall (Tier 2) */
   archiveMemory?: IArchiveMemory;
-  /** Spawn sub-agent callback (injected by Agent, not available for sub-agents) */
-  spawnAgent?: (request: {
-    task: string;
-    maxIterations?: number;
-    workingDir?: string;
-  }) => Promise<{ success: boolean; result: string; iterations: number; tokensUsed: number }>;
+  /**
+   * If set, only tools whose names are in this set will be registered.
+   * Used by plan mode to restrict both the plan-writer and any sub-agents
+   * it spawns to read-only tools — without touching AgentConfig.
+   */
+  allowedTools?: Set<string>;
+  /** Async task manager for sub-agent delegation (submit/status/collect). */
+  taskManager?: ITaskManager;
+  /**
+   * Set to true by plan_validate tool when the plan passes the quality gate.
+   * Checked by report tool in plan mode — report is blocked until this is set.
+   */
+  planValidationPassed?: boolean;
+}
+
+/**
+ * Interface for async task management.
+ * Defined here to avoid circular dependency: agent-tools cannot import agent-core.
+ * Implemented by TaskMiddleware in agent-core.
+ */
+export interface ITaskManager {
+  submit(description: string, request: SpawnAgentRequest): Promise<AsyncTask>;
+  getStatus(taskId?: string): AsyncTask | AsyncTask[] | null;
+  collect(taskId: string): Promise<SpawnAgentResult>;
 }

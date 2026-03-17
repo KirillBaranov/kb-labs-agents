@@ -44,6 +44,10 @@ export class BudgetMiddleware {
     const used = this.getTokensUsed();
     const hardLimit = this.policy.maxTokens * this.policy.hardLimitRatio;
 
+    // Expose budget state for Status Block
+    ctx.meta.set('budget', 'tokensUsed', used);
+    ctx.meta.set('budget', 'maxTokens', this.policy.maxTokens);
+
     if (used >= hardLimit) {
       ctx.meta.set('budget', 'exhausted', true);
       ctx.meta.set('budget', 'exhaustedReason', `Token hard limit: ${used}/${hardLimit}`);
@@ -83,10 +87,10 @@ export class BudgetMiddleware {
         messages: [
           ...ctx.messages,
           {
-            role: 'system' as const,
+            role: 'user' as const,
             content:
-              `Token budget checkpoint: ${utilPct}% consumed. ` +
-              `Start converging toward your final answer.`,
+              `⚠️ TOKEN BUDGET: ${utilPct}% consumed (${used.toLocaleString()}/${this.policy.maxTokens.toLocaleString()} tokens). ` +
+              `You are approaching the limit. Call \`report\` NOW with whatever you have — a partial answer is better than hitting the hard limit with nothing. Do not start new research.`,
           },
         ],
       };

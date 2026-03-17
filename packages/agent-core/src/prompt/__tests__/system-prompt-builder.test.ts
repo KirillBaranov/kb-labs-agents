@@ -25,13 +25,13 @@ describe('SystemPromptBuilder', () => {
 
   it('includes delegation section for main agents', async () => {
     const prompt = await builder.build(makeInput({ isSubAgent: false }));
-    expect(prompt).toContain('spawn_agent');
+    expect(prompt).toContain('task_submit');
     expect(prompt).toContain('Delegation');
   });
 
   it('excludes delegation section for sub-agents', async () => {
     const prompt = await builder.build(makeInput({ isSubAgent: true }));
-    expect(prompt).not.toContain('spawn_agent');
+    expect(prompt).not.toContain('task_submit');
   });
 
   it('includes response mode in prompt', async () => {
@@ -52,8 +52,8 @@ describe('SystemPromptBuilder', () => {
       workspaceDiscovery: {
         rootDir: '/project',
         repos: [
-          { name: 'core', path: '/project/packages/core', reasons: ['tsconfig'] },
-          { name: 'cli', path: '/project/packages/cli', reasons: ['package.json'] },
+          { name: 'core', path: '/project/packages/core', reasons: ['tsconfig'], packages: [], dirs: [] },
+          { name: 'cli', path: '/project/packages/cli', reasons: ['package.json'], packages: [], dirs: [] },
         ],
       },
     }));

@@ -5,6 +5,10 @@ export interface WorkspaceRepoNode {
   name: string;
   path: string;
   reasons: string[];
+  /** Package names found inside each repo */
+  packages: string[];
+  /** Top-level directory names */
+  dirs: string[];
 }
 
 export interface WorkspaceDiscoveryResult {
@@ -30,6 +34,42 @@ function parsePackageJsonWorkspaces(packageJsonPath: string): string[] {
 
 function normalizeGlobLike(input: string): string {
   return input.replace(/\/\*\*\/\*$/g, '').replace(/\/\*$/g, '').replace(/^\.\//, '');
+}
+
+/** Scan packages/ subdirectories for package names (from package.json "name" field). */
+function discoverPackageNames(repoPath: string): string[] {
+  const packagesDir = path.join(repoPath, 'packages');
+  try {
+    const entries = fs.readdirSync(packagesDir, { withFileTypes: true });
+    const names: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) {continue;}
+      try {
+        const pkgJson = JSON.parse(fs.readFileSync(path.join(packagesDir, entry.name, 'package.json'), 'utf-8')) as { name?: string };
+        if (pkgJson.name) {names.push(pkgJson.name);}
+      } catch { /* skip */ }
+    }
+    return names;
+  } catch {
+    // No packages/ directory — check root package.json
+    try {
+      const pkgJson = JSON.parse(fs.readFileSync(path.join(repoPath, 'package.json'), 'utf-8')) as { name?: string };
+      return pkgJson.name ? [pkgJson.name] : [];
+    } catch {
+      return [];
+    }
+  }
+}
+
+/** List top-level directory names inside a repo. */
+function discoverTopLevelDirs(repoPath: string): string[] {
+  try {
+    return fs.readdirSync(repoPath, { withFileTypes: true })
+      .filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== 'dist')
+      .map(e => e.name);
+  } catch {
+    return [];
+  }
 }
 
 function addRepo(
@@ -63,6 +103,8 @@ function addRepo(
     name,
     path: abs,
     reasons: [reason],
+    packages: discoverPackageNames(abs),
+    dirs: discoverTopLevelDirs(abs),
   });
 }
 

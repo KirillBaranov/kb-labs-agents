@@ -131,8 +131,9 @@ export function createEventRenderer(options: {
   verbose?: boolean;
   showToolOutput?: boolean;
   showLLMContent?: boolean;
+  showDebug?: boolean;
 }): AgentEventCallback {
-  const { verbose = true, showToolOutput = true, showLLMContent = false } = options;
+  const { verbose = true, showToolOutput = true, showLLMContent = false, showDebug = false } = options;
 
   const state: RenderState = {
     currentSubtask: null,
@@ -240,10 +241,8 @@ export function createEventRenderer(options: {
             color.bold('📋 Result:'),
             color.primary
           ));
-          // Split summary into lines and display (max 2000 chars for detailed mode)
-          const maxChars = showLLMContent ? 2000 : 800;
-          const summaryText = event.data.summary.slice(0, maxChars);
-          const summaryLines = summaryText.split('\n').slice(0, 20);
+          // Print full summary — no truncation for final agent answer
+          const summaryLines = event.data.summary.split('\n');
           for (const line of summaryLines) {
             if (line.trim()) {
               // Word wrap long lines at ~80 chars
@@ -263,12 +262,6 @@ export function createEventRenderer(options: {
                 console.log(linePrefix + renderBoxLine(`   ${currentLine}`, color.primary));
               }
             }
-          }
-          if (event.data.summary.length > maxChars) {
-            console.log(linePrefix + renderBoxLine(
-              color.dim('   ... (truncated)'),
-              color.primary
-            ));
           }
         }
 
@@ -314,8 +307,10 @@ export function createEventRenderer(options: {
       case 'llm:start': {
         const linePrefix = getLinePrefix(state);
         if (verbose) {
+          const iterLabel = event.data.iteration !== undefined ? color.dim(` #${event.data.iteration}`) : '';
+          const msgLabel = showDebug ? color.dim(` [${event.data.messageCount} msgs, ${event.data.toolCount ?? 0} tools, ${event.data.systemPromptChars ?? 0} sys chars]`) : '';
           process.stdout.write(linePrefix + renderBoxLine(
-            `${color.accent(symbols.thinking)} ${color.dim('Thinking...')}`,
+            `${color.accent(symbols.thinking)} ${color.dim('Thinking...')}${iterLabel}${msgLabel}`,
             color.primary
           ));
         }
@@ -335,7 +330,7 @@ export function createEventRenderer(options: {
 
           // Always show LLM reasoning in verbose mode (truncated)
           if (event.data.content) {
-            const maxLen = showLLMContent ? 500 : 150;
+            const maxLen = showDebug ? 2000 : showLLMContent ? 500 : 150;
             const content = event.data.content.slice(0, maxLen).replace(/\n/g, ' ').trim();
             if (content) {
               console.log(linePrefix + renderBoxLine(
@@ -357,7 +352,15 @@ export function createEventRenderer(options: {
         const meta = event.data.metadata;
 
         let details = '';
-        if (meta?.filePath) {
+        if (showDebug) {
+          // In debug mode: show raw input JSON (truncated at 200 chars)
+          const inputObj = event.data.input as Record<string, unknown> | undefined;
+          if (inputObj && Object.keys(inputObj).length > 0) {
+            const raw = JSON.stringify(inputObj);
+            const maxLen = 200;
+            details = ` ${color.dim(raw.slice(0, maxLen) + (raw.length > maxLen ? '...' : ''))}`;
+          }
+        } else if (meta?.filePath) {
           details = ` ${color.dim(formatPath(meta.filePath as string, 30))}`;
         } else if (meta?.query) {
           details = ` ${color.dim(`"${(meta.query as string).slice(0, 25)}${(meta.query as string).length > 25 ? '...' : ''}"`)}`
@@ -387,18 +390,38 @@ export function createEventRenderer(options: {
 
           // Show output preview for tools
           if (output && verbose) {
-            // Truncate and clean output for display
-            const cleanOutput = output
-              .slice(0, 200)
-              .replace(/\n/g, ' ')
-              .replace(/\s+/g, ' ')
-              .trim();
-
-            if (cleanOutput && cleanOutput.length > 10) {
-              console.log(linePrefix + renderBoxLine(
-                color.dim(`    📄 ${cleanOutput}${output.length > 200 ? '...' : ''}`),
-                color.primary
-              ));
+            const maxOutputLen = showDebug ? 1000 : 200;
+            if (showDebug) {
+              // In debug mode: show output with preserved newlines
+              const truncated = output.slice(0, maxOutputLen);
+              const lines = truncated.split('\n');
+              for (const line of lines) {
+                if (line.trim()) {
+                  console.log(linePrefix + renderBoxLine(
+                    color.dim(`    📄 ${line}`),
+                    color.primary
+                  ));
+                }
+              }
+              if (output.length > maxOutputLen) {
+                console.log(linePrefix + renderBoxLine(
+                  color.dim(`    📄 ... (${output.length - maxOutputLen} more chars)`),
+                  color.primary
+                ));
+              }
+            } else {
+              // Normal mode: compact single line
+              const cleanOutput = output
+                .slice(0, maxOutputLen)
+                .replace(/\n/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+              if (cleanOutput && cleanOutput.length > 10) {
+                console.log(linePrefix + renderBoxLine(
+                  color.dim(`    📄 ${cleanOutput}${output.length > maxOutputLen ? '...' : ''}`),
+                  color.primary
+                ));
+              }
             }
           }
 
@@ -468,6 +491,12 @@ export function createEventRenderer(options: {
           if (budgetLine) {
             console.log(linePrefix + renderBoxLine(color.dim(`    ${budgetLine}`), color.primary));
           }
+          // When plan is ready and waiting for approval, show the approve/execute commands
+          if (event.data.status === 'waiting' && event.sessionId) {
+            const sid = event.sessionId;
+            console.log(linePrefix + renderBoxLine(color.dim(`  To approve:  kb agent run --session-id=${sid} --approve`), color.primary));
+            console.log(linePrefix + renderBoxLine(color.dim(`  To execute:  kb agent run --session-id=${sid}`), color.primary));
+          }
         }
         // Only show significant status in non-verbose mode
         if (!verbose && (event.data.status === 'done' || event.data.status === 'error')) {
@@ -502,23 +531,30 @@ export function createEventRenderer(options: {
       }
 
       case 'llm:debug': {
+        if (!showDebug) { break; }
         const linePrefix = getLinePrefix(state);
+        const iterLabel = event.data.iteration !== undefined ? ` (iter #${event.data.iteration})` : '';
         console.log(linePrefix + renderBoxLine(
-          color.dim('  ─── System Prompt ───'),
+          color.dim(`  ─── System Prompt${iterLabel} ───`),
           color.primary
         ));
-        const promptPreview = event.data.systemPrompt.slice(0, 3000);
-        for (const line of promptPreview.split('\n').slice(0, 30)) {
+        // Full system prompt, no truncation
+        for (const line of event.data.systemPrompt.split('\n')) {
           console.log(linePrefix + renderBoxLine(color.dim(`  ${line}`), color.primary));
         }
         console.log(linePrefix + renderBoxLine(color.dim('  ─── Messages ───'), color.primary));
-        for (const m of event.data.messages.slice(-6)) {
-          const preview = m.content.slice(0, 300).replace(/\n/g, ' ');
-          console.log(linePrefix + renderBoxLine(
-            color.dim(`  [${m.role}] ${preview}${m.content.length > 300 ? '...' : ''}`),
-            color.primary
-          ));
+        for (const m of event.data.messages) {
+          const roleLabel = `[${m.role}]`;
+          const content = m.content;
+          // Show each message fully, line by line
+          const lines = content.split('\n');
+          const firstLine = `${roleLabel} ${lines[0] ?? ''}`;
+          console.log(linePrefix + renderBoxLine(color.dim(`  ${firstLine}`), color.primary));
+          for (const line of lines.slice(1)) {
+            console.log(linePrefix + renderBoxLine(color.dim(`      ${line}`), color.primary));
+          }
         }
+        console.log(linePrefix + renderBoxLine(color.dim('  ─── End Prompt ───'), color.primary));
         break;
       }
 
@@ -565,5 +601,17 @@ export function createDetailedRenderer(): AgentEventCallback {
     verbose: true,
     showToolOutput: true,
     showLLMContent: true,
+  });
+}
+
+/**
+ * Debug renderer - maximum verbosity: full prompts, full tool I/O, no truncation
+ */
+export function createDebugRenderer(): AgentEventCallback {
+  return createEventRenderer({
+    verbose: true,
+    showToolOutput: true,
+    showLLMContent: true,
+    showDebug: true,
   });
 }

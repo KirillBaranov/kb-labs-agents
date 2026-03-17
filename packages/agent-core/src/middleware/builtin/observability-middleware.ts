@@ -109,6 +109,13 @@ export class ObservabilityMiddleware {
   private _totalTokens = 0;
   private _pendingDebug: { systemPrompt: string; messages: ReadonlyArray<{ role: string; content: unknown }> } | null = null;
 
+  /** Extra metadata injected before onStart — set by runner after workspace discovery. */
+  startMeta?: {
+    budget?: { maxTokens: number; softLimitRatio: number; hardLimitRatio: number };
+    workspaceTopology?: string[];
+    workingDir?: string;
+  };
+
   constructor(
     private readonly agentId: string,
     private readonly parentAgentId: string | undefined,
@@ -128,9 +135,13 @@ export class ObservabilityMiddleware {
         ...makeBase('llm:end', this.agentId, this.parentAgentId, this.sessionId),
         data: {
           tokensUsed: d.promptTokens + d.completionTokens,
+          promptTokens: d.promptTokens,
+          completionTokens: d.completionTokens,
           durationMs: d.durationMs,
           hasToolCalls: d.hasToolCalls,
+          toolCallCount: d.toolCallCount ?? 0,
           stopReason: d.stopReason,
+          content: typeof d.content === 'string' ? d.content.slice(0, 500) : undefined,
         },
       } as AgentEvent);
     });
@@ -143,6 +154,8 @@ export class ObservabilityMiddleware {
           success: d.success,
           durationMs: d.durationMs,
           outputLength: d.outputLength,
+          output: d.output,
+          metadata: d.metadata,
         },
       } as AgentEvent);
     });
@@ -173,6 +186,9 @@ export class ObservabilityMiddleware {
         tier: ctx.tier,
         maxIterations: ctx.maxIterations,
         toolCount: ctx.tools.length,
+        budget: this.startMeta?.budget,
+        workspaceTopology: this.startMeta?.workspaceTopology,
+        workingDir: this.startMeta?.workingDir,
       },
     } as AgentStartEvent;
     this._emit(event);
@@ -241,18 +257,18 @@ export class ObservabilityMiddleware {
       systemPromptChars,
     });
 
-    if (ctx.run.debug) {
-      this._pendingDebug = {
-        systemPrompt: typeof sysMsg?.content === 'string' ? sysMsg.content : '',
-        messages: ctx.messages,
-      };
-    }
+    // Always capture for tracing — emitted to eventBus unconditionally
+    this._pendingDebug = {
+      systemPrompt: typeof sysMsg?.content === 'string' ? sysMsg.content : '',
+      messages: ctx.messages,
+    };
 
     // Also emit llm:start directly to onEvent for CLI spinner
     const event: LLMStartEvent = {
       ...makeBase('llm:start', this.agentId, this.parentAgentId, this.sessionId),
       data: {
         tier: ctx.run.tier,
+        iteration: ctx.run.iteration,
         messageCount: ctx.messages.length,
         toolCount: ctx.tools.length,
         systemPromptChars,
@@ -271,10 +287,13 @@ export class ObservabilityMiddleware {
       completionTokens: result.usage?.completionTokens ?? 0,
       stopReason: result.stopReason ?? 'unknown',
       hasToolCalls: (result.toolCalls?.length ?? 0) > 0,
+      toolCallCount: result.toolCalls?.length ?? 0,
       durationMs,
+      content: result.content,
     });
 
-    if (ctx.run.debug && this._pendingDebug) {
+    if (this._pendingDebug) {
+      // Always emit to eventBus (persisted to NDJSON trace)
       ctx.run.eventBus.emit('llm:debug', {
         iteration: ctx.run.iteration,
         systemPrompt: this._pendingDebug.systemPrompt,
@@ -324,6 +343,8 @@ export class ObservabilityMiddleware {
       success: result.success,
       durationMs,
       outputLength: result.output.length,
+      output: result.output,
+      metadata: result.metadata as Record<string, unknown> | undefined,
     });
     // tool:end UI event is delivered via bus subscription in onStart
   }

@@ -108,6 +108,16 @@ export interface AgentStartEvent extends AgentEventBase {
     tier: string;
     maxIterations: number;
     toolCount: number;
+    /** Token budget config (for debugging budget-related stops) */
+    budget?: {
+      maxTokens: number;
+      softLimitRatio: number;
+      hardLimitRatio: number;
+    };
+    /** Workspace topology discovered at startup */
+    workspaceTopology?: string[];
+    /** Working directory */
+    workingDir?: string;
   };
 }
 
@@ -164,6 +174,7 @@ export interface LLMStartEvent extends AgentEventBase {
   type: 'llm:start';
   data: {
     tier: string;
+    iteration?: number;
     messageCount: number;
     toolCount?: number;
     systemPromptChars?: number;
@@ -211,9 +222,16 @@ export interface LLMEndEvent extends AgentEventBase {
   type: 'llm:end';
   data: {
     tokensUsed: number;
+    /** Prompt tokens for this LLM call (for debugging). */
+    promptTokens?: number;
+    /** Completion tokens for this LLM call (for debugging). */
+    completionTokens?: number;
     durationMs: number;
     hasToolCalls: boolean;
+    /** Number of tool calls in this response. */
+    toolCallCount?: number;
     stopReason?: string;
+    /** First ~500 chars of LLM response content (always included for debugging). */
     content?: string;
   };
 }

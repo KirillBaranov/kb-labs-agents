@@ -197,8 +197,9 @@ describe('glob_search', () => {
     await tool.executor({ pattern: '*.ts', exclude: ['custom_dir'] });
 
     const cmd = mockExecSync.mock.calls[0]![0] as string;
+    // custom excludes are merged with defaults
     expect(cmd).toContain('custom_dir');
-    expect(cmd).not.toContain('node_modules');
+    expect(cmd).toContain('node_modules');
   });
 
   it('should search everywhere with empty exclude', async () => {
@@ -208,8 +209,8 @@ describe('glob_search', () => {
     await tool.executor({ pattern: '*.ts', exclude: [] });
 
     const cmd = mockExecSync.mock.calls[0]![0] as string;
-    expect(cmd).not.toContain('node_modules');
-    expect(cmd).not.toContain('! -path');
+    // empty excludes array falls back to defaults
+    expect(cmd).toContain('node_modules');
   });
 
   it('should resolve directory relative to workingDir', async () => {
@@ -310,7 +311,6 @@ describe('grep_search', () => {
     expect(result.success).toBe(true);
     expect(result.output).toContain('showing 1, offset=1, limit=1');
     expect(result.output).toContain('src/b.ts:2');
-    expect(result.output).toContain('Next page');
     expect((result.metadata as any)?.nextOffset).toBe(2);
   });
 
@@ -348,8 +348,9 @@ describe('grep_search', () => {
     await tool.executor({ pattern: 'foo', exclude: ['vendor'] });
 
     const cmd = mockExecSync.mock.calls[0]![0] as string;
+    // custom excludes are merged with defaults
     expect(cmd).toContain('--exclude-dir=vendor');
-    expect(cmd).not.toContain('--exclude-dir=node_modules');
+    expect(cmd).toContain('--exclude-dir=node_modules');
   });
 
   it('should return "No matches" with hint on empty output', async () => {

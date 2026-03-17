@@ -23,6 +23,18 @@ export interface FileChangeSummary {
   approved?: boolean;
 }
 
+export interface RollbackResult {
+  rolledBack: number;
+  skipped: number;
+  conflicts?: ConflictInfo[];
+}
+
+export interface ConflictInfo {
+  filePath: string;
+  changeId: string;
+  reason: string;
+}
+
 /**
  * A turn represents a complete agent interaction cycle.
  * Assembled from multiple events by the backend.
@@ -106,6 +118,8 @@ export interface ToolUseStep {
   toolCallId?: string;
   /** Execution status — backend updates in-place on tool:end / tool:error */
   status: 'pending' | 'done' | 'error';
+  /** Whether tool execution succeeded (false = tool returned an error result) */
+  success?: boolean;
   /** Set when status = done */
   output?: unknown;
   /** Set when status = error */
@@ -119,8 +133,14 @@ export interface ToolUseStep {
   metadata?: {
     /** File path being operated on */
     filePath?: string;
+    /** File content (for fs:read) */
+    fileContent?: string;
     /** Unified diff output (for fs:edit, fs:patch, fs:write) */
     diff?: string;
+    /** Content before the change */
+    oldContent?: string;
+    /** Content after the change */
+    newContent?: string;
     /** Lines changed count */
     linesChanged?: number;
     /** Lines added */
@@ -129,10 +149,20 @@ export interface ToolUseStep {
     linesRemoved?: number;
     /** Search result count (for grep, glob, rag-query) */
     resultCount?: number;
+    /** Search results */
+    results?: unknown[];
+    /** Search/RAG query text */
+    query?: string;
     /** Confidence score 0-1 (for RAG queries) */
     confidence?: number;
     /** Exit code (for bash/shell tools) */
     exitCode?: number;
+    /** Command that was executed */
+    command?: string;
+    /** Stdout output */
+    stdout?: string;
+    /** Stderr output */
+    stderr?: string;
     /** Human-readable summary from the tool */
     summary?: string;
     /** UI rendering hint */

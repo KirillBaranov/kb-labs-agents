@@ -1,20 +1,28 @@
 /**
  * File change history system for KB Labs Agents
  *
- * Provides: change tracking, snapshot persistence, conflict detection and resolution.
+ * Provides: change tracking, snapshot persistence, conflict detection.
+ * Integration: use ChangeTrackingMiddleware from @kb-labs/agent-core to wire into SDK pipeline.
  */
 
-export { FileChangeTracker } from './file-change-tracker.js';
+export { ChangeStore, computeHash, toSummary } from './change-store.js';
 export { SnapshotStorage } from './snapshot-storage.js';
 export { ConflictDetector } from './conflict-detector.js';
-export { ConflictResolver } from './conflict-resolver.js';
+export { generateUnifiedDiff, countDiffLines } from './diff-generator.js';
+
 export type {
   FileChange,
   FileChangeSummary,
-  RollbackResult,
-  ConflictInfo,
   StorageConfig,
 } from './types.js';
-export type { DetectedConflict, ConflictType } from './conflict-detector.js';
-export type { ResolutionResult } from './conflict-resolver.js';
-export { generateUnifiedDiff, countDiffLines } from './diff-generator.js';
+
+// Public rollback/conflict contracts live in agent-contracts, re-exported for convenience
+export type { RollbackResult, ConflictInfo } from '@kb-labs/agent-contracts';
+
+export type { SaveChangeInput } from './change-store.js';
+
+export type {
+  ConflictType,
+  DetectedConflict,
+  ConflictCheckInput,
+} from './conflict-detector.js';

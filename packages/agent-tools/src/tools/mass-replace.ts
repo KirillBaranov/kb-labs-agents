@@ -258,17 +258,6 @@ export function createMassReplaceTool(context: ToolContext): Tool {
             });
           } else {
             // Apply changes
-            // Track file change for rollback (if tracker available)
-            if (context.fileChangeTracker) {
-              await context.fileChangeTracker.captureChange(
-                scopedPath,
-                'write',
-                beforeContent,
-                afterContent,
-                { isMassReplace: true, pattern, replacement, mode, scope }
-              );
-            }
-
             // Write file
             fs.writeFileSync(fullPath, afterContent, 'utf-8');
 
@@ -298,10 +287,7 @@ export function createMassReplaceTool(context: ToolContext): Tool {
           `Total replacements: ${totalReplacements}\n` +
           `Files matched: ${matches.length}\n` +
           `Files changed: ${filesChanged}` +
-          (dryRun ? '\n\n⚠️ DRY RUN: No files were modified. Remove dryRun=true to apply changes.' : '') +
-          (!dryRun && context.fileChangeTracker
-            ? '\n\n✅ All changes tracked in file history. Use agent:history and agent:rollback to undo if needed.'
-            : '');
+          (dryRun ? '\n\n⚠️ DRY RUN: No files were modified. Remove dryRun=true to apply changes.' : '');
 
         return {
           success: true,
