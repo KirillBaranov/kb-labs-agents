@@ -199,7 +199,9 @@ export default defineCommand({
 
       // Select event renderer based on verbosity flags
       let eventRenderer;
-      if (quiet) {
+      if (jsonOutput) {
+        eventRenderer = () => {}; // Suppress all human output for JSON mode
+      } else if (quiet) {
         eventRenderer = createMinimalRenderer();
       } else if (debug) {
         eventRenderer = createDebugRenderer();
