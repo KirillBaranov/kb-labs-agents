@@ -46,6 +46,8 @@ type RunInput = {
   timeout?: number;
   /** Override token budget (e.g. 300000 for heavy tasks). Overrides config value. */
   budget?: number;
+  /** Output structured JSON instead of human-readable output. */
+  json?: boolean;
   argv?: string[];
 };
 
@@ -107,6 +109,7 @@ export default defineCommand({
         debug: debugRaw = false,
         timeout: timeoutSeconds,
         budget: budgetOverride,
+        json: jsonOutput = false,
       } = flags;
 
       const verbose = parseBooleanFlag(verboseRaw, true);
@@ -504,7 +507,7 @@ export default defineCommand({
         // Just return the structured result
 
         const runSucceeded = result.success;
-        return {
+        const structuredResult = {
           exitCode: runSucceeded ? 0 : 1,
           sessionId: effectiveSessionId,
           result: {
@@ -517,6 +520,12 @@ export default defineCommand({
             tokensUsed: result.tokensUsed,
           },
         };
+
+        if (jsonOutput) {
+          ctx.ui?.json?.(structuredResult);
+        }
+
+        return structuredResult;
       } catch (error) {
         clearTimeout_();
         // Surface a clear message when the timeout fired.

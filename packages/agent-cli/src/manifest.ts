@@ -71,6 +71,10 @@ const runFlags = {
     type: 'number',
     description: 'Override token budget (e.g. 300000 for heavy tasks). Overrides config value.',
   },
+  json: {
+    type: 'boolean',
+    description: 'Output structured JSON result instead of human-readable output.',
+  },
 } as const;
 
 /**
