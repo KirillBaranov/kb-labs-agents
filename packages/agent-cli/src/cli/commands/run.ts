@@ -512,7 +512,9 @@ export default defineCommand({
         const structuredResult = {
           exitCode: runSucceeded ? 0 : 1,
           sessionId: effectiveSessionId,
-          result: {
+          summary: result.summary,
+          data: {
+            sessionId: effectiveSessionId,
             success: runSucceeded,
             summary: result.summary,
             filesCreated: result.filesCreated,
@@ -520,6 +522,7 @@ export default defineCommand({
             filesRead: result.filesRead,
             iterations: result.iterations,
             tokensUsed: result.tokensUsed,
+            hasPlan: mode === 'plan' && !!result.plan,
           },
         };
 
