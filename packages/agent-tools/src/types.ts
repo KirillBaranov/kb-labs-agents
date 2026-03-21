@@ -4,6 +4,7 @@
 
 import type { ToolDefinition, ToolResult, SpawnAgentRequest, SpawnAgentResult, AsyncTask } from '@kb-labs/agent-contracts';
 import type { ICache } from '@kb-labs/core-platform';
+import type { IWorkspaceProvider } from './workspace-provider.js';
 
 /**
  * Tool executor function
@@ -62,6 +63,14 @@ export interface ToolContext {
    * Checked by report tool in plan mode — report is blocked until this is set.
    */
   planValidationPassed?: boolean;
+  /**
+   * Workspace provider for remote fs/search/shell operations (Cursor-model).
+   * When set, workspace tools proxy through this provider instead of native fs.
+   * When not set, tools use native fs directly (backwards compatible).
+   *
+   * @see ADR-0017: Workspace Agent Architecture (Phase 3)
+   */
+  workspaceProvider?: IWorkspaceProvider;
 }
 
 /**
