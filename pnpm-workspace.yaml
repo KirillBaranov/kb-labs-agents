@@ -1,3 +1,14 @@
 packages:
-  - "packages/*"
-  - "fixtures/*"
+  - packages/*
+  - fixtures/*
+  - ../../infra/kb-labs-devkit
+  - ../../infra/kb-labs-plugin/../kb-labs-devkit
+  - ../../infra/kb-labs-plugin/packages/*
+  - ../../infra/kb-labs-plugin/packages/plugin-adapters/*
+  - ../../platform/kb-labs-core/../kb-labs-devkit
+  - ../../platform/kb-labs-core/apps/*
+  - ../../platform/kb-labs-core/packages/*
+  - ../../platform/kb-labs-sdk/apps/*
+  - ../../platform/kb-labs-sdk/packages/*
+  - ../../platform/kb-labs-shared/apps/*
+  - ../../platform/kb-labs-shared/packages/*

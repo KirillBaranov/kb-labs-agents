@@ -23,8 +23,8 @@
   },
   "dependencies": {
     "@kb-labs/agent-contracts": "workspace:*",
-    "@kb-labs/core-platform": "workspace:*",
-    "@kb-labs/sdk": "workspace:*",
+    "@kb-labs/core-platform": "link:../../../../platform/kb-labs-core/packages/core-platform",
+    "@kb-labs/sdk": "link:../../../../platform/kb-labs-sdk/packages/sdk",
     "glob": "^11.0.2"
   },
   "devDependencies": {
@@ -32,7 +32,7 @@
     "rimraf": "^6.0.1",
     "tsup": "^8.5.0",
     "typescript": "^5.6.3",
-    "@kb-labs/devkit": "workspace:*",
+    "@kb-labs/devkit": "link:../../../../infra/kb-labs-devkit",
     "vitest": "^3.2.4"
   },
   "keywords": [
