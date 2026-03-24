@@ -22,7 +22,7 @@ export default defineConfig({
     'react',
     'react-dom'
   ],
-  dts: false, // Temporarily disabled - agent-core doesn't generate .d.ts files yet
+  dts: true,
   esbuildOptions(options) {
     options.jsx = 'automatic';
     return options;
