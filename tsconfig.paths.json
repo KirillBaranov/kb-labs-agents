@@ -40,28 +40,28 @@
         "packages/agent-tracing/src/*"
       ],
       "@kb-labs/core-platform": [
-        "../kb-labs-core/packages/core-platform/src/index.ts"
+        "../../platform/kb-labs-core/packages/core-platform/src/index.ts"
       ],
       "@kb-labs/core-platform/*": [
-        "../kb-labs-core/packages/core-platform/src/*"
+        "../../platform/kb-labs-core/packages/core-platform/src/*"
       ],
       "@kb-labs/plugin-runtime": [
-        "../kb-labs-plugin/packages/plugin-runtime/src/index.ts"
+        "../../infra/kb-labs-plugin/packages/plugin-runtime/src/index.ts"
       ],
       "@kb-labs/plugin-runtime/*": [
-        "../kb-labs-plugin/packages/plugin-runtime/src/*"
+        "../../infra/kb-labs-plugin/packages/plugin-runtime/src/*"
       ],
       "@kb-labs/sdk": [
-        "../kb-labs-sdk/packages/sdk/src/index.ts"
+        "../../platform/kb-labs-sdk/packages/sdk/src/index.ts"
       ],
       "@kb-labs/sdk/*": [
-        "../kb-labs-sdk/packages/sdk/src/*"
+        "../../platform/kb-labs-sdk/packages/sdk/src/*"
       ],
       "@kb-labs/shared-testing": [
-        "../kb-labs-shared/packages/shared-testing/src/index.ts"
+        "../../platform/kb-labs-shared/packages/shared-testing/src/index.ts"
       ],
       "@kb-labs/shared-testing/*": [
-        "../kb-labs-shared/packages/shared-testing/src/*"
+        "../../platform/kb-labs-shared/packages/shared-testing/src/*"
       ]
     }
   }
