@@ -62,6 +62,12 @@
       ],
       "@kb-labs/shared-testing/*": [
         "../../platform/kb-labs-shared/packages/shared-testing/src/*"
+      ],
+      "@kb-labs/studio-plugin-tools": [
+        "../../platform/kb-labs-studio/packages/studio-plugin-tools/src/index.ts"
+      ],
+      "@kb-labs/studio-plugin-tools/*": [
+        "../../platform/kb-labs-studio/packages/studio-plugin-tools/src/*"
       ]
     }
   }

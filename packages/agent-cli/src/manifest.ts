@@ -526,4 +526,28 @@ export const manifest = {
       description: 'Persistent agent memory (facts, sessions, project context).',
     },
   ],
+
+  studio: {
+    version: 2 as const,
+    remoteName: 'agentPlugin',
+    pages: [
+      {
+        id: 'agent.overview',
+        title: 'Agent',
+        icon: 'RobotOutlined',
+        route: '/p/agent',
+        entry: './AgentsPage',
+        order: 1,
+      },
+    ],
+    menus: [
+      {
+        id: 'agent',
+        label: 'Agent',
+        icon: 'RobotOutlined',
+        target: 'agent.overview',
+        order: 30,
+      },
+    ],
+  },
 };
