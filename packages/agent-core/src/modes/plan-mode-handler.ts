@@ -626,5 +626,6 @@ function buildPlanAllowedTools(enableDelegation: boolean): Set<string> {
     'ask_user',
     'report',
     'plan_validate',
+    'plan_write',
   ]);
 }

@@ -9,6 +9,8 @@
  * fail-open: progress tracking errors never break execution.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { RunContext, LLMCtx, LLMCallPatch, ToolExecCtx, ToolOutput, ControlAction } from '@kb-labs/agent-sdk';
 
 export interface ProgressCallbacks {
@@ -166,6 +168,12 @@ export class ProgressMiddleware {
       const isPlanMode = ctx.run.meta.get<boolean>('mode', 'isPlanMode')
         ?? ctx.messages.some(m => typeof m.content === 'string' && m.content.includes('PLAN MODE'));
       if (isPlanMode) {
+        // Read current plan file to show agent what it already wrote
+        const currentPlan = this._readPlanFile(ctx);
+        const planContext = currentPlan
+          ? `\n\nYour current plan file contains:\n\`\`\`\n${currentPlan.slice(0, 2000)}\n\`\`\`\n\nUpdate it with new findings using plan_write(content="<full updated plan>").`
+          : '\n\nPlan file is empty. Call plan_write(content="# Plan\\n\\n## Findings\\n...") to start building it.';
+
         ctx.run.eventBus.emit('middleware:event', {
           name: 'progress',
           event: 'plan_checkpoint_nudge',
@@ -178,8 +186,7 @@ export class ProgressMiddleware {
               role: 'user' as const,
               content:
                 `⚠️ PLAN CHECKPOINT: You've made ${this._toolCallsSincePlanWrite} tool calls without updating the plan file. ` +
-                `Call \`plan_write\` NOW to save what you've learned so far. ` +
-                `A partial plan is better than lost research. Write first, then continue exploring.`,
+                `Call \`plan_write\` NOW to save what you've learned so far.${planContext}`,
             },
           ],
         };
@@ -247,6 +254,26 @@ export class ProgressMiddleware {
       this._stuckNudgeLevel = 0;
       this.callbacks.onProgress?.(ctx.iteration);
     }
+  }
+
+  /**
+   * Read current plan.md from session directory.
+   * Returns null if no plan file exists or session info unavailable.
+   */
+  private _readPlanFile(ctx: LLMCtx): string | null {
+    try {
+      const sessionId = ctx.run.meta.get<string>('session', 'id')
+        ?? ctx.run.requestId; // fallback
+      const workingDir = ctx.run.meta.get<string>('session', 'workingDir')
+        ?? process.cwd();
+      const planPath = path.join(workingDir, '.kb', 'agents', 'sessions', sessionId, 'plan.md');
+      if (fs.existsSync(planPath)) {
+        return fs.readFileSync(planPath, 'utf-8');
+      }
+    } catch {
+      // Never break execution for plan file read failure
+    }
+    return null;
   }
 
   reset(): void {
