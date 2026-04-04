@@ -114,6 +114,7 @@ export const SUB_AGENT_PRESETS = {
       'shell_exec',
       'memory_get', 'memory_finding', 'memory_blocker', 'memory_correction',
       'todo_create', 'todo_update', 'todo_get',
+      'plan_write',
       'ask_user', 'report',
     ]),
     maxIterations: 100,

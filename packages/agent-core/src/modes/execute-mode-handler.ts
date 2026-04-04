@@ -161,9 +161,12 @@ export class ExecuteModeHandler implements ModeHandler {
 
   /**
    * Load approved (or draft) plan from session storage.
+   * Falls back to plan.md (written by plan_write tool) if plan.json not available.
    */
   private async loadApprovedPlan(config: AgentConfig): Promise<TaskPlan | null> {
     if (!config.sessionId || !config.workingDir) { return null; }
+
+    // Try plan.json first (structured format)
     try {
       const sessionManager = new SessionManager(config.workingDir);
       const planPath = sessionManager.getSessionPlanPath(config.sessionId);
@@ -172,8 +175,29 @@ export class ExecuteModeHandler implements ModeHandler {
       if (plan.status !== 'approved' && plan.status !== 'draft') { return null; }
       return plan;
     } catch {
-      return null;
+      // plan.json not available — try plan.md
     }
+
+    // Fallback: load plan.md (written by plan_write tool during plan mode)
+    try {
+      const { join } = await import('node:path');
+      const planMdPath = join(config.workingDir, '.kb', 'agents', 'sessions', config.sessionId, 'plan.md');
+      const markdown = await fs.readFile(planMdPath, 'utf-8');
+      if (markdown.trim().length > 0) {
+        return {
+          id: `plan-${config.sessionId}`,
+          task: config.sessionId,
+          status: 'approved',
+          markdown,
+          phases: [],
+          createdAt: new Date().toISOString(),
+        } as unknown as TaskPlan;
+      }
+    } catch {
+      // No plan available at all
+    }
+
+    return null;
   }
 
   /**
@@ -212,6 +236,14 @@ export class ExecuteModeHandler implements ModeHandler {
       'Execute the following plan step by step. The full plan is provided below — do NOT search for plan files in the filesystem.',
       '',
       `Original task: ${task}`,
+      '',
+      '## Execution progress tracking',
+      '- After completing each phase/step, call `plan_write` to update the plan with checkboxes:',
+      '  - `[x] Phase 2.1 — done (ConversationView empty states migrated)`',
+      '  - `[ ] Phase 2.2 — pending`',
+      '- This way if execution is interrupted, the next resume will see what was already done.',
+      '- If a step in the plan is already marked `[x]`, SKIP it — it was done in a previous run.',
+      '- Check git diff or read files to verify completed steps before skipping.',
       '',
       '---',
       '',
