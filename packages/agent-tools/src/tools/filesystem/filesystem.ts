@@ -82,7 +82,7 @@ export function createFsReadTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_read',
-        description: `Read file contents. Default: ${DEFAULT_LINES} lines. Max: ${MAX_LINES_PER_READ} lines per call. IMPORTANT: Large files must be read in chunks — use offset+limit to paginate. The output will tell you how many lines remain and the exact next call to make.`,
+        description: `Read file contents. By default reads the entire file (up to ${MAX_LINES_PER_READ} lines). For very large files, use offset+limit to read specific sections. Prefer reading the whole file when possible — partial reads waste iterations.`,
         parameters: {
           type: 'object',
           properties: {
@@ -96,7 +96,7 @@ export function createFsReadTool(context: ToolContext): Tool {
             },
             limit: {
               type: 'number',
-              description: `Number of lines to read (default: ${DEFAULT_LINES}, max: ${MAX_LINES_PER_READ}). For large files, read in chunks of 200-500 lines.`,
+              description: `Number of lines to read (default: all, max: ${MAX_LINES_PER_READ}). Only use for very large files — prefer reading the whole file.`,
             },
           },
           required: ['path'],

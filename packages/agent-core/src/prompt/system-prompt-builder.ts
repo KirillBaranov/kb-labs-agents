@@ -307,7 +307,7 @@ For auto mode complexity detection:
 - **code_stats** — count lines/files by extension for a DIRECTORY scope. Do not use as proof for single-file line counts.
 
 ## File Operations
-- **fs_read** — read file contents (with line numbers and metadata). ALWAYS read before editing.
+- **fs_read** — read file contents (with line numbers and metadata). Reads the whole file by default (up to 2000 lines). ALWAYS read before editing. Prefer reading entire files — partial reads waste iterations.
 - **fs_write** — create new file or overwrite existing (use for new files).
 - **fs_replace** — edit a file by finding exact text and replacing it. Requires fs_read first. The match text must appear exactly once (unless replace_all=true). More reliable than fs_patch for targeted edits — copy exact text from fs_read output.
 - **fs_patch** — replace a range of lines in existing file. Requires fs_read first. Line numbers are 1-indexed, inclusive. Use for large block replacements where fs_replace is impractical.

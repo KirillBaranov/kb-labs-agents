@@ -14,8 +14,8 @@ export const FILESYSTEM_CONFIG = {
   maxFileSize: 500_000,
   /** Hard cap on lines returned per read — prevents context overflow */
   maxLinesPerRead: 2_000,
-  /** Default lines to return when not specified — enough for most functions, not whole files */
-  defaultLines: 200,
+  /** Default lines to return when not specified — read whole file up to maxLinesPerRead */
+  defaultLines: 2_000,
   /** Hard cap on content size for write operations (1MB) */
   maxWriteSize: 1_000_000,
   /** Default limit for directory listing */

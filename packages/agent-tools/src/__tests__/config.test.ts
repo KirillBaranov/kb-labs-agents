@@ -14,7 +14,7 @@ import {
 describe('FILESYSTEM_CONFIG', () => {
   it('has sensible limits', () => {
     expect(FILESYSTEM_CONFIG.maxFileSize).toBeGreaterThan(0);
-    expect(FILESYSTEM_CONFIG.maxLinesPerRead).toBeGreaterThan(FILESYSTEM_CONFIG.defaultLines);
+    expect(FILESYSTEM_CONFIG.maxLinesPerRead).toBeGreaterThanOrEqual(FILESYSTEM_CONFIG.defaultLines);
     expect(FILESYSTEM_CONFIG.maxWriteSize).toBeGreaterThan(FILESYSTEM_CONFIG.maxFileSize);
     expect(FILESYSTEM_CONFIG.maxListLimit).toBeGreaterThan(FILESYSTEM_CONFIG.defaultListLimit);
   });
