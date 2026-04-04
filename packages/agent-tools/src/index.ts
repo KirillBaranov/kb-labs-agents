@@ -6,6 +6,7 @@
 
 export * from './types.js';
 export * from './registry.js';
+export * from './gateway.js';
 export * from './tools/index.js';
 export * from './config.js';
 export * from './utils.js';

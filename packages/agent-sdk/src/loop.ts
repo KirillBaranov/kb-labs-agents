@@ -14,6 +14,7 @@
  * Custom example: GraphExecutionLoop (parallel branches)
  */
 
+import type { IterationSnapshot, RunEvaluation } from '@kb-labs/agent-contracts';
 import type { LLMMessage } from '@kb-labs/sdk';
 import type { RunContext, LLMCallResult, ToolCallInput, ToolOutput } from './contexts.js';
 import type { ControlAction } from './middleware.js';
@@ -42,6 +43,12 @@ export interface LoopContext {
    * Applies guard pipeline + output processors internally.
    */
   executeTools(calls: ToolCallInput[]): Promise<ToolOutput[]>;
+
+  /**
+   * Evaluates run progress after a meaningful iteration using structured loop signals.
+   * ExecutionLoop uses this to decide whether to continue, narrow scope, or synthesize.
+   */
+  evaluateRun(snapshot: IterationSnapshot): Promise<RunEvaluation | null>;
 
   /**
    * Runs beforeIteration middleware hooks.

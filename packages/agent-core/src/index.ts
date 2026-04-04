@@ -30,3 +30,17 @@ export * from './agents/index.js';
 
 // SDK-native agent runner
 export * from './core/index.js';
+
+// New runtime foundation
+export { SessionArtifactStore } from '@kb-labs/agent-store';
+export {
+  createKernelState,
+  ingestUserTurn,
+  completePendingActions,
+  isCorrectionPendingAction,
+  recordCorrection,
+  recordDecision,
+  recordToolArtifact,
+  projectKernelPrompt,
+} from '@kb-labs/agent-kernel';
+export { createSessionMemoryBridge } from './core/session-memory-bridge.js';

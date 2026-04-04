@@ -90,7 +90,9 @@ export class ContextFilterMiddleware {
 
     // Rounds exceed window — need to drop older ones
     const kept = rounds.slice(-this.slidingWindowSize);
-    const truncated = kept.flatMap((r) => r.map((m) => this.truncate(m)));
+    // Microcompact: clear old tool outputs in kept rounds, preserve recent ones full
+    const microcompacted = this.microcompact(kept);
+    const truncated = microcompacted.flatMap((r) => r.map((m) => this.truncate(m)));
     const droppedRounds = rounds.slice(0, rounds.length - this.slidingWindowSize);
     const droppedCount = droppedRounds.length;
 
@@ -165,11 +167,22 @@ export class ContextFilterMiddleware {
     const cappedTranscript = transcript.slice(0, 12_000);
 
     const prompt = [
-      'Summarize the following agent conversation rounds into a concise recap.',
-      'Focus on: (1) what tools were called and key results, (2) files read/modified,',
-      '(3) key findings and decisions made, (4) any errors encountered.',
-      'Output a compact summary (max 500 words). Use bullet points.',
-      'Do NOT include raw tool outputs — only summarize key information.',
+      'CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.',
+      '',
+      'Summarize the following agent conversation rounds into a structured recap.',
+      'You MUST preserve the following information (do not omit any section):',
+      '',
+      '1. **Primary request and intent** — What was the user\'s original task? What is the goal?',
+      '2. **Key technical concepts** — Important types, functions, patterns mentioned.',
+      '3. **Files and code sections** — Every file read or modified, with brief description of what was found/changed. Include file paths.',
+      '4. **Errors and fixes** — Any errors encountered and how they were resolved (or not).',
+      '5. **Decisions made** — Approach chosen, alternatives considered and rejected.',
+      '6. **Current work** — What was the agent working on in the most recent rounds?',
+      '7. **Pending tasks** — What remains to be done?',
+      '',
+      'Output a compact summary (max 600 words). Use bullet points within each section.',
+      'Do NOT include raw tool outputs or full file contents — only summarize key information.',
+      'PRESERVE ALL FILE PATHS mentioned — these are critical for the agent to continue working.',
       '',
       cappedTranscript,
     ].join('\n');
@@ -182,6 +195,36 @@ export class ContextFilterMiddleware {
     const text = typeof response === 'string' ? response : response?.content ?? '';
 
     return `[Compacted summary of ${rounds.length} earlier iteration(s)]\n\n${text.trim()}`;
+  }
+
+  // ── microcompact: clear old tool outputs, keep reasoning ───────────────────
+
+  /**
+   * Microcompact: for rounds being kept (not dropped), clear tool result content
+   * from old rounds while keeping assistant text. This reduces context size
+   * without losing the agent's reasoning chain.
+   *
+   * Only applied to rounds older than `keepFullRounds` from the end.
+   * The most recent rounds keep full tool outputs for immediate context.
+   */
+  private microcompact(rounds: LLMMessage[][], keepFullRounds = 3): LLMMessage[][] {
+    if (rounds.length <= keepFullRounds) { return rounds; }
+
+    const compactedCount = rounds.length - keepFullRounds;
+    return rounds.map((round, i) => {
+      if (i >= compactedCount) { return round; } // keep recent rounds full
+
+      return round.map((msg) => {
+        if (msg.role !== 'tool') { return msg; }
+        // Replace tool output with compact marker
+        const content = typeof msg.content === 'string' ? msg.content : '';
+        const firstLine = content.split('\n')[0]?.slice(0, 120) ?? '';
+        return {
+          ...msg,
+          content: `[Tool output cleared — first line: ${firstLine}...]`,
+        };
+      });
+    });
   }
 
   // ── helpers ─────────────────────────────────────────────────────────────────

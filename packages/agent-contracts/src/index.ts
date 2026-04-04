@@ -46,6 +46,27 @@ export {
 // ═══════════════════════════════════════════════════════════════════════
 
 export type * from './tool-pack.js';
+export type * from './runtime.js';
+export type {
+  ClaimVerificationResult,
+  EvidenceRequirements,
+  IterationSnapshot,
+  MemoryRollup,
+  PromptContextSelection,
+  RepositoryModel,
+  RepositoryTopology,
+  RepositoryStack,
+  RepositoryWorkspaceLayout,
+  RepositoryConventions,
+  RepositoryFingerprints,
+  RunEvaluation,
+  RunEvaluationRecommendation,
+  RoutingHints,
+  RepositorySignal,
+  ToolCapability,
+  TurnInterpretation,
+  TurnKind,
+} from './runtime.js';
 
 // ═══════════════════════════════════════════════════════════════════════
 // Sub-agent Spawning

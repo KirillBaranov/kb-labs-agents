@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
-import { createFsWriteTool, createFsPatchTool } from '../filesystem.js';
+import { createFsWriteTool, createFsPatchTool } from '../filesystem/filesystem.js';
 import type { ToolContext } from '../../types.js';
 
 // ─── Mock node:fs ─────────────────────────────────────────────────────────────

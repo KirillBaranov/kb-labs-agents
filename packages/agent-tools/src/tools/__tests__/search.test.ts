@@ -6,7 +6,7 @@ import {
   createGrepSearchTool,
   createFindDefinitionTool,
   createCodeStatsTool,
-} from '../search.js';
+} from '../search/search.js';
 import type { ToolContext } from '../../types.js';
 
 vi.mock('node:child_process', () => ({

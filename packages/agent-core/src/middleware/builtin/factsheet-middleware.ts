@@ -286,6 +286,9 @@ function buildRunMemoryBlock(run: RunContext): string | null {
   const repeatsWithoutEvidence = run.meta.get<number>('loop', 'repeatsWithoutEvidence') ?? 0;
   const repeatNoEvidenceCount = run.meta.get<number>('loop', 'repeatNoEvidenceCount') ?? 0;
   const lastEvidenceCount = run.meta.get<number>('loop', 'lastEvidenceCount') ?? 0;
+  const lastRecommendation = run.meta.get<string>('evaluation', 'lastRecommendation');
+  const lastReadinessScore = run.meta.get<number>('evaluation', 'lastReadinessScore');
+  const lastEvidenceGain = run.meta.get<number>('evaluation', 'lastEvidenceGain');
 
   // Always emit status block after iteration 1 (even if no evidence yet)
   if (run.iteration <= 1 && !lastSummary && repeatNoEvidenceCount === 0 && lastEvidenceCount === 0) {
@@ -353,6 +356,11 @@ function buildRunMemoryBlock(run: RunContext): string | null {
   }
   if (repeatNoEvidenceCount > 0) {
     lines.push(`Total repeat-without-evidence events: ${repeatNoEvidenceCount}`);
+  }
+  if (lastRecommendation) {
+    const readiness = typeof lastReadinessScore === 'number' ? `, readiness=${lastReadinessScore}` : '';
+    const gain = typeof lastEvidenceGain === 'number' ? `, gain=${lastEvidenceGain}` : '';
+    lines.push(`Convergence: ${lastRecommendation}${readiness}${gain}`);
   }
   lines.push('Rule: if no new evidence appears for repeated actions, change strategy or report partial result.');
 

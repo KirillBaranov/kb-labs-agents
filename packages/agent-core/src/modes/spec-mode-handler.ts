@@ -20,7 +20,7 @@ import type {
   ToolDefinition,
 } from '@kb-labs/agent-contracts';
 import { DEFAULT_AGENT_TOKEN_BUDGET_CONFIG } from '@kb-labs/agent-contracts';
-import type { ToolRegistry } from '@kb-labs/agent-tools';
+import { ToolRegistry } from '@kb-labs/agent-tools';
 import { AgentSDK, type IAgentRunner } from '@kb-labs/agent-sdk';
 import { createCoreToolPack } from '../tools/index.js';
 import { SessionManager } from '../planning/session-manager';
@@ -80,37 +80,44 @@ class SharedTokenBudget {
   }
 }
 
-class ReadOnlySpecToolRegistry {
+/**
+ * A ToolRegistry restricted to an allowed set of tool names.
+ * Extends ToolRegistry so it can be passed wherever ToolRegistry is expected
+ * without unsafe casts — override the read/execute methods to filter by allowedNames.
+ */
+class ReadOnlySpecToolRegistry extends ToolRegistry {
   constructor(
     private readonly base: ToolRegistry,
     private readonly allowedNames: Set<string>,
-  ) {}
+  ) {
+    super(base.getContext());
+  }
 
-  get(name: string) {
+  override get(name: string) {
     if (!this.allowedNames.has(name)) {return undefined;}
     return this.base.get(name);
   }
 
-  getDefinitions(): ToolDefinition[] {
+  override getDefinitions(): ToolDefinition[] {
     return this.base
       .getDefinitions()
       .filter((def) => this.allowedNames.has(def.function.name));
   }
 
-  async execute(name: string, input: Record<string, unknown>) {
+  override async execute(name: string, input: Record<string, unknown>) {
     if (!this.allowedNames.has(name)) {
       throw new Error(`Tool "${name}" is disabled in spec mode (read-only).`);
     }
     return this.base.execute(name, input);
   }
 
-  getToolNames(): string[] {
+  override getToolNames(): string[] {
     return this.base
       .getToolNames()
       .filter((tool) => this.allowedNames.has(tool));
   }
 
-  getContext() {
+  override getContext() {
     return this.base.getContext();
   }
 }
@@ -171,7 +178,7 @@ export class SpecModeHandler {
     });
 
     try {
-      const readOnlyRegistry = new ReadOnlySpecToolRegistry(toolRegistry, SPEC_READ_ONLY_TOOLS) as unknown as ToolRegistry;
+      const readOnlyRegistry = new ReadOnlySpecToolRegistry(toolRegistry, SPEC_READ_ONLY_TOOLS);
       const delegatedResearch = await this.runDelegatedResearchPacks(
         plan,
         config,

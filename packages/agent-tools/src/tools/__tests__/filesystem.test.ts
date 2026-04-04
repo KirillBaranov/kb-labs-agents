@@ -5,7 +5,7 @@ import {
   createFsWriteTool,
   createFsListTool,
   createFsPatchTool,
-} from '../filesystem.js';
+} from '../filesystem/filesystem.js';
 import type { ToolContext } from '../../types.js';
 import type { ToolResult } from '@kb-labs/agent-contracts';
 

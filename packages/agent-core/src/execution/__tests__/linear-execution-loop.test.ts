@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LinearExecutionLoop } from '../linear-execution-loop.js';
-import type { LoopContext, LLMCallResult, ToolOutput, LoopResult } from '@kb-labs/agent-sdk';
+import type { LoopContext, LLMCallResult, ToolOutput, LoopResult, ToolCallInput } from '@kb-labs/agent-sdk';
 import type { RunContext, ControlAction } from '@kb-labs/agent-sdk';
 
 /** Narrow LoopResult to the 'complete' variant for easy field access in tests. */
@@ -61,6 +61,7 @@ function makeCtx(runCtx: RunContext, llmResponses: LLMCallResult[]): LoopContext
       return r ?? makeLLMResponse();
     }),
     executeTools: vi.fn(async (): Promise<ToolOutput[]> => []),
+    evaluateRun: vi.fn(async () => null),
   };
 }
 
@@ -117,6 +118,64 @@ describe('LinearExecutionLoop', () => {
       expect(asComplete(result).result.reasonCode).toBe('no_tool_calls');
       expect(asComplete(result).result.answer).toBe('Here is the answer');
       expect(asComplete(result).result.success).toBe(true);
+    });
+
+    it('does not complete when forced report after nudge is blocked', async () => {
+      const run = makeRunCtx({ maxIterations: 3 });
+      const executeTools = vi.fn(async (calls: ToolCallInput[]): Promise<ToolOutput[]> => {
+        const reportCall = calls.find((call) => call.name === 'report');
+        if (reportCall) {
+          return [{
+            toolCallId: reportCall.id,
+            output: 'BLOCKED: persist correction first',
+            success: false,
+            error: 'PENDING_MEMORY_COMMIT',
+          }];
+        }
+        return [];
+      });
+      const ctx: LoopContext = {
+        run,
+        beforeIteration: vi.fn(async (): Promise<ControlAction> => 'continue'),
+        afterIteration: vi.fn(async (): Promise<void> => {}),
+        appendMessage: vi.fn(),
+        callLLM: vi.fn(async () => {
+          const callCount = (ctx.callLLM as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+          if (callCount === 1) {
+            return makeLLMResponse({ content: 'Plain text answer', toolCalls: [] });
+          }
+          if (callCount === 2) {
+            return makeLLMResponse({
+              toolCalls: [{ id: 'tc-report-blocked', name: 'report', input: { answer: 'Plain text answer' } }],
+            });
+          }
+          return makeLLMResponse({
+            toolCalls: [{ id: 'tc-report-final', name: 'report', input: { answer: 'Committed and done' } }],
+          });
+        }),
+        executeTools,
+      };
+
+      executeTools.mockImplementationOnce(async (): Promise<ToolOutput[]> => [{
+        toolCallId: 'tc-report-blocked',
+        output: 'BLOCKED: persist correction first',
+        success: false,
+        error: 'PENDING_MEMORY_COMMIT',
+      }]);
+      executeTools.mockImplementationOnce(async (): Promise<ToolOutput[]> => [{
+        toolCallId: 'tc-report-final',
+        output: '',
+        success: true,
+      }]);
+
+      const result = await loop.run(ctx);
+
+      expect(result.outcome).toBe('complete');
+      expect(asComplete(result).result.reasonCode).toBe('report_complete');
+      expect(asComplete(result).result.answer).toBe('Committed and done');
+      expect(ctx.callLLM).toHaveBeenCalledTimes(3);
+      expect(ctx.appendMessage).toHaveBeenCalledTimes(1);
+      expect(executeTools).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -219,6 +278,7 @@ describe('LinearExecutionLoop', () => {
         appendMessage: vi.fn(),
         callLLM: vi.fn(async () => { throw new Error('Rate limit exceeded'); }),
         executeTools: vi.fn(async () => []),
+        evaluateRun: vi.fn(async () => null),
       };
 
       const result = await loop.run(ctx);
@@ -266,11 +326,75 @@ describe('LinearExecutionLoop', () => {
           return makeLLMResponse({ toolCalls: [{ id: 'tc', name: 'fs_read', input: {} }] });
         }),
         executeTools: vi.fn(async () => []),
+        evaluateRun: vi.fn(async () => null),
       };
 
       await loop.run(ctx);
 
       expect(iterations).toEqual([1, 2]);
+    });
+  });
+
+  describe('run evaluation', () => {
+    it('stores evaluation output in run meta', async () => {
+      const run = makeRunCtx({ maxIterations: 2 });
+      const ctx = makeCtx(run, [
+        makeLLMResponse({ toolCalls: [{ id: 'tc-1', name: 'fs_read', input: { path: '/tmp/a.ts' } }] }),
+        makeLLMResponse({ toolCalls: [{ id: 'tc-2', name: 'report', input: { answer: 'done' } }] }),
+      ]);
+
+      run.meta.set('files', 'read', ['/tmp/a.ts']);
+      ctx.evaluateRun = vi.fn(async () => ({
+        evidenceGain: 0.45,
+        readinessScore: 0.6,
+        repeatedStrategy: false,
+        recommendation: 'continue',
+        rationale: 'Still gaining useful evidence.',
+      }));
+
+      await loop.run(ctx);
+
+      expect(run.meta.set).toHaveBeenCalledWith('evaluation', 'lastRecommendation', 'continue');
+      expect(run.meta.set).toHaveBeenCalledWith('evaluation', 'lastReadinessScore', 0.6);
+      expect(run.meta.set).toHaveBeenCalledWith('evaluation', 'lastEvidenceGain', 0.45);
+    });
+
+    it('nudges synthesis when evaluator says evidence gain has flattened', async () => {
+      const run = makeRunCtx({ maxIterations: 3 });
+      const ctx: LoopContext = {
+        run,
+        beforeIteration: vi.fn(async (): Promise<ControlAction> => 'continue'),
+        afterIteration: vi.fn(async (): Promise<void> => {}),
+        appendMessage: vi.fn(),
+        callLLM: vi.fn(async () => {
+          const callCount = (ctx.callLLM as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+          if (callCount === 1) {
+            return makeLLMResponse({ toolCalls: [{ id: 'tc-1', name: 'fs_read', input: { path: '/tmp/a.ts' } }] });
+          }
+          return makeLLMResponse({ toolCalls: [{ id: 'tc-report', name: 'report', input: { answer: 'bounded answer' } }] });
+        }),
+        executeTools: vi.fn(async (calls: ToolCallInput[]): Promise<ToolOutput[]> => calls.map((call) => ({
+          toolCallId: call.id,
+          output: '',
+          success: true,
+        }))),
+        evaluateRun: vi.fn(async () => ({
+          evidenceGain: 0.1,
+          readinessScore: 0.82,
+          repeatedStrategy: true,
+          recommendation: 'synthesize',
+          rationale: 'Enough evidence collected.',
+        })),
+      };
+
+      run.meta.set('files', 'read', ['/tmp/a.ts']);
+      const result = await loop.run(ctx);
+
+      expect(asComplete(result).result.reasonCode).toBe('report_complete');
+      expect(asComplete(result).result.answer).toBe('bounded answer');
+      expect(ctx.appendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        role: 'system',
+      }));
     });
   });
 });

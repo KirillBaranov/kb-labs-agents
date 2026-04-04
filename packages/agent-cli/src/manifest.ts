@@ -40,6 +40,11 @@ const runFlags = {
     description: 'Auto-approve generated plan (supported with --mode=plan)',
     default: false,
   },
+  execute: {
+    type: 'boolean',
+    description: 'After plan is approved, immediately execute it (use with --mode=plan --approve)',
+    default: false,
+  },
   files: {
     type: 'array',
     description: 'Target files (for edit mode)',
@@ -139,6 +144,7 @@ export const manifest = {
           'kb agent run --task="Create analytics system"',
           'kb agent run --mode=plan --task="Add auth" --complexity=complex',
           'kb agent run --mode=plan --task="Add auth" --approve',
+          'kb agent run --mode=plan --task="Add auth" --approve --execute',
           'kb agent run --mode=edit --task="Fix bug" --files src/auth.ts',
           'kb agent run --mode=debug --task="Why crash?" --trace .kb/traces/trace-123.json',
           'kb agent run --task="Refactor auth module" --timeout=120',

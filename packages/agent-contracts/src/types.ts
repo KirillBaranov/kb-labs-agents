@@ -589,16 +589,6 @@ export interface PersistentMemory {
 }
 
 /**
- * Session memory (shared between agents)
- */
-export interface SessionMemory {
-  sessionId: string;
-  timestamp: string;
-  facts: MemoryEntry[];
-  sharedContext: Record<string, unknown>;
-}
-
-/**
  * TODO item status
  */
 export type TodoStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';

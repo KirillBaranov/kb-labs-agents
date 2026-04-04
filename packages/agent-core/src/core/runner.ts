@@ -49,7 +49,10 @@ import { AGENT_ANALYTICS_EVENTS } from '@kb-labs/agent-contracts';
 import type { AgentConfig, LLMTier, TaskResult, SpawnAgentRequest, SpawnAgentResult, SubAgentPreset } from '@kb-labs/agent-contracts';
 import type { Turn } from '@kb-labs/agent-contracts';
 import type { AgentSDK, IAgentRunner } from '@kb-labs/agent-sdk';
+import { RuntimeEngine } from '@kb-labs/agent-runtime';
+import { SessionArtifactStore } from '@kb-labs/agent-store';
 import { LinearExecutionLoop } from '../execution/linear-execution-loop.js';
+import { createDefaultRunEvaluator } from '../execution/default-run-evaluator.js';
 import { MiddlewarePipeline } from '../middleware/pipeline.js';
 import { ToolManager } from '../tools/tool-manager.js';
 import { SystemPromptBuilder } from '../prompt/system-prompt-builder.js';
@@ -71,6 +74,7 @@ import { createAsyncTaskToolPack } from '../tools/async-task-pack.js';
 import { SessionManager } from '../planning/session-manager.js';
 import { RunMetricsEmitter, getKpiBaselineKey } from '../analytics/index.js';
 import type { RunKpiPayload } from '../analytics/index.js';
+import { createSessionMemoryBridge } from './session-memory-bridge.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tier escalation order
@@ -268,6 +272,12 @@ export class SDKAgentRunner implements IAgentRunner {
     let toolErrorCount = 0;
     let toolCallsTotal = 0;
     let runDurationMs = 0;
+    const runtimeStore = this.config.sessionId
+      ? new SessionArtifactStore(this.config.workingDir)
+      : null;
+    const runtimeEngine = this.config.sessionId && runtimeStore
+      ? new RuntimeEngine(this.sdk, runtimeStore)
+      : null;
 
     // ── 1. LLM ───────────────────────────────────────────────────────────────
     const llm = useLLM({ tier });
@@ -320,11 +330,18 @@ export class SDKAgentRunner implements IAgentRunner {
     this.totalTokens = 0;
 
     // ObservabilityMiddleware — events + file tracking (order=5)
+    const runtimeAwareOnEvent: AgentConfig['onEvent'] = (event) => {
+      if (runtimeEngine && this.config.sessionId) {
+        void runtimeEngine.recordEvent({ ...event, sessionId: event.sessionId || this.config.sessionId });
+      }
+      void this.config.onEvent?.(event);
+    };
+
     const observabilityMw = new ObservabilityMiddleware(
       this.agentId,
       this.config.parentAgentId,
       this.config.sessionId,
-      this.config.onEvent,
+      runtimeAwareOnEvent,
     );
 
     // BudgetMiddleware — token enforcement (order=10)
@@ -439,7 +456,41 @@ export class SDKAgentRunner implements IAgentRunner {
     const sessionManager = this.config.sessionId
       ? new SessionManager(this.config.workingDir)
       : null;
-    const lastAnswerHint = await this.getLastAnswerHint(task);
+    if (runtimeEngine && this.config.sessionId) {
+      await runtimeEngine.loadOrCreateKernel({
+        sessionId: this.config.sessionId,
+        workingDir: this.config.workingDir,
+        mode: this.config.mode?.mode,
+        task,
+      });
+    }
+    const directAnswer = runtimeEngine
+      ? await runtimeEngine.tryResolveDirectAnswer([])
+      : null;
+    if (runtimeEngine && directAnswer && this.config.sessionId) {
+      await runtimeEngine.completeRun({
+        sessionId: this.config.sessionId,
+        mode: this.config.mode?.mode,
+        summary: directAnswer.answer,
+        filesRead: directAnswer.filesRead,
+      });
+      const directResult: TaskResult = {
+        success: true,
+        summary: directAnswer.answer,
+        filesCreated: [],
+        filesModified: [],
+        filesRead: directAnswer.filesRead,
+        iterations: 1,
+        tokensUsed: 0,
+        sessionId: this.config.sessionId,
+      };
+      return this.withMetrics(directResult, {
+        durationMs: Date.now() - tierStartedAt,
+        toolCallsTotal: 0,
+        toolSuccessCount: 0,
+        toolErrorCount: 0,
+      });
+    }
     const continuityEnabled = !!this.config.sessionId;
     const traceArtifactsContext = continuityEnabled && this.config.sessionId && sessionManager
       ? await sessionManager.getTraceArtifactsContext(this.config.sessionId).catch(() => '')
@@ -447,7 +498,9 @@ export class SDKAgentRunner implements IAgentRunner {
     const sessionFactsHint = this.config.sessionId && sessionManager && this.shouldInjectSessionFacts(task)
       ? await this.getSessionFactsHint(sessionManager, this.config.sessionId)
       : '';
-    const promptMemory = this.getPromptMemory();
+    const runtimePromptContext = runtimeEngine
+      ? await runtimeEngine.projectPrompt([])
+      : '';
 
     const promptBuilder = new SystemPromptBuilder();
     const systemPrompt = await promptBuilder.build({
@@ -457,8 +510,7 @@ export class SDKAgentRunner implements IAgentRunner {
       sessionId: this.config.sessionId,
       currentTask: task,
       workspaceDiscovery: workspaceDiscovery ?? undefined,
-      memory: promptMemory,
-      archiveSummaryHint: [sessionFactsHint, continuityEnabled ? lastAnswerHint.hint : '', traceArtifactsContext]
+      archiveSummaryHint: [runtimePromptContext, sessionFactsHint, traceArtifactsContext]
         .filter(Boolean)
         .join('\n\n') || undefined,
     });
@@ -470,7 +522,6 @@ export class SDKAgentRunner implements IAgentRunner {
     messages.push(...historyMessages);
 
     messages.push({ role: 'user', content: task });
-    await this.recordTaskStartInMemory(task);
 
     // Inject any queued user context (from injectUserContext() calls)
     for (const msg of this.injectedMessages) {
@@ -487,6 +538,25 @@ export class SDKAgentRunner implements IAgentRunner {
       pipeline,
       toolExecutor,
       (delta) => { this.totalTokens += delta; },
+      async (activeRun, snapshot) => {
+        const runtimeProfileEvaluators = runtimeEngine?.getActiveProfile()?.runEvaluators ?? [];
+        const evaluators = [
+          ...runtimeProfileEvaluators,
+          ...this.sdk.runEvaluators,
+          createDefaultRunEvaluator(),
+        ];
+        let best: Awaited<ReturnType<typeof evaluators[number]['evaluate']>> = null;
+        for (const evaluator of evaluators) {
+          const result = await evaluator.evaluate({ run: activeRun, snapshot });
+          if (!result) {
+            continue;
+          }
+          if (!best || result.readinessScore >= best.readinessScore) {
+            best = result;
+          }
+        }
+        return best;
+      },
     );
 
     // Enrich observability with budget + workspace for agent:start trace event
@@ -560,7 +630,10 @@ export class SDKAgentRunner implements IAgentRunner {
     // Read file change summaries from run.meta (populated by ChangeTrackingMiddleware)
     const fileChanges = getFileChangeSummaries(run);
 
-    const taskResult: TaskResult = {
+    const completionMetadata = { ...(output.metadata ?? {}) } as Record<string, unknown>;
+    const runtimeProfileResultMappers = runtimeEngine?.getActiveProfile()?.resultMappers ?? [];
+
+    let taskResult: TaskResult = {
       success: output.success,
       summary: output.answer,
       filesCreated,
@@ -577,10 +650,68 @@ export class SDKAgentRunner implements IAgentRunner {
           run.iteration > 0
             ? (run.meta.get<number>('loop', 'repeatNoEvidenceCount') ?? 0) / run.iteration
             : 0,
+        convergenceRecommendation: run.meta.get<string>('evaluation', 'lastRecommendation') ?? 'continue',
+        convergenceReadinessScore: run.meta.get<number>('evaluation', 'lastReadinessScore') ?? 0,
+        convergenceEvidenceGain: run.meta.get<number>('evaluation', 'lastEvidenceGain') ?? 0,
       },
     };
 
-    await this.recordTaskCompletionInMemory(task, taskResult);
+    for (const mapper of runtimeProfileResultMappers) {
+      const mapped = await mapper.map({
+        state: runtimeEngine?.getKernel() ?? null,
+        answer: taskResult.summary,
+        mode: this.config.mode?.mode === 'execute'
+          ? 'autonomous'
+          : 'assistant',
+        task,
+        sessionId: this.config.sessionId,
+        workingDir: this.config.workingDir,
+        metadata: completionMetadata,
+      });
+      if (!mapped) {
+        continue;
+      }
+      if (mapped.summary) {
+        taskResult.summary = mapped.summary;
+      }
+      if (mapped.taskResult) {
+        taskResult = {
+          ...taskResult,
+          ...mapped.taskResult,
+          metrics: {
+            ...(taskResult.metrics ?? {}),
+            ...((mapped.taskResult.metrics as Record<string, unknown> | undefined) ?? {}),
+          },
+        };
+      }
+      if (mapped.runtimeMetadata) {
+        Object.assign(completionMetadata, mapped.runtimeMetadata);
+      }
+    }
+
+    if (runtimeEngine && this.config.sessionId) {
+      const completion = await runtimeEngine.completeRun({
+        sessionId: this.config.sessionId,
+        runId: requestId,
+        mode: this.config.mode?.mode,
+        summary: taskResult.summary,
+        filesRead,
+        filesModified,
+        filesCreated,
+        metadata: Object.keys(completionMetadata).length > 0 ? completionMetadata : undefined,
+      });
+      taskResult = {
+        ...taskResult,
+        success: taskResult.success && !completion.blockedByPolicy,
+        summary: completion.blockedByPolicy
+          ? `Final output failed runtime profile validation: ${completion.validationResults.find((result) => result.verdict === 'block')?.rationale ?? 'blocked by completion policy'}`
+          : taskResult.summary,
+        metrics: {
+          ...(taskResult.metrics ?? {}),
+          runtimeCompletion: completion,
+        },
+      };
+    }
 
     return this.withMetrics(taskResult, {
       durationMs: runDurationMs || (Date.now() - tierStartedAt),
@@ -737,6 +868,7 @@ export class SDKAgentRunner implements IAgentRunner {
       workingDir: this.config.workingDir,
       sessionId: this.config.sessionId,
       verbose: false,
+      sessionMemory: createSessionMemoryBridge(this.config.workingDir, this.config.sessionId),
     });
 
     const handler = await getModeHandler(this.config.mode);
@@ -880,52 +1012,6 @@ export class SDKAgentRunner implements IAgentRunner {
     };
   }
 
-  private getPromptMemory():
-    | import('@kb-labs/agent-contracts').AgentMemory
-    | undefined {
-    const memory = this.sdk.memory as unknown;
-    if (!memory || typeof memory !== 'object') {
-      return undefined;
-    }
-    const maybe = memory as {
-      getContext?: unknown;
-      getRecent?: unknown;
-    };
-    if (typeof maybe.getContext !== 'function' || typeof maybe.getRecent !== 'function') {
-      return undefined;
-    }
-    return memory as import('@kb-labs/agent-contracts').AgentMemory;
-  }
-
-  private async getLastAnswerHint(task: string): Promise<{ hint: string; lastTask?: string }> {
-    const memory = this.sdk.memory as {
-      getLastAnswer?: () => Promise<{
-        answer: string;
-        task: string;
-        timestamp: string;
-      } | null>;
-    } | null;
-    if (!memory?.getLastAnswer) {
-      return { hint: '' };
-    }
-    const last = await memory.getLastAnswer().catch(() => null);
-    if (!last || !last.answer?.trim()) {
-      return { hint: '' };
-    }
-    if (last.task?.trim() === task.trim()) {
-      return { hint: '', lastTask: last.task };
-    }
-    const preview = last.answer.length > 700 ? `${last.answer.slice(0, 700)}...` : last.answer;
-    const hint = [
-      '# Last Strong Answer (for follow-up continuity)',
-      `Previous task: ${last.task}`,
-      `Timestamp: ${last.timestamp}`,
-      `Answer preview: ${preview}`,
-      'Use this for continuity only. Re-validate with tools/files before final claims.',
-    ].join('\n');
-    return { hint, lastTask: last.task };
-  }
-
   private async getSessionFactsHint(sessionManager: SessionManager, sessionId: string): Promise<string> {
     const turns = await sessionManager.getTurns(sessionId).catch(() => []);
     if (turns.length === 0) {
@@ -956,68 +1042,6 @@ export class SDKAgentRunner implements IAgentRunner {
       'in this session',
     ];
     return hints.some((h) => lower.includes(h));
-  }
-
-  private async recordTaskStartInMemory(task: string): Promise<void> {
-    const memory = this.sdk.memory as { add?: (entry: {
-      content: string;
-      type: 'fact' | 'task' | 'observation' | 'error';
-      metadata?: Record<string, unknown>;
-    }) => Promise<void> } | null;
-    if (!memory?.add) {
-      return;
-    }
-    await memory.add({
-      content: `Task started: ${task}`,
-      type: 'task',
-      metadata: { sessionId: this.config.sessionId, agentId: this.agentId },
-    }).catch(() => {});
-  }
-
-  private async recordTaskCompletionInMemory(task: string, result: TaskResult): Promise<void> {
-    const memory = this.sdk.memory as {
-      add?: (entry: {
-        content: string;
-        type: 'fact' | 'task' | 'observation' | 'error';
-        metadata?: Record<string, unknown>;
-      }) => Promise<void>;
-      saveLastAnswer?: (
-        answer: string,
-        task: string,
-        metadata?: {
-          confidence?: number;
-          completeness?: number;
-          sources?: string[];
-          filesCreated?: string[];
-          filesModified?: string[];
-        },
-      ) => Promise<void>;
-    } | null;
-    if (!memory?.add) {
-      return;
-    }
-    await memory.add({
-      content: result.summary,
-      type: result.success ? 'observation' : 'error',
-      metadata: {
-        sessionId: this.config.sessionId,
-        agentId: this.agentId,
-        success: result.success,
-        filesRead: result.filesRead.length,
-        filesModified: result.filesModified.length,
-        filesCreated: result.filesCreated.length,
-      },
-    }).catch(() => {});
-
-    if (typeof memory.saveLastAnswer === 'function') {
-      await memory.saveLastAnswer(result.summary, task, {
-        confidence: result.success ? 0.8 : 0.35,
-        completeness: result.success ? 0.9 : 0.45,
-        sources: result.filesRead.slice(0, 20),
-        filesCreated: result.filesCreated,
-        filesModified: result.filesModified,
-      }).catch(() => {});
-    }
   }
 
   private deriveDriftDomains(result: TaskResult): string[] {
@@ -1098,4 +1122,3 @@ export class SDKAgentRunner implements IAgentRunner {
     return { status: 'fail', score, reasons };
   }
 }
-

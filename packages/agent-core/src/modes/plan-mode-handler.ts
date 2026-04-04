@@ -11,21 +11,23 @@
 import type {
   AgentConfig,
   AgentEvent,
+  KernelState,
   TaskPlan,
   TaskResult,
   PlanContext,
-  Phase,
 } from '@kb-labs/agent-contracts';
 import type { ToolRegistry } from '@kb-labs/agent-tools';
 import { createToolRegistry, PLAN_READ_ONLY_TOOL_NAMES } from '@kb-labs/agent-tools';
 import type { ModeHandler } from './mode-handler';
 import { AgentSDK, type IAgentRunner } from '@kb-labs/agent-sdk';
+import { createDefaultResponseRequirementsSelector } from '@kb-labs/agent-runtime';
 import { createCoreToolPack } from '../tools/index.js';
 import { SessionManager } from '../planning/session-manager';
-import { PlanDocumentService } from '../planning/plan-document-service';
+import { PlanDocumentService } from '../planning/plan-document-service.js';
 import { TaskMiddleware } from '../middleware/builtin/task-middleware';
+import { createPlanRuntimeProfile } from './plan-profile.js';
 import { promises as fs } from 'node:fs';
-import * as path from 'node:path';
+import { createSessionMemoryBridge } from '../core/session-memory-bridge.js';
 
 class SharedTokenBudget {
   private consumed = 0;
@@ -65,22 +67,37 @@ export class PlanModeHandler implements ModeHandler {
     const sessionId = config.sessionId || `session-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const planContext = config.mode?.context as PlanContext | undefined;
     const complexity = planContext?.complexity || 'medium';
+    const enableDelegation = shouldEnablePlanDelegation(task, complexity);
+    const allowedPlanTools = buildPlanAllowedTools(enableDelegation);
     const existingPlanPath = sessionManager.getSessionPlanPath(sessionId);
     const existingPlan = config.sessionId ? await this.loadPlan(existingPlanPath) : null;
-    const complexityDefault = complexity === 'simple' ? 15 : complexity === 'complex' ? 40 : 25;
-    // Plan mode caps iterations — token budget is the real control, not iterations
+    const planProfile = createPlanRuntimeProfile({
+      workingDir: config.workingDir,
+      sessionManager,
+      task,
+      complexity,
+      existingPlan,
+    });
+    const complexityDefault = complexity === 'simple' ? 20 : complexity === 'complex' ? 40 : 30;
+    // Plan mode caps iterations — token budget is the real control, not iterations.
+    // Always reserve at least 3 iterations for plan_validate + report + one retry,
+    // so exploration never consumes the entire budget.
+    const SYNTHESIS_RESERVE = 3;
     const effectiveMaxIterations = Math.min(config.maxIterations, Math.max(10, complexityDefault));
     const totalPlanBudget = Math.max(
       10_000,
       Math.floor(config.tokenBudget?.maxTokens ?? 1_000_000),
     );
     const sharedBudget = new SharedTokenBudget(totalPlanBudget);
+    const explorationBudget = effectiveMaxIterations - SYNTHESIS_RESERVE;
     const planTaskPrompt = this.buildPlanPrompt(
       task,
       existingPlan?.markdown,
       effectiveMaxIterations,
+      explorationBudget,
       sharedBudget.remaining,
       totalPlanBudget,
+      enableDelegation,
     );
     const budgetSnapshot = () => this.buildBudgetSnapshot(sharedBudget, totalPlanBudget);
 
@@ -112,11 +129,27 @@ export class PlanModeHandler implements ModeHandler {
       // - taskManager: TaskMiddleware that spawns read-only research sub-agents
       //   Sub-agents get allowedTools=PLAN_READ_ONLY_TOOL_NAMES but no taskManager
       //   → task tools won't register for them → no recursion.
-      const planTaskMw = new TaskMiddleware({ maxConcurrent: 5 });
-      planTaskMw.setSpawnFn(async (request) => {
+      const planTaskMw = enableDelegation ? new TaskMiddleware({ maxConcurrent: 5 }) : undefined;
+      const responseRequirementsSelector = createDefaultResponseRequirementsSelector();
+      planTaskMw?.setSpawnFn(async (request) => {
         const researchRegistry = createToolRegistry({
           ...toolRegistry.getContext(),
-          allowedTools: PLAN_READ_ONLY_TOOL_NAMES,
+          currentTask: request.task,
+          allowedTools: allowedPlanTools,
+          sessionMemory: createSessionMemoryBridge(
+            request.workingDir ?? config.workingDir,
+            config.sessionId,
+          ),
+          responseRequirementsResolver: async ({ task, kernel }: {
+            task?: string;
+            answer: string;
+            kernel: KernelState | null;
+          }) =>
+            responseRequirementsSelector.select({
+              state: kernel,
+              messages: [],
+              task: task ?? request.task,
+            }),
           // no taskManager → task tools not registered → no recursion
         });
         const researchRunner = this.createSubRunner(
@@ -137,7 +170,7 @@ export class PlanModeHandler implements ModeHandler {
             },
             onEvent: config.onEvent,
           },
-          researchRegistry as unknown as ToolRegistry,
+          researchRegistry,
         );
         const startedAt = Date.now();
         const result = await researchRunner.execute(request.task);
@@ -158,8 +191,20 @@ export class PlanModeHandler implements ModeHandler {
 
       const planWriterRegistry = createToolRegistry({
         ...toolRegistry.getContext(),
-        allowedTools: PLAN_READ_ONLY_TOOL_NAMES,
+        currentTask: task,
+        allowedTools: allowedPlanTools,
         taskManager: planTaskMw,
+        sessionMemory: createSessionMemoryBridge(config.workingDir, sessionId),
+        responseRequirementsResolver: async ({ task: activeTask, kernel }: {
+          task?: string;
+          answer: string;
+          kernel: KernelState | null;
+        }) =>
+          responseRequirementsSelector.select({
+            state: kernel,
+            messages: [],
+            task: activeTask ?? task,
+          }),
       });
 
       const budgetAwarePrompt = `${planTaskPrompt}\nCURRENT TOKEN BUDGET: ${sharedBudget.remaining}/${totalPlanBudget} tokens remaining. Be concise, avoid redundant exploration, and prioritize executable plan output.`;
@@ -202,26 +247,25 @@ export class PlanModeHandler implements ModeHandler {
           },
           onEvent: childOnEvent,
         },
-        planWriterRegistry as unknown as ToolRegistry,
+        planWriterRegistry,
+        planProfile,
       );
 
       const planningResult = await planRunner.execute(budgetAwarePrompt);
       sharedBudget.consume(planningResult.tokensUsed);
-      const { markdown, incomplete } = this.extractMarkdownPlan(
-        reportedPlanText || planningResult.summary,
-        task,
-        existingPlan?.markdown,
-      );
+      const plan = planningResult.plan ?? this.buildFallbackPlan(sessionId, task, complexity, reportedPlanText || planningResult.summary, existingPlan);
+      const runtimeCompletion = (planningResult.metrics?.runtimeCompletion as {
+        blockedByPolicy?: boolean;
+        validationResults?: Array<{ verdict: 'allow' | 'warn' | 'block'; rationale: string }>;
+      } | undefined);
+      const blockingValidation = runtimeCompletion?.validationResults?.find((result) => result.verdict === 'block');
+      const validation = {
+        passed: !runtimeCompletion?.blockedByPolicy,
+        summary: blockingValidation?.rationale ?? 'Plan validation passed.',
+      };
+      const incomplete = plan.status === 'failed';
 
-      const plan = this.buildTaskPlan({
-        sessionId,
-        task,
-        complexity,
-        markdown,
-        existingPlan,
-      });
-
-      if (incomplete) {
+      if (incomplete || !validation.passed) {
         plan.status = 'failed';
       }
 
@@ -232,28 +276,31 @@ export class PlanModeHandler implements ModeHandler {
         data: {
           phase: 'plan',
           progress: 78,
-          message: incomplete ? 'Plan generation incomplete' : 'Plan draft ready, persisting artifacts',
+          message: incomplete
+            ? 'Plan generation incomplete'
+            : validation.passed
+              ? 'Plan draft validated, persisting artifacts'
+              : `Plan draft failed final validation: ${validation.summary}`,
           ...budgetSnapshot(),
         },
       });
 
       const planPath = sessionManager.getSessionPlanPath(sessionId);
-      await fs.mkdir(path.dirname(planPath), { recursive: true });
-      await fs.writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
-
-      const planDocumentService = new PlanDocumentService(config.workingDir);
-      const draft = await planDocumentService.createDraft(plan);
+      const documentPath = new PlanDocumentService(config.workingDir).getPlanPath(plan);
+      const artifactPaths = [planPath, documentPath];
       const phaseCount = plan.phases.length;
       const stepCount = plan.phases.reduce((sum, phase) => sum + phase.steps.length, 0);
 
-      if (incomplete) {
+      if (incomplete || !validation.passed) {
         this.emit(config, {
           type: 'status:change',
           timestamp: new Date().toISOString(),
           sessionId,
           data: {
             status: 'error',
-            message: 'Plan generation incomplete — agent did not produce a structured plan',
+            message: incomplete
+              ? 'Plan generation incomplete — agent did not produce a structured plan'
+              : `Plan failed deterministic validation — ${validation.summary}`,
             ...budgetSnapshot(),
           },
         });
@@ -271,8 +318,10 @@ export class PlanModeHandler implements ModeHandler {
 
         return {
           success: false,
-          summary: 'Plan generation incomplete — agent could not produce a concrete plan within the budget.',
-          filesCreated: [planPath, draft.path],
+          summary: incomplete
+            ? 'Plan generation incomplete — agent could not produce a concrete plan within the budget.'
+            : `Plan failed deterministic validation — ${validation.summary}`,
+          filesCreated: artifactPaths,
           filesModified: [],
           filesRead: planningResult.filesRead,
           iterations: planningResult.iterations,
@@ -307,7 +356,7 @@ export class PlanModeHandler implements ModeHandler {
       return {
         success: true,
         summary: `Plan draft ready (${phaseCount} phases, ${stepCount} steps). Awaiting approval.`,
-        filesCreated: [planPath, draft.path],
+        filesCreated: artifactPaths,
         filesModified: [],
         filesRead: planningResult.filesRead,
         iterations: planningResult.iterations,
@@ -359,11 +408,13 @@ export class PlanModeHandler implements ModeHandler {
     task: string,
     existingMarkdown?: string,
     maxIterations?: number,
+    explorationBudget?: number,
     remainingTokens?: number,
     totalTokens?: number,
+    enableDelegation = false,
   ): string {
     const budget = maxIterations || 10;
-    const researchBudget = Math.ceil(budget * 0.6);
+    const researchBudget = explorationBudget ?? Math.ceil(budget * (enableDelegation ? 0.55 : 0.35));
     const remainingText = typeof remainingTokens === 'number' ? remainingTokens.toLocaleString('en-US') : 'unknown';
     const totalText = typeof totalTokens === 'number' ? totalTokens.toLocaleString('en-US') : 'unknown';
     const revisionSection = existingMarkdown
@@ -380,8 +431,19 @@ User request:
 ${task}
 ${revisionSection}
 
-BUDGET: You have ~${budget} iterations total. Use ~${researchBudget} for research, then WRITE the plan.
+ITERATION BUDGET: ${budget} iterations total.
+- Iterations 1–${researchBudget}: RESEARCH ONLY (fs_list, fs_read, grep_search, glob_search).
+- Iteration ${researchBudget + 1}: STOP exploring. Write the plan markdown, call plan_validate, then report.
+- Iterations ${researchBudget + 1}–${budget}: SYNTHESIS ONLY (plan_validate, report, ask_user if needed).
+⚠️  If you are still reading files at iteration ${researchBudget}, stop immediately and start writing.
 TOKEN BUDGET: ${remainingText}/${totalText} tokens remaining. Spend tokens carefully and avoid duplicate scans.
+
+PLAN FILE — iterative plan building:
+- Use \`plan_write(content="...")\` to save your plan to disk at any point during exploration.
+- Write early, update often: after each discovery, update the plan with what you learned.
+- The plan file survives context compaction — your work is never lost even in long sessions.
+- Use \`plan_write(append="...")\` to add new sections without rewriting the whole plan.
+- Workflow: explore → plan_write → explore more → plan_write(content=updated_plan) → plan_validate → report
 
 RESEARCH QUALITY GATE — before writing the plan, verify:
 1. You found the actual entry point files for the feature (not just files that happen to mention keywords).
@@ -389,7 +451,8 @@ RESEARCH QUALITY GATE — before writing the plan, verify:
 3. Do NOT reference a file in the plan unless you have read it and confirmed it is relevant.
 4. If you are unsure where something lives — use fs_list on the top-level directories first to orient yourself.
 
-DELEGATION WITH task_submit (ASYNC SUB-AGENTS):
+${enableDelegation
+  ? `DELEGATION WITH task_submit (ASYNC SUB-AGENTS):
 You have access to async task tools for parallel sub-agent delegation:
 - \`task_submit\` — fire off a sub-agent in the background, get a task ID immediately
 - \`task_status\` — check progress of running tasks (without blocking)
@@ -403,20 +466,15 @@ WHEN TO DELEGATE — use task_submit if ANY of these are true:
 - The task mentions "ALL repositories" or "all packages" — delegate each repo/group to a sub-agent
 
 HOW TO USE EFFECTIVELY:
-1. Submit 2-5 parallel tasks: \`task_submit({ description: "Analyze kb-labs-core deps", task: "Read all package.json files in kb-labs-core/packages/, list dependencies...", preset: "research" })\`
-2. Continue your own work while sub-agents run in parallel
-3. Collect results: \`task_collect({ taskId: "abc123" })\` — blocks until that task completes
-4. Synthesize all results into the final plan
-
-TIPS:
-- Give each sub-agent ONE focused question with clear deliverables
-- Sub-agents run concurrently — submit multiple before collecting any
-- Sub-agents return findings as text — YOU synthesize and write the plan
-- budgetPercent defaults to 20% per task — adjust if needed
-
-WHEN NOT TO DELEGATE:
-- You only need to read 1-2 small files (<200 lines each)
-- Your token budget is almost exhausted
+1. Submit 2-3 parallel tasks, not more.
+2. Continue your own work while sub-agents run in parallel.
+3. Collect results with \`task_collect\` only when they are clearly relevant to the final plan.
+4. Stop delegating once you have enough grounded evidence for the main implementation path.`
+  : `SCOPED PLANNING:
+- This task is narrow enough that async delegation is usually counterproductive.
+- Prefer directly reading the 2-4 most relevant files, then draft the plan.
+- Do NOT branch into broad workspace scans once the core implementation path is clear.
+- If the first file guess is wrong, re-orient with \`fs_list\` or \`glob_search\`, then continue locally.`}
 
 Output requirements:
 - Final output must be a single markdown document.
@@ -471,159 +529,45 @@ You MUST call the \`report\` tool as your final action. Do NOT write the plan as
 - Even if you think you are done, you MUST call \`report\` to submit the plan.`;
   }
 
-  private extractMarkdownPlan(summary: string, task: string, existingMarkdown?: string): { markdown: string; incomplete: boolean } {
-    const text = (summary || '').trim();
-    if (!text) {
-      return { markdown: this.buildIncompleteMarkdown(task, existingMarkdown), incomplete: true };
-    }
-
-    // Check the raw text first — plan may contain internal code fences (```typescript, etc.)
-    // that would confuse a greedy fenced-block extraction.
-    // Accept plans starting with # or ## headings (agents sometimes skip the top-level #)
-    const hasStructure = (t: string) => /^#{1,3}\s+/m.test(t) && t.split('\n').filter(l => /^#{1,3}\s+/.test(l)).length >= 2;
-    if (hasStructure(text)) {
-      return { markdown: text, incomplete: false };
-    }
-
-    // If raw text doesn't look like a plan, try extracting from a wrapping markdown fence
-    const fenced = /^```(?:markdown|md)\n([\s\S]*?)```\s*$/i.exec(text);
-    const candidate = fenced?.[1]?.trim() || text;
-    if (hasStructure(candidate)) {
-      return { markdown: candidate, incomplete: false };
-    }
-
-    return { markdown: this.buildIncompleteMarkdown(task, candidate), incomplete: true };
-  }
-
-  private buildTaskPlan(input: {
-    sessionId: string;
-    task: string;
-    complexity: 'simple' | 'medium' | 'complex';
-    markdown: string;
-    existingPlan: TaskPlan | null;
-  }): TaskPlan {
-    const now = new Date().toISOString();
-    const planId = input.existingPlan?.id || `plan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    const phases = this.parsePhasesFromMarkdown(input.markdown, planId);
-    return {
-      id: planId,
-      sessionId: input.sessionId,
-      task: input.task,
-      mode: 'plan',
-      phases,
-      estimatedDuration: input.existingPlan?.estimatedDuration || 'Unknown',
-      complexity: input.complexity,
-      createdAt: input.existingPlan?.createdAt || now,
-      updatedAt: now,
-      status: 'draft',
-      markdown: input.markdown,
-    };
-  }
-
-  private parsePhasesFromMarkdown(markdown: string, planId?: string): Phase[] {
-    const lines = (markdown || '').replace(/\r\n/g, '\n').split('\n');
-    const headingIndexes: number[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (/^###\s+/.test(lines[i] || '') || /^##\s+Phase\b/i.test(lines[i] || '')) {
-        headingIndexes.push(i);
-      }
-    }
-
-    const extractBullets = (chunk: string[]): string[] =>
-      chunk
-        .map((line) => {
-          const bullet = /^\s*[-*]\s+(.+)\s*$/.exec(line);
-          if (bullet?.[1]) {return bullet[1].trim();}
-          const numbered = /^\s*\d+\.\s+(.+)\s*$/.exec(line);
-          return numbered?.[1]?.trim() || '';
-        })
-        .filter(Boolean);
-
-    const anchorPrefix = planId ? `${planId}:` : '';
-
-    if (headingIndexes.length === 0) {
-      const bullets = extractBullets(lines);
-      return [{
-        id: 'phase-1',
-        name: 'Plan Execution',
-        description: 'Execute the drafted plan.',
-        dependencies: [],
-        status: 'pending',
-        anchor: `${anchorPrefix}phase-1`,
-        steps: (bullets.length > 0 ? bullets : ['Execute approved plan changes']).slice(0, 20).map((item, idx) => ({
-          id: `step-1-${idx + 1}`,
-          action: item,
-          expectedOutcome: `Completed: ${item}`,
-          status: 'pending',
-          anchor: `${anchorPrefix}phase-1:step-${idx + 1}`,
-        })),
-      }];
-    }
-
-    return headingIndexes.map((start, idx) => {
-      const end = headingIndexes[idx + 1] ?? lines.length;
-      const title = (lines[start] || '').replace(/^#{2,3}\s+/, '').trim() || `Phase ${idx + 1}`;
-      const body = lines.slice(start + 1, end);
-      const bullets = extractBullets(body);
-      const description = body.find((line) => line.trim().length > 0 && !/^\s*(?:[-*]|\d+\.)\s+/.test(line))?.trim()
-        || `Execute ${title}`;
-      const phaseNum = idx + 1;
-      return {
-        id: `phase-${phaseNum}`,
-        name: title,
-        description,
-        dependencies: idx === 0 ? [] : [`phase-${idx}`],
-        status: 'pending',
-        anchor: `${anchorPrefix}phase-${phaseNum}`,
-        steps: (bullets.length > 0 ? bullets : [`Execute ${title}`]).slice(0, 20).map((item, stepIdx) => ({
-          id: `step-${phaseNum}-${stepIdx + 1}`,
-          action: item,
-          expectedOutcome: `Completed: ${item}`,
-          status: 'pending',
-          anchor: `${anchorPrefix}phase-${phaseNum}:step-${stepIdx + 1}`,
-        })),
-      };
-    });
-  }
-
-  private buildIncompleteMarkdown(task: string, capturedText?: string): string {
-    const details = (capturedText || '').trim();
-    const researchNotes = details
-      ? details.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 10)
-      : [];
-
-    return [
-      `# Plan: ${task}`,
-      '',
-      '> **WARNING:** This is an incomplete plan. The agent could not generate a proper plan within the iteration budget.',
-      '',
-      '## Status: INCOMPLETE',
-      '',
-      '## Task',
-      `- User request: ${task}`,
-      '- The agent was unable to produce a concrete, actionable plan.',
-      '',
-      ...(researchNotes.length > 0
-        ? [
-            '## Research Notes (raw)',
-            'The following notes were captured during exploration but do not constitute a plan:',
-            '',
-            ...researchNotes.map((line) => `- ${line}`),
-            '',
-          ]
-        : []),
-      '## Next Steps',
-      '- Re-run plan mode with a more focused task description',
-      '- Provide additional context or constraints to guide the agent',
-      '- Consider breaking the task into smaller sub-tasks',
-    ].join('\n');
-  }
-
-
-  private createSubRunner(config: AgentConfig, toolRegistry: ToolRegistry): IAgentRunner {
+  private createSubRunner(config: AgentConfig, toolRegistry: ToolRegistry, planProfile?: ReturnType<typeof createPlanRuntimeProfile>): IAgentRunner {
     return new AgentSDK()
+      .registerRuntimeProfile(planProfile ?? createPlanRuntimeProfile())
       .register(createCoreToolPack(toolRegistry))
       .createRunner(config);
+  }
+
+  private buildFallbackPlan(
+    sessionId: string,
+    task: string,
+    complexity: 'simple' | 'medium' | 'complex',
+    summary: string,
+    existingPlan: TaskPlan | null,
+  ): TaskPlan {
+    const markdown = [
+      `# Plan: ${task}`,
+      '',
+      '> **WARNING:** Shared plan result mapper did not produce a structured plan; using fallback artifact.',
+      '',
+      '## Task',
+      task,
+      '',
+      '## Notes',
+      summary || 'No plan content was produced.',
+    ].join('\n');
+
+    return {
+      id: existingPlan?.id || `plan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      sessionId,
+      task,
+      mode: 'plan',
+      phases: [],
+      estimatedDuration: existingPlan?.estimatedDuration || 'Unknown',
+      complexity,
+      createdAt: existingPlan?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: 'failed',
+      markdown,
+    };
   }
 
   private buildBudgetSnapshot(sharedBudget: SharedTokenBudget, totalBudget: number): {
@@ -646,4 +590,35 @@ You MUST call the \`report\` tool as your final action. Do NOT write the plan as
       parentAgentId: config.parentAgentId,
     });
   }
+}
+
+function shouldEnablePlanDelegation(
+  task: string,
+  complexity: 'simple' | 'medium' | 'complex',
+): boolean {
+  if (complexity === 'complex') {
+    return true;
+  }
+  return /\b(all repositories|all repos|all packages|entire workspace|whole workspace|across the repo|across repositories|monorepo-wide|workspace-wide)\b/i.test(task);
+}
+
+function buildPlanAllowedTools(enableDelegation: boolean): Set<string> {
+  if (enableDelegation) {
+    return new Set(PLAN_READ_ONLY_TOOL_NAMES);
+  }
+  return new Set([
+    'fs_read',
+    'fs_list',
+    'glob_search',
+    'grep_search',
+    'find_definition',
+    'code_stats',
+    'memory_get',
+    'memory_finding',
+    'memory_blocker',
+    'archive_recall',
+    'ask_user',
+    'report',
+    'plan_validate',
+  ]);
 }

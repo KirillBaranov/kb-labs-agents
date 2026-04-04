@@ -15,3 +15,4 @@ export { SDKAgentRunner } from './runner.js';
 export { LoopContextImpl } from './loop-context.js';
 export { ToolExecutor } from './tool-executor.js';
 export { createRunContext, ContextMetaImpl } from './run-context.js';
+export { createSessionMemoryBridge } from './session-memory-bridge.js';

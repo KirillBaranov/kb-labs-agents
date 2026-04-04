@@ -32,7 +32,10 @@
   },
   "dependencies": {
     "@kb-labs/agent-contracts": "workspace:*",
+    "@kb-labs/agent-kernel": "workspace:*",
+    "@kb-labs/agent-runtime": "workspace:*",
     "@kb-labs/agent-sdk": "workspace:*",
+    "@kb-labs/agent-store": "workspace:*",
     "@kb-labs/agent-tools": "workspace:*",
     "@kb-labs/agent-history": "workspace:*",
     "@kb-labs/agent-tracing": "workspace:*",

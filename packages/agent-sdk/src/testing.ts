@@ -137,6 +137,7 @@ export function makeLoopCtx(opts: LoopCtxOptions = {}): LoopContext {
     executeTools: vi.fn(async (_calls: ToolCallInput[]): Promise<ToolOutput[]> =>
       opts.toolOutputs ?? [],
     ),
+    evaluateRun: vi.fn(async () => null),
     beforeIteration: vi.fn(async () => 'continue' as const),
     afterIteration: vi.fn(async () => {}),
   };

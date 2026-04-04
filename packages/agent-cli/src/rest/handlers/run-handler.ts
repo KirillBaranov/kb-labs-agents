@@ -5,14 +5,15 @@
  */
 
 import { defineHandler, useAnalytics, useCache, useConfig, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
-import { SessionManager, createCoreToolPack, bootstrapAgentSDK } from '@kb-labs/agent-core';
+import { SessionManager, createCoreToolPack, bootstrapAgentSDK, createSessionMemoryBridge } from '@kb-labs/agent-core';
+import { createDefaultResponseRequirementsSelector } from '@kb-labs/agent-runtime';
 import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 
 // Register SDKAgentRunner as the RunnerFactory (idempotent — runs once per process)
 bootstrapAgentSDK();
 import { AgentSDK } from '@kb-labs/agent-sdk';
 import { createToolRegistry } from '@kb-labs/agent-tools';
-import type { RunRequest, RunResponse, AgentsPluginConfig } from '@kb-labs/agent-contracts';
+import type { RunRequest, RunResponse, AgentsPluginConfig, KernelState } from '@kb-labs/agent-contracts';
 import path from 'node:path';
 import fs from 'node:fs';
 import {
@@ -190,10 +191,25 @@ export default defineHandler({
     });
 
     // Create tool registry with standard tools
+    const sessionMemory = createSessionMemoryBridge(workingDir, sessionId);
+    const responseRequirementsSelector = createDefaultResponseRequirementsSelector();
     const toolRegistry = createToolRegistry({
       workingDir,
+      currentTask: body.task,
+      sessionId,
       verbose: body.verbose,
       cache: useCache(),
+      sessionMemory,
+      responseRequirementsResolver: async ({ task, kernel }: {
+        task?: string;
+        answer: string;
+        kernel: KernelState | null;
+      }) =>
+        responseRequirementsSelector.select({
+          state: kernel,
+          messages: [],
+          task: task ?? body.task,
+        }),
     });
     const agentsConfig = await useConfig<AgentsPluginConfig>();
 

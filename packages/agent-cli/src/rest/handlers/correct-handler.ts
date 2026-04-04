@@ -43,11 +43,15 @@ export default defineHandler({
       };
     }
 
-    // Inject correction via orchestrator
-    const result = await (run as any).orchestrator.injectCorrection(
-      body.message,
-      body.targetAgentId
-    );
+    // Inject correction into the running agent via the public IAgentRunner API
+    const correctionId = `corr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    run.agent?.injectUserContext(body.message);
+    const result: CorrectionResponse = {
+      correctionId,
+      routedTo: [run.agent?.agentId ?? runId],
+      reason: 'Injected via injectUserContext',
+      applied: !!run.agent,
+    };
 
     // Track correction
     const analytics = useAnalytics();

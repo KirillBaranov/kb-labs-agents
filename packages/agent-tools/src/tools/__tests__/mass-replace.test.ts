@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
-import { createMassReplaceTool } from '../mass-replace.js';
+import { createMassReplaceTool } from '../filesystem/mass-replace.js';
 import type { ToolContext } from '../../types.js';
 import type { ToolResult } from '@kb-labs/agent-contracts';
 

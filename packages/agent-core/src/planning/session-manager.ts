@@ -5,6 +5,7 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { AgentSession, AgentSessionInfo, AgentMode, AgentEvent, Turn, FileChangeSummary } from '@kb-labs/agent-contracts';
+import { SessionArtifactStore } from '@kb-labs/agent-store';
 import { TurnAssembler } from './turn-assembler.js';
 
 /**
@@ -56,6 +57,7 @@ export interface SessionKpiBaseline {
  */
 export class SessionManager {
   private workingDir: string;
+  private readonly artifactStore: SessionArtifactStore;
 
   /** In-memory cache of per-run sequence counters (initialized lazily from NDJSON) */
   private runSeqCounters = new Map<string, number>();
@@ -82,6 +84,7 @@ export class SessionManager {
 
   constructor(workingDir: string) {
     this.workingDir = workingDir;
+    this.artifactStore = new SessionArtifactStore(workingDir);
   }
 
   /**
@@ -156,6 +159,7 @@ export class SessionManager {
 
     const sessionFile = path.join(sessionDir, 'session.json');
     await fs.writeFile(sessionFile, JSON.stringify(session, null, 2), 'utf-8');
+    await this.artifactStore.saveSessionMetadata(session as AgentSession & Record<string, unknown>);
   }
 
   /**
@@ -324,11 +328,13 @@ export class SessionManager {
   private async _addEventInternal(sessionId: string, event: AgentEvent): Promise<void> {
     const sessionDir = this.getSessionDir(sessionId);
     await fs.mkdir(sessionDir, { recursive: true });
+    await this.artifactStore.ensureSessionArtifacts(sessionId);
 
     const runId = event.runId || 'unknown';
     const sessionSeq = await this.getNextSessionSeq(sessionId, runId);
     const line = JSON.stringify({ ...event, sessionSeq }) + '\n';
     await fs.appendFile(this.getEventsPath(sessionId), line, 'utf-8');
+    await fs.appendFile(this.artifactStore.getArtifactPath(sessionId, 'trace.ndjson'), line, 'utf-8');
 
     // Process event and update turn snapshot
     await this.processEventAndUpdateTurn(sessionId, { ...event, sessionSeq });

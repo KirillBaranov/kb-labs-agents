@@ -109,7 +109,7 @@ export const SUB_AGENT_PRESETS = {
   /** Full read/write capabilities for implementation tasks. */
   execute: {
     tools: new Set<string>([
-      'fs_read', 'fs_write', 'fs_patch', 'fs_list', 'mass_replace',
+      'fs_read', 'fs_write', 'fs_patch', 'fs_replace', 'fs_list', 'mass_replace',
       'glob_search', 'grep_search', 'find_definition', 'code_stats',
       'shell_exec',
       'memory_get', 'memory_finding', 'memory_blocker', 'memory_correction',
@@ -129,6 +129,20 @@ export const SUB_AGENT_PRESETS = {
       'report',
     ]),
     maxIterations: 50,
+  },
+  /**
+   * Adversarial verification: independent agent that checks another agent's work.
+   * Has read + shell access to run tests, check imports, verify builds.
+   * Reports PASS/FAIL verdict with evidence.
+   */
+  verification: {
+    tools: new Set<string>([
+      'fs_read', 'fs_list',
+      'glob_search', 'grep_search', 'find_definition', 'code_stats',
+      'shell_exec',
+      'report',
+    ]),
+    maxIterations: 25,
   },
 } as const;
 
@@ -174,6 +188,7 @@ export const PLAN_READ_ONLY_TOOL_NAMES = new Set<string>([
   'task_status',    // check progress of delegated tasks
   'task_collect',   // wait for and collect sub-agent results
   'plan_validate',  // LLM-based plan quality gate (agent calls this to self-assess before report)
+  'plan_write',     // Write/update plan file on disk (iterative plan building)
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════

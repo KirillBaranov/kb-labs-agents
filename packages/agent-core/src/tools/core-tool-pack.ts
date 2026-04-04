@@ -48,11 +48,29 @@ const READ_ONLY_TOOLS = new Set([
   'ask_parent',
 ]);
 
+/**
+ * Tools safe to execute concurrently (via Promise.all).
+ * Criteria: no shared mutable state, no file writes, no side effects.
+ * Conservative default: only read-only tools that don't interact with user.
+ */
+const CONCURRENT_SAFE_TOOLS = new Set([
+  'fs_read',
+  'fs_list',
+  'glob_search',
+  'grep_search',
+  'find_definition',
+  'code_stats',
+  'memory_get',
+  'archive_recall',
+  'todo_get',
+]);
+
 /** Tool capability categories */
 const TOOL_CAPABILITIES: Record<string, string> = {
   fs_read: 'filesystem',
   fs_write: 'filesystem',
   fs_patch: 'filesystem',
+  fs_replace: 'filesystem',
   fs_list: 'filesystem',
   glob_search: 'search',
   grep_search: 'search',
@@ -90,6 +108,7 @@ export function createCoreToolPack(registry: LegacyToolRegistry): ToolPack {
     return {
       definition: def as PackedTool['definition'],
       readOnly: READ_ONLY_TOOLS.has(name),
+      concurrencySafe: CONCURRENT_SAFE_TOOLS.has(name),
       capability: TOOL_CAPABILITIES[name] ?? 'general',
       execute: (input: Record<string, unknown>) => registry.execute(name, input),
     };

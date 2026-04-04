@@ -10,12 +10,14 @@ import {
   PlanDocumentService,
   SpecModeHandler,
   bootstrapAgentSDK,
+  createSessionMemoryBridge,
   createCoreToolPack,
 } from '@kb-labs/agent-core';
 import { AgentSDK } from '@kb-labs/agent-sdk';
+import { createDefaultResponseRequirementsSelector } from '@kb-labs/agent-runtime';
 import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 import { createToolRegistry } from '@kb-labs/agent-tools';
-import type { AgentConfig, ModeConfig, AgentMode, AgentEvent, AgentsPluginConfig } from '@kb-labs/agent-contracts';
+import type { AgentConfig, ModeConfig, AgentMode, AgentEvent, AgentsPluginConfig, KernelState } from '@kb-labs/agent-contracts';
 import type { TaskPlan } from '@kb-labs/agent-contracts';
 import { promises as fs } from 'node:fs';
 import { createEventRenderer, createMinimalRenderer, createDetailedRenderer, createDebugRenderer } from '../ui/index.js';
@@ -39,6 +41,7 @@ type RunInput = {
   files?: string[];
   trace?: string;
   approve?: boolean;
+  execute?: boolean;
   spec?: boolean;
   'dry-run'?: boolean;
   debug?: boolean;
@@ -104,6 +107,7 @@ export default defineCommand({
         files,
         trace,
         approve: approveRaw = false,
+        execute: executeRaw = false,
         spec: specRaw = false,
         'dry-run': dryRunRaw = false,
         debug: debugRaw = false,
@@ -116,6 +120,7 @@ export default defineCommand({
       const quiet = parseBooleanFlag(quietRaw, false);
       const detailed = parseBooleanFlag(detailedRaw, false);
       const approve = parseBooleanFlag(approveRaw, false);
+      const executeAfterPlan = parseBooleanFlag(executeRaw, false);
       const spec = parseBooleanFlag(specRaw, false);
       const dryRun = parseBooleanFlag(dryRunRaw, false);
       const debug = parseBooleanFlag(debugRaw, false);
@@ -247,15 +252,29 @@ export default defineCommand({
         // Create shared file tracking (for edit protection)
         const filesRead = new Set<string>();
         const filesReadHash = new Map<string, string>();
+        const sessionMemory = createSessionMemoryBridge(workingDir, effectiveSessionId);
+        const responseRequirementsSelector = createDefaultResponseRequirementsSelector();
 
         // Create tool registry
         const toolRegistry = createToolRegistry({
           workingDir,
+          currentTask: task,
           sessionId: effectiveSessionId,
           verbose: false, // Disable tool registry verbose - we have event renderer
           cache: useCache(),
           filesRead,
           filesReadHash,
+          sessionMemory,
+          responseRequirementsResolver: async ({ task: activeTask, kernel }: {
+            task?: string;
+            answer: string;
+            kernel: KernelState | null;
+          }) =>
+            responseRequirementsSelector.select({
+              state: kernel,
+              messages: [],
+              task: activeTask ?? task,
+            }),
         });
         const agentsConfig = await useConfig<AgentsPluginConfig>();
         const effectiveBudget = typeof budgetOverride === 'number' && budgetOverride > 0
@@ -390,7 +409,7 @@ export default defineCommand({
         const sdk = new AgentSDK();
         sdk.register(createCoreToolPack(toolRegistry));
         const runner = sdk.createRunner(config);
-        const result = await runner.execute(task);
+        let result = await runner.execute(task);
 
         // Execution finished — cancel the timer immediately so it doesn't fire.
         clearTimeout_();
@@ -485,7 +504,21 @@ export default defineCommand({
             );
 
             ctx.ui?.success?.(`Plan approved: ${approvedPlan.id}`);
-            ctx.ui?.info?.(`Execute: kb agent run --session-id=${effectiveSessionId}`);
+
+            if (executeAfterPlan) {
+              // --execute: immediately run the approved plan in execute mode
+              ctx.ui?.info?.('Executing approved plan...');
+              const executeConfig: AgentConfig = {
+                ...config,
+                mode: { mode: 'execute' },
+              };
+              const executeSdk = new AgentSDK();
+              executeSdk.register(createCoreToolPack(toolRegistry));
+              const executeRunner = executeSdk.createRunner(executeConfig);
+              result = await executeRunner.execute(task);
+            } else {
+              ctx.ui?.info?.(`Execute: kb agent run --session-id=${effectiveSessionId}`);
+            }
 
             // Optional: generate spec after auto-approve
             if (spec && approvedPlan) {

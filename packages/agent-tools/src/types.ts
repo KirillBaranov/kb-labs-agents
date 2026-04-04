@@ -2,7 +2,18 @@
  * Tool types and interfaces
  */
 
-import type { ToolDefinition, ToolResult, SpawnAgentRequest, SpawnAgentResult, AsyncTask } from '@kb-labs/agent-contracts';
+import type {
+  ToolDefinition,
+  ToolResult,
+  SpawnAgentRequest,
+  SpawnAgentResult,
+  AsyncTask,
+  ToolResultArtifact,
+  EvidenceRequirements,
+  KernelState,
+  RepositoryModel,
+  ToolCapability,
+} from '@kb-labs/agent-contracts';
 import type { ICache } from '@kb-labs/core-platform';
 import type { IWorkspaceProvider } from './workspace-provider.js';
 
@@ -17,6 +28,32 @@ export type ToolExecutor = (input: Record<string, unknown>) => Promise<ToolResul
 export interface Tool {
   definition: ToolDefinition;
   executor: ToolExecutor;
+}
+
+export interface ToolPolicy {
+  id: string;
+  allows(toolName: string, context: ToolContext): boolean;
+  allowsCapability?(capability: ToolCapability, context: ToolContext, toolName: string): boolean;
+}
+
+export interface ToolExecutionEnvelope {
+  result: ToolResult;
+  artifact: ToolResultArtifact;
+}
+
+export interface SessionMemoryBridge {
+  loadKernelState(): Promise<KernelState | null>;
+  recordConstraint(content: string): Promise<KernelState>;
+  recordCorrection(input: {
+    content: string;
+    invalidates?: string[];
+    asConstraint?: boolean;
+  }): Promise<KernelState>;
+}
+
+export interface ToolResponseRequirements {
+  requirements: EvidenceRequirements;
+  rationale: string;
 }
 
 /**
@@ -38,6 +75,8 @@ export interface IArchiveMemory {
  */
 export interface ToolContext {
   workingDir: string;
+  repositoryModel?: RepositoryModel;
+  currentTask?: string;
   sessionId?: string;
   verbose?: boolean;
   /** Shared platform cache adapter (optional) */
@@ -71,6 +110,16 @@ export interface ToolContext {
    * @see ADR-0017: Workspace Agent Architecture (Phase 3)
    */
   workspaceProvider?: IWorkspaceProvider;
+  /** Canonical session memory bridge backed by kernel/store artifacts. */
+  sessionMemory?: SessionMemoryBridge;
+  /** Optional resolver for answer-time evidence requirements. */
+  responseRequirementsResolver?: (input: {
+    task?: string;
+    answer: string;
+    kernel: KernelState | null;
+  }) => Promise<ToolResponseRequirements> | ToolResponseRequirements;
+  /** Optional capability map for internal or external tool providers. */
+  toolCapabilitiesByName?: Map<string, ToolCapability[]>;
 }
 
 /**

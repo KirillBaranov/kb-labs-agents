@@ -4,13 +4,15 @@
  */
 
 import { defineHandler, type RestInput, type PluginContextV3 } from '@kb-labs/sdk';
-import { SessionManager, SpecModeHandler } from '@kb-labs/agent-core';
+import { SessionManager, SpecModeHandler, createSessionMemoryBridge } from '@kb-labs/agent-core';
+import { createDefaultResponseRequirementsSelector } from '@kb-labs/agent-runtime';
 import { IncrementalTraceWriter } from '@kb-labs/agent-tracing';
 import { createToolRegistry } from '@kb-labs/agent-tools';
 import type {
   AgentEvent,
   GenerateSpecRequest,
   GenerateSpecResponse,
+  KernelState,
   TaskPlan,
 } from '@kb-labs/agent-contracts';
 import { promises as fs } from 'node:fs';
@@ -76,7 +78,24 @@ export default defineHandler({
 
     // Start spec generation in background
     const specHandler = new SpecModeHandler();
-    const toolRegistry = createToolRegistry({ workingDir });
+    const sessionMemory = createSessionMemoryBridge(workingDir, sessionId);
+    const responseRequirementsSelector = createDefaultResponseRequirementsSelector();
+    const toolRegistry = createToolRegistry({
+      workingDir,
+      currentTask: `Generate spec for plan ${plan.id}`,
+      sessionId,
+      sessionMemory,
+      responseRequirementsResolver: async ({ task, kernel }: {
+        task?: string;
+        answer: string;
+        kernel: KernelState | null;
+      }) =>
+        responseRequirementsSelector.select({
+          state: kernel,
+          messages: [],
+          task: task ?? `Generate spec for plan ${plan.id}`,
+        }),
+    });
 
     const specPromise = (async () => {
       const configOnEvent = (event: AgentEvent) => {

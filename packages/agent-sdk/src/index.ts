@@ -77,6 +77,33 @@ export type { AgentRole, AgentProfile } from './profile.js';
 // Event bus
 export type { AgentEvents, Unsubscribe, AgentEventBus } from './event-bus.js';
 
+// Runtime extensions
+export type {
+  ArtifactWriter,
+  CompletionPolicy,
+  OutputValidationResult,
+  OutputValidator,
+  DirectAnswerResolution,
+  ModePolicy,
+  MemoryCapability,
+  PromptContextSelector,
+  PromptProjector,
+  RepositoryDiagnosticsProvider,
+  RepositoryProbe,
+  RepositoryProbeObservation,
+  ResultMapper,
+  ResultMapperResult,
+  ResponseRequirements,
+  ResponseRequirementsSelector,
+  RuntimeProfile,
+  RunEvaluator,
+  SessionRecallResolver,
+  ToolCapabilityResolver,
+  ToolPolicy,
+  RuntimeObserver,
+  TurnInterpreter,
+} from './runtime-extensions.js';
+
 // Spawner
 export type { SpawnOptions, SpawnResult, IAgentSpawner } from './spawner.js';
 

@@ -20,6 +20,14 @@ export interface BudgetPolicy {
   forceSynthesisOnHardLimit: boolean;
 }
 
+/**
+ * Diminishing returns detection thresholds.
+ * If N consecutive iterations each consume fewer than DELTA_THRESHOLD tokens,
+ * the agent is spinning without meaningful work — inject convergence nudge.
+ */
+const DIMINISHING_RETURNS_WINDOW = 3;
+const DIMINISHING_DELTA_THRESHOLD = 500;
+
 export class BudgetMiddleware {
   readonly name = 'budget';
   readonly order = 10;
@@ -28,6 +36,10 @@ export class BudgetMiddleware {
   private readonly policy: BudgetPolicy;
   private readonly getTokensUsed: () => number;
   private _convergenceNudgeSent = false;
+  /** Token deltas per iteration for diminishing returns detection */
+  private _iterationDeltas: number[] = [];
+  private _lastIterTokens = 0;
+  private _diminishingNudgeSent = false;
 
   constructor(policy: BudgetPolicy, getTokensUsed: () => number) {
     this.policy = policy;
@@ -43,6 +55,18 @@ export class BudgetMiddleware {
 
     const used = this.getTokensUsed();
     const hardLimit = this.policy.maxTokens * this.policy.hardLimitRatio;
+
+    // ── Diminishing returns tracking ──
+    // Track how many tokens each iteration consumes.
+    // If several consecutive iterations produce tiny deltas, agent is spinning.
+    const delta = used - this._lastIterTokens;
+    this._lastIterTokens = used;
+    if (ctx.iteration > 1) {
+      this._iterationDeltas.push(delta);
+      if (this._iterationDeltas.length > DIMINISHING_RETURNS_WINDOW) {
+        this._iterationDeltas.shift();
+      }
+    }
 
     // Expose budget state for Status Block
     ctx.meta.set('budget', 'tokensUsed', used);
@@ -96,10 +120,43 @@ export class BudgetMiddleware {
       };
     }
 
+    // ── Diminishing returns detection ──
+    // If last N iterations each consumed < threshold tokens, agent is spinning.
+    // Send one nudge (separate from soft limit nudge).
+    if (
+      !this._diminishingNudgeSent &&
+      this._iterationDeltas.length >= DIMINISHING_RETURNS_WINDOW &&
+      this._iterationDeltas.every(d => d < DIMINISHING_DELTA_THRESHOLD)
+    ) {
+      this._diminishingNudgeSent = true;
+      ctx.run.eventBus.emit('middleware:event', {
+        name: 'budget',
+        event: 'diminishing_returns',
+        data: {
+          recentDeltas: [...this._iterationDeltas],
+          threshold: DIMINISHING_DELTA_THRESHOLD,
+          window: DIMINISHING_RETURNS_WINDOW,
+        },
+      });
+      return {
+        messages: [
+          ...ctx.messages,
+          {
+            role: 'user' as const,
+            content:
+              `⚠️ DIMINISHING RETURNS: Your last ${DIMINISHING_RETURNS_WINDOW} iterations each consumed fewer than ${DIMINISHING_DELTA_THRESHOLD} tokens — you are not making meaningful progress. Either call \`report\` with what you have, try a completely different approach, or call \`ask_user\` for guidance.`,
+          },
+        ],
+      };
+    }
+
     return undefined;
   }
 
   reset(): void {
     this._convergenceNudgeSent = false;
+    this._iterationDeltas = [];
+    this._lastIterTokens = 0;
+    this._diminishingNudgeSent = false;
   }
 }

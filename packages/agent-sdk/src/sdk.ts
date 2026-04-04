@@ -31,6 +31,21 @@ import type { StopCondition } from './stop-condition.js';
 import type { OutputProcessor } from './output-processor.js';
 import type { ToolGuard } from './guard.js';
 import type { InputNormalizer } from './input-normalizer.js';
+import type {
+  MemoryCapability,
+  ModePolicy,
+  PromptContextSelector,
+  PromptProjector,
+  RepositoryDiagnosticsProvider,
+  RepositoryProbe,
+  ResponseRequirementsSelector,
+  RuntimeProfile,
+  RunEvaluator,
+  SessionRecallResolver,
+  ToolCapabilityResolver,
+  RuntimeObserver,
+  TurnInterpreter,
+} from './runtime-extensions.js';
 import type { TaskResult } from '@kb-labs/agent-contracts';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,6 +83,19 @@ export interface IAgentSDK {
   addOutputProcessor(processor: OutputProcessor): IAgentSDK;
   addGuard(guard: ToolGuard): IAgentSDK;
   addInputNormalizer(normalizer: InputNormalizer): IAgentSDK;
+  registerModePolicy(policy: ModePolicy): IAgentSDK;
+  registerMemoryCapability(capability: MemoryCapability): IAgentSDK;
+  registerPromptContextSelector(selector: PromptContextSelector): IAgentSDK;
+  registerResponseRequirementsSelector(selector: ResponseRequirementsSelector): IAgentSDK;
+  registerSessionRecallResolver(resolver: SessionRecallResolver): IAgentSDK;
+  registerRepositoryDiagnosticsProvider(provider: RepositoryDiagnosticsProvider): IAgentSDK;
+  registerRepositoryProbe(probe: RepositoryProbe): IAgentSDK;
+  registerToolCapabilityResolver(resolver: ToolCapabilityResolver): IAgentSDK;
+  registerRuntimeProfile(profile: RuntimeProfile): IAgentSDK;
+  registerPromptProjector(projector: PromptProjector): IAgentSDK;
+  registerRunEvaluator(evaluator: RunEvaluator): IAgentSDK;
+  registerObserver(observer: RuntimeObserver): IAgentSDK;
+  registerTurnInterpreter(interpreter: TurnInterpreter): IAgentSDK;
   extend(): IAgentSDK;
   createRunner(config: AgentConfig): IAgentRunner;
 }
@@ -91,6 +119,19 @@ interface SdkState {
   outputProcessors: OutputProcessor[];
   guards: ToolGuard[];
   inputNormalizers: InputNormalizer[];
+  modePolicies: ModePolicy[];
+  memoryCapabilities: MemoryCapability[];
+  promptContextSelectors: PromptContextSelector[];
+  responseRequirementsSelectors: ResponseRequirementsSelector[];
+  sessionRecallResolvers: SessionRecallResolver[];
+  repositoryDiagnosticsProviders: RepositoryDiagnosticsProvider[];
+  repositoryProbes: RepositoryProbe[];
+  toolCapabilityResolvers: ToolCapabilityResolver[];
+  runtimeProfiles: RuntimeProfile[];
+  promptProjectors: PromptProjector[];
+  runEvaluators: RunEvaluator[];
+  observers: RuntimeObserver[];
+  turnInterpreters: TurnInterpreter[];
 }
 
 function emptyState(): SdkState {
@@ -109,6 +150,19 @@ function emptyState(): SdkState {
     outputProcessors: [],
     guards: [],
     inputNormalizers: [],
+    modePolicies: [],
+    memoryCapabilities: [],
+    promptContextSelectors: [],
+    responseRequirementsSelectors: [],
+    sessionRecallResolvers: [],
+    repositoryDiagnosticsProviders: [],
+    repositoryProbes: [],
+    toolCapabilityResolvers: [],
+    runtimeProfiles: [],
+    promptProjectors: [],
+    runEvaluators: [],
+    observers: [],
+    turnInterpreters: [],
   };
 }
 
@@ -128,6 +182,19 @@ function cloneState(s: SdkState): SdkState {
     outputProcessors: [...s.outputProcessors],
     guards: [...s.guards],
     inputNormalizers: [...s.inputNormalizers],
+    modePolicies: [...s.modePolicies],
+    memoryCapabilities: [...s.memoryCapabilities],
+    promptContextSelectors: [...s.promptContextSelectors],
+    responseRequirementsSelectors: [...s.responseRequirementsSelectors],
+    sessionRecallResolvers: [...s.sessionRecallResolvers],
+    repositoryDiagnosticsProviders: [...s.repositoryDiagnosticsProviders],
+    repositoryProbes: [...s.repositoryProbes],
+    toolCapabilityResolvers: [...s.toolCapabilityResolvers],
+    runtimeProfiles: [...s.runtimeProfiles],
+    promptProjectors: [...s.promptProjectors],
+    runEvaluators: [...s.runEvaluators],
+    observers: [...s.observers],
+    turnInterpreters: [...s.turnInterpreters],
   };
 }
 
@@ -225,6 +292,71 @@ export class AgentSDK implements IAgentSDK {
     return this;
   }
 
+  registerModePolicy(policy: ModePolicy): this {
+    this._state.modePolicies.push(policy);
+    return this;
+  }
+
+  registerMemoryCapability(capability: MemoryCapability): this {
+    this._state.memoryCapabilities.push(capability);
+    return this;
+  }
+
+  registerPromptContextSelector(selector: PromptContextSelector): this {
+    this._state.promptContextSelectors.push(selector);
+    return this;
+  }
+
+  registerResponseRequirementsSelector(selector: ResponseRequirementsSelector): this {
+    this._state.responseRequirementsSelectors.push(selector);
+    return this;
+  }
+
+  registerSessionRecallResolver(resolver: SessionRecallResolver): this {
+    this._state.sessionRecallResolvers.push(resolver);
+    return this;
+  }
+
+  registerRepositoryDiagnosticsProvider(provider: RepositoryDiagnosticsProvider): this {
+    this._state.repositoryDiagnosticsProviders.push(provider);
+    return this;
+  }
+
+  registerRepositoryProbe(probe: RepositoryProbe): this {
+    this._state.repositoryProbes.push(probe);
+    return this;
+  }
+
+  registerToolCapabilityResolver(resolver: ToolCapabilityResolver): this {
+    this._state.toolCapabilityResolvers.push(resolver);
+    return this;
+  }
+
+  registerRuntimeProfile(profile: RuntimeProfile): this {
+    this._state.runtimeProfiles.push(profile);
+    return this;
+  }
+
+  registerPromptProjector(projector: PromptProjector): this {
+    this._state.promptProjectors.push(projector);
+    return this;
+  }
+
+  registerRunEvaluator(evaluator: RunEvaluator): this {
+    this._state.runEvaluators.push(evaluator);
+    return this;
+  }
+
+  registerObserver(observer: RuntimeObserver): this {
+    this._state.observers.push(observer);
+    return this;
+  }
+
+  registerTurnInterpreter(interpreter: TurnInterpreter): this {
+    this._state.turnInterpreters.push(interpreter);
+    return this;
+  }
+
   // ── Clone ───────────────────────────────────────────────────────────────
 
   extend(): AgentSDK {
@@ -247,6 +379,19 @@ export class AgentSDK implements IAgentSDK {
   get outputProcessors(): ReadonlyArray<OutputProcessor> { return this._state.outputProcessors; }
   get guards(): ReadonlyArray<ToolGuard>               { return this._state.guards; }
   get inputNormalizers(): ReadonlyArray<InputNormalizer> { return this._state.inputNormalizers; }
+  get modePolicies(): ReadonlyArray<ModePolicy>        { return this._state.modePolicies; }
+  get memoryCapabilities(): ReadonlyArray<MemoryCapability> { return this._state.memoryCapabilities; }
+  get promptContextSelectors(): ReadonlyArray<PromptContextSelector> { return this._state.promptContextSelectors; }
+  get responseRequirementsSelectors(): ReadonlyArray<ResponseRequirementsSelector> { return this._state.responseRequirementsSelectors; }
+  get sessionRecallResolvers(): ReadonlyArray<SessionRecallResolver> { return this._state.sessionRecallResolvers; }
+  get repositoryDiagnosticsProviders(): ReadonlyArray<RepositoryDiagnosticsProvider> { return this._state.repositoryDiagnosticsProviders; }
+  get repositoryProbes(): ReadonlyArray<RepositoryProbe> { return this._state.repositoryProbes; }
+  get toolCapabilityResolvers(): ReadonlyArray<ToolCapabilityResolver> { return this._state.toolCapabilityResolvers; }
+  get runtimeProfiles(): ReadonlyArray<RuntimeProfile> { return this._state.runtimeProfiles; }
+  get promptProjectors(): ReadonlyArray<PromptProjector> { return this._state.promptProjectors; }
+  get runEvaluators(): ReadonlyArray<RunEvaluator>      { return this._state.runEvaluators; }
+  get observers(): ReadonlyArray<RuntimeObserver>      { return this._state.observers; }
+  get turnInterpreters(): ReadonlyArray<TurnInterpreter> { return this._state.turnInterpreters; }
 
   // ── Build ───────────────────────────────────────────────────────────────
 

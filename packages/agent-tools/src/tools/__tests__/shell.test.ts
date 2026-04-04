@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { execSync } from 'node:child_process';
-import { createShellExecTool } from '../shell.js';
+import { createShellExecTool } from '../execution/shell.js';
 import type { ToolContext } from '../../types.js';
 import type { ToolResult } from '@kb-labs/agent-contracts';
 

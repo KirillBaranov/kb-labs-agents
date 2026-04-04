@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createTodoCreateTool, createTodoGetTool, createTodoUpdateTool } from '../todo.js';
+import { createTodoCreateTool, createTodoGetTool, createTodoUpdateTool } from '../planning/todo.js';
 import type { ToolContext } from '../../types.js';
 
 function createCacheMock() {

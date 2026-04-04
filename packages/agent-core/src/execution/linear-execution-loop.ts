@@ -24,6 +24,7 @@
  * Returns LoopOutput — AgentRunner builds the full TaskResult from it.
  */
 
+import type { IterationSnapshot } from '@kb-labs/agent-contracts';
 import type { ExecutionLoop, LoopContext, LoopResult, LoopOutput, LLMCallResult, ToolCallInput } from '@kb-labs/agent-sdk';
 
 // ─── Canonical JSON serialization ────────────────────────────────────────────
@@ -53,6 +54,7 @@ interface StopResult {
   reasonCode: string;
   reason: string;
   answer?: string;
+  metadata?: Record<string, unknown>;
 }
 
 // ─── Loop detection helper ────────────────────────────────────────────────────
@@ -160,6 +162,7 @@ export class LinearExecutionLoop implements ExecutionLoop {
             input: reportCall.input,
           };
           let reportBlocked = false;
+          let reportMetadata: Record<string, unknown> | undefined;
           try {
             const toolResults = await ctx.executeTools([reportInput]);
             // If report tool returned success=false (e.g. plan_validate gate),
@@ -168,6 +171,7 @@ export class LinearExecutionLoop implements ExecutionLoop {
             if (reportResult && reportResult.success === false) {
               reportBlocked = true;
             }
+            reportMetadata = reportResult?.metadata;
           } catch {
             // fail-open: report tool execution error should not prevent completion
           }
@@ -175,6 +179,11 @@ export class LinearExecutionLoop implements ExecutionLoop {
             await ctx.afterIteration();
             continue;
           }
+          await ctx.afterIteration();
+          return complete({
+            ...reportStop,
+            metadata: reportMetadata,
+          });
         }
         await ctx.afterIteration();
         return complete(reportStop);
@@ -189,7 +198,7 @@ export class LinearExecutionLoop implements ExecutionLoop {
           try {
             // Inject a reminder message and re-call with forced tool choice
             ctx.appendMessage({
-              role: 'user',
+              role: 'system',
               content: 'You must call the `report` tool with your answer. Do NOT respond with plain text.',
             });
             nudgedResponse = await ctx.callLLM();
@@ -202,9 +211,25 @@ export class LinearExecutionLoop implements ExecutionLoop {
             if (nudgedReport) {
               const reportCall = nudgedResponse.toolCalls?.find(tc => tc.name === 'report');
               if (reportCall) {
+                let reportBlocked = false;
+                let reportMetadata: Record<string, unknown> | undefined;
                 try {
-                  await ctx.executeTools([{ id: reportCall.id, name: reportCall.name, input: reportCall.input }]);
+                  const toolResults = await ctx.executeTools([{ id: reportCall.id, name: reportCall.name, input: reportCall.input }]);
+                  const reportResult = toolResults?.find(r => r.toolCallId === reportCall.id);
+                  if (reportResult && reportResult.success === false) {
+                    reportBlocked = true;
+                  }
+                  reportMetadata = reportResult?.metadata;
                 } catch { /* fail-open */ }
+                if (reportBlocked) {
+                  await ctx.afterIteration();
+                  continue;
+                }
+                await ctx.afterIteration();
+                return complete({
+                  ...nudgedReport,
+                  metadata: reportMetadata,
+                });
               }
               await ctx.afterIteration();
               return complete(nudgedReport);
@@ -282,7 +307,56 @@ export class LinearExecutionLoop implements ExecutionLoop {
           `evidence=${newEvidence ? 'new' : 'none'}; files(read=${reads.length}, modified=${modified.length}, created=${created.length})`,
       );
 
+      const snapshot: IterationSnapshot = {
+        iteration: run.iteration,
+        maxIterations: run.maxIterations,
+        toolNames: inputs.map((t) => t.name),
+        toolSignature,
+        totalTokens,
+        evidenceCount,
+        evidenceDelta: Math.max(0, evidenceCount - prevEvidenceCount),
+        filesReadCount: reads.length,
+        filesModifiedCount: modified.length,
+        filesCreatedCount: created.length,
+        newEvidence,
+        repeatsWithoutEvidence,
+        repeatNoEvidenceCount,
+        lastIterationSummary: run.meta.get<string>('loop', 'lastIterationSummary'),
+      };
+      const evaluation = await ctx.evaluateRun(snapshot);
+      if (evaluation) {
+        run.meta.set('evaluation', 'lastRecommendation', evaluation.recommendation);
+        run.meta.set('evaluation', 'lastReadinessScore', evaluation.readinessScore);
+        run.meta.set('evaluation', 'lastEvidenceGain', evaluation.evidenceGain);
+        run.meta.set('evaluation', 'lastRationale', evaluation.rationale);
+      }
+
       await ctx.afterIteration();
+
+      if (evaluation?.recommendation === 'narrow') {
+        const narrowNudgeSent = run.meta.get<boolean>('evaluation', 'narrowNudgeSent') ?? false;
+        if (!narrowNudgeSent) {
+          run.meta.set('evaluation', 'narrowNudgeSent', true);
+          ctx.appendMessage({
+            role: 'system',
+            content:
+              'Recent steps are not adding enough new evidence. Narrow the search to the most important unresolved gaps before continuing.',
+          });
+        }
+      }
+
+      if (evaluation?.recommendation === 'synthesize') {
+        const synthesisNudgeSent = run.meta.get<boolean>('evaluation', 'synthesisNudgeSent') ?? false;
+        if (!synthesisNudgeSent) {
+          run.meta.set('evaluation', 'synthesisNudgeSent', true);
+          ctx.appendMessage({
+            role: 'system',
+            content:
+              'You now have enough evidence to produce the best bounded answer available. Prefer synthesizing from verified evidence instead of starting new exploration.',
+          });
+          continue;
+        }
+      }
 
       if (repeatsWithoutEvidence >= 2) {
         return complete({
@@ -344,7 +418,7 @@ function complete(stop: StopResult): LoopResult {
     answer: stop.answer ?? stop.reason,
     reasonCode: stop.reasonCode,
     success: successfulStops.has(stop.reasonCode),
-    metadata: { stopPriority: stop.priority },
+    metadata: { stopPriority: stop.priority, ...(stop.metadata ?? {}) },
   };
   return { outcome: 'complete', result };
 }

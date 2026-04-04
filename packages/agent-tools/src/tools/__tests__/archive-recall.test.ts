@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createArchiveRecallTool } from '../archive-recall';
+import { createArchiveRecallTool } from '../memory/archive-recall';
 import type { IArchiveMemory, ToolContext } from '../../types';
 
 function createMockArchive(

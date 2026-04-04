@@ -54,6 +54,13 @@ export interface PackedTool {
   readonly definition: ToolDefinition;
   /** Whether this tool only reads state (no side effects) */
   readonly readOnly?: boolean;
+  /**
+   * Whether this tool is safe to execute concurrently with other concurrent-safe tools.
+   * When true, multiple calls can run via Promise.all() in the same iteration.
+   * When false (default), tool executes sequentially.
+   * Read-only tools are typically concurrent-safe.
+   */
+  readonly concurrencySafe?: boolean;
   /** Capability category */
   readonly capability?: string;
   /** Execute the tool */
@@ -128,6 +135,8 @@ export interface ResolvedTool {
   readonly definition: ToolDefinition;
   /** Whether this tool only reads state */
   readonly readOnly: boolean;
+  /** Whether this tool is safe to execute concurrently with other concurrent-safe tools */
+  readonly concurrencySafe: boolean;
   /** Capability category */
   readonly capability?: string;
   /** Execute the tool */

@@ -50,7 +50,7 @@ async function resolveTurnForEvent(
 
   const explicitTurnId = getTurnIdFromEvent(event);
   if (explicitTurnId) {
-    const explicit = turns.find((turn) => turn.id === explicitTurnId);
+    const explicit = turns.find((turn: Turn) => turn.id === explicitTurnId);
     if (explicit) {
       return explicit;
     }
@@ -58,10 +58,18 @@ async function resolveTurnForEvent(
 
   // For tool/llm/status events, send latest assistant turn snapshot.
   const assistantTurns = turns
-    .filter((turn) => turn.type === 'assistant')
-    .sort((a, b) => b.sequence - a.sequence);
+    .filter((turn: Turn) => turn.type === 'assistant')
+    .sort((a: Turn, b: Turn) => b.sequence - a.sequence);
   return assistantTurns[0] || null;
 }
+
+interface SessionConnectionState {
+  sessionId: string;
+  callback: import('@kb-labs/agent-contracts').AgentEventCallback;
+}
+
+/** Per-connection state keyed by the opaque ctx object — avoids mutating ctx */
+const connectionState = new WeakMap<object, SessionConnectionState>();
 
 export default defineWebSocket<unknown, ClientMessage, ServerMessage>({
   path: '/session/:sessionId',
@@ -162,9 +170,8 @@ export default defineWebSocket<unknown, ClientMessage, ServerMessage>({
         }
       };
 
-      // Store callback for cleanup
-      (ctx as unknown as Record<string, unknown>)._sessionCallback = eventCallback;
-      (ctx as unknown as Record<string, unknown>)._sessionId = sessionId;
+      // Store callback for cleanup in a WeakMap keyed by ctx — no ctx mutation
+      connectionState.set(ctx as object, { sessionId, callback: eventCallback });
 
       // Register on all currently active runs in this session
       RunManager.addSessionListener(sessionId, eventCallback);
@@ -173,7 +180,7 @@ export default defineWebSocket<unknown, ClientMessage, ServerMessage>({
     async onMessage(ctx: PluginContextV3, message: ClientMessage, sender: TypedSender<ServerMessage>) {
       // Handle ping or corrections here if needed
       if (message.type === 'ping') {
-        const sessionId = (ctx as unknown as Record<string, unknown>)._sessionId as string;
+        const sessionId = connectionState.get(ctx as object)?.sessionId ?? '';
         await sender.send({
           type: 'connection:ready',
           payload: { runId: sessionId ?? '', connectedAt: new Date().toISOString() },
@@ -183,16 +190,13 @@ export default defineWebSocket<unknown, ClientMessage, ServerMessage>({
     },
 
     async onDisconnect(ctx: PluginContextV3) {
-      const sessionId = (ctx as unknown as Record<string, unknown>)._sessionId as string;
-      const callback = (ctx as unknown as Record<string, unknown>)._sessionCallback as
-        | import('@kb-labs/agent-contracts').AgentEventCallback
-        | undefined;
-
-      if (sessionId && callback) {
-        RunManager.removeSessionListener(sessionId, callback);
+      const state = connectionState.get(ctx as object);
+      if (state) {
+        RunManager.removeSessionListener(state.sessionId, state.callback);
+        connectionState.delete(ctx as object);
       }
 
-      ctx.platform.logger.info(`[session-ws] Client disconnected from session ${sessionId}`);
+      ctx.platform.logger.info(`[session-ws] Client disconnected from session ${state?.sessionId}`);
     },
 
     async onError(ctx: PluginContextV3, error: Error, sender: TypedSender<ServerMessage>) {

@@ -144,6 +144,7 @@ export class ToolManager {
       namespace: pack.namespace,
       definition,
       readOnly: tool.readOnly ?? false,
+      concurrencySafe: tool.concurrencySafe ?? false,
       capability: tool.capability,
       execute: (input) => tool.execute(input),
     };

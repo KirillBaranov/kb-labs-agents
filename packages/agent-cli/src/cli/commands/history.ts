@@ -215,7 +215,7 @@ async function listAllSessions(
   return { exitCode: 0, response };
 }
 
-function dedupeSessionsById<T extends { id: string; runCount: number; lastActivityAt: string }>(sessions: T[]): T[] {
+function dedupeSessionsById<T extends { id: string; status?: string; runCount: number; lastActivityAt: string }>(sessions: T[]): T[] {
   const byId = new Map<string, T>();
   for (const session of sessions) {
     const existing = byId.get(session.id);

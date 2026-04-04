@@ -81,7 +81,7 @@ export class SystemPromptBuilder {
 
     if (input.sessionId && input.sessionRootDir) {
       prompt +=
-        '\n\n# Session continuity\nUse previous turns already present in conversation messages as the primary context.\nDo not restate or duplicate long history from memory when it is already in messages.';
+        '\n\n# Session continuity\nUse previous turns already present in conversation messages as the primary context.\nDo not restate or duplicate long history from memory when it is already in messages.\nFor questions about previous runs, previous commands, previous tool usage, or what was verified earlier in the session, prioritize structured runtime continuity context and pinned evidence over plain assistant prose.';
     }
 
     const workspaceMapPrompt = buildWorkspaceDiscoveryPrompt(input.workspaceDiscovery);
@@ -309,7 +309,8 @@ For auto mode complexity detection:
 ## File Operations
 - **fs_read** — read file contents (with line numbers and metadata). ALWAYS read before editing.
 - **fs_write** — create new file or overwrite existing (use for new files).
-- **fs_patch** — replace a range of lines in existing file. Requires fs_read first. Line numbers are 1-indexed, inclusive.
+- **fs_replace** — edit a file by finding exact text and replacing it. Requires fs_read first. The match text must appear exactly once (unless replace_all=true). More reliable than fs_patch for targeted edits — copy exact text from fs_read output.
+- **fs_patch** — replace a range of lines in existing file. Requires fs_read first. Line numbers are 1-indexed, inclusive. Use for large block replacements where fs_replace is impractical.
 - **fs_list** — list directory contents.
 - **mass_replace** — batch find-and-replace across files. Use dryRun first to preview. Great for renaming across codebase.
 - Prefer primary source files over generated artifacts (dist/build/minified/backup) unless user explicitly asks for those artifacts.
@@ -329,11 +330,20 @@ Tool semantics guardrails:
 
 ## Memory
 - **memory_get** — retrieve stored preferences and context.
+- **memory_correction** — store a user correction for this session. Use this immediately when the user says "no", changes direction, or gives a new lasting instruction. Set constraint=true if the instruction should remain active for the rest of the session.
+- **memory_constraint** — store a durable project-wide rule. Use this only for persistent rules, not one-off session instructions.
 - **memory_finding** — store important discoveries with confidence level.
 - **memory_blocker** — record blockers you can't resolve.
 - **archive_recall** — retrieve full content from previously-read files or tool outputs WITHOUT re-reading them. Use to recall file contents, grep results, or any tool output from earlier iterations. Avoids redundant file reads.
 
+Memory policy:
+- If the user corrects you, narrows scope, or changes lasting instructions for the current session, call **memory_correction** before your final report.
+- If prompt context shows a pending action to persist a correction, complete that memory action before reporting.
+
 > **Rule:** Before calling "fs_read" on any file, first check "archive_recall" with that file path. If the archive has it — use the cached content. Only call "fs_read" if the archive returns nothing.
+
+## Planning
+- **plan_write** — write or update the session plan file on disk. Survives context compaction. Use during plan mode to iteratively build your plan.
 
 ## Finishing
 - **report** — **ALWAYS call this tool to deliver your final answer.** Never respond with plain text as your last action — always end with report(). Include evidence (file paths, code). Set confidence 0.0-1.0.
@@ -360,6 +370,15 @@ Tool semantics guardrails:
 2. After each completed action block, mark item(s) with todo_update.
 3. Before final report, call todo_get and ensure all applicable items are done.
 4. If task is truly trivial (1-2 steps), skip todo tools and finish directly.
+
+## Verification contract (for non-trivial edits)
+When you modify 3+ files, or make backend/API/infrastructure changes:
+1. After editing, run relevant tests or build commands via shell_exec
+2. Check that imports resolve (grep for your new exports in consuming files)
+3. If tests exist, run them and report results
+4. If no tests exist, at minimum verify the build succeeds
+5. Report what verification you performed alongside your changes
+A partial answer that was verified is better than a complete answer that wasn't.
 
 ## When stuck:
 - Try a different search approach (grep vs find_definition vs glob)

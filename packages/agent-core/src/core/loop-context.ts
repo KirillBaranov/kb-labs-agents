@@ -10,6 +10,7 @@
  * LoopContextImpl is intentionally stateless between calls.
  */
 
+import type { IterationSnapshot, RunEvaluation } from '@kb-labs/agent-contracts';
 import type { LLMMessage } from '@kb-labs/sdk';
 import type {
   LoopContext,
@@ -35,6 +36,7 @@ export class LoopContextImpl implements LoopContext {
     private readonly pipeline: MiddlewarePipeline,
     private readonly executor: ToolExecutor,
     private readonly onTokensConsumed: (delta: number) => void,
+    private readonly runEvaluator: (run: RunContext, snapshot: IterationSnapshot) => Promise<RunEvaluation | null>,
   ) {
     this.run = run;
   }
@@ -120,40 +122,46 @@ export class LoopContextImpl implements LoopContext {
   }
 
   async executeTools(calls: ToolCallInput[]): Promise<ToolOutput[]> {
-    const outputs: ToolOutput[] = [];
+    // Partition into concurrent-safe and sequential groups.
+    // Concurrent-safe tools run in parallel via Promise.all,
+    // sequential tools run one-by-one after them.
+    // Results are emitted in original call order regardless of execution order.
+    const concurrentCalls: ToolCallInput[] = [];
+    const sequentialCalls: ToolCallInput[] = [];
 
     for (const call of calls) {
-      const toolCtx: ToolExecCtx = {
-        run: this.run,
-        toolName: call.name,
-        input: call.input,
-        iteration: this.run.iteration,
-        abortSignal: this.run.abortSignal,
-        requestId: this.run.requestId,
-      };
-
-      // Check if middleware wants to skip this tool call
-      const decision = await this.pipeline.beforeToolExec(toolCtx);
-      if (decision === 'skip') {
-        outputs.push({
-          toolCallId: call.id,
-          output: '[skipped by middleware]',
-          success: true,
-        });
-        continue;
+      const resolved = this.executor.getToolManager().getTool(call.name);
+      if (resolved?.concurrencySafe && calls.length > 1) {
+        concurrentCalls.push(call);
+      } else {
+        sequentialCalls.push(call);
       }
+    }
 
-      // Execute through ToolExecutor (guards + processors)
-      const results = await this.executor.execute([call], this.run);
-      const output = results[0] ?? {
-        toolCallId: call.id,
-        output: 'Tool execution returned no result',
-        success: false,
-      };
-      outputs.push(output);
+    // Map to collect results by toolCallId for ordered emission
+    const outputMap = new Map<string, ToolOutput>();
 
-      // Run afterToolExec middleware
-      await this.pipeline.afterToolExec(toolCtx, output);
+    // Execute concurrent-safe tools in parallel
+    if (concurrentCalls.length > 0) {
+      const concurrentResults = await Promise.all(
+        concurrentCalls.map(call => this._executeSingleTool(call)),
+      );
+      for (const output of concurrentResults) {
+        outputMap.set(output.toolCallId, output);
+      }
+    }
+
+    // Execute sequential tools one-by-one
+    for (const call of sequentialCalls) {
+      const output = await this._executeSingleTool(call);
+      outputMap.set(output.toolCallId, output);
+    }
+
+    // Emit results in original call order
+    const outputs: ToolOutput[] = [];
+    for (const call of calls) {
+      const output = outputMap.get(call.id);
+      if (output) {outputs.push(output);}
     }
 
     // Append tool result messages to history
@@ -166,5 +174,44 @@ export class LoopContextImpl implements LoopContext {
     }
 
     return outputs;
+  }
+
+  /** Execute a single tool call with middleware hooks. */
+  private async _executeSingleTool(call: ToolCallInput): Promise<ToolOutput> {
+    const toolCtx: ToolExecCtx = {
+      run: this.run,
+      toolName: call.name,
+      input: call.input,
+      iteration: this.run.iteration,
+      abortSignal: this.run.abortSignal,
+      requestId: this.run.requestId,
+    };
+
+    // Check if middleware wants to skip this tool call
+    const decision = await this.pipeline.beforeToolExec(toolCtx);
+    if (decision === 'skip') {
+      return {
+        toolCallId: call.id,
+        output: '[skipped by middleware]',
+        success: true,
+      };
+    }
+
+    // Execute through ToolExecutor (guards + processors)
+    const results = await this.executor.execute([call], this.run);
+    const output = results[0] ?? {
+      toolCallId: call.id,
+      output: 'Tool execution returned no result',
+      success: false,
+    };
+
+    // Run afterToolExec middleware
+    await this.pipeline.afterToolExec(toolCtx, output);
+
+    return output;
+  }
+
+  async evaluateRun(snapshot: IterationSnapshot): Promise<RunEvaluation | null> {
+    return this.runEvaluator(this.run, snapshot);
   }
 }

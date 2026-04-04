@@ -22,6 +22,10 @@ export class ToolExecutor {
     private readonly normalizers: ReadonlyArray<InputNormalizer> = [],
   ) {}
 
+  getToolManager(): ToolManager {
+    return this.toolManager;
+  }
+
   async execute(calls: ToolCallInput[], run: RunContext): Promise<ToolOutput[]> {
     return Promise.all(calls.map((call) => this.executeSingle(call, run)));
   }
