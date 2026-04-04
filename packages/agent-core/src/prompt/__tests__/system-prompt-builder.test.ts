@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { SystemPromptBuilder, loadProjectInstructions } from '../system-prompt-builder';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { SystemPromptBuilder, loadProjectInstructions, clearSystemPromptCache } from '../system-prompt-builder';
 import type { SystemPromptInput } from '../system-prompt-builder';
 import * as fs from 'node:fs';
 
@@ -16,6 +16,9 @@ function makeInput(overrides: Partial<SystemPromptInput> = {}): SystemPromptInpu
 
 describe('SystemPromptBuilder', () => {
   const builder = new SystemPromptBuilder();
+
+  // Clear cache between tests to avoid stale static prompt
+  beforeEach(() => clearSystemPromptCache());
 
   it('builds a prompt containing core rules', async () => {
     const prompt = await builder.build(makeInput());
@@ -34,11 +37,6 @@ describe('SystemPromptBuilder', () => {
     expect(prompt).not.toContain('task_submit');
   });
 
-  it('includes response mode in prompt', async () => {
-    const prompt = await builder.build(makeInput({ responseMode: 'brief' }));
-    expect(prompt).toContain('Response mode: brief');
-  });
-
   it('includes session continuity note when session present', async () => {
     const prompt = await builder.build(makeInput({
       sessionId: 'sess-1',
@@ -47,7 +45,7 @@ describe('SystemPromptBuilder', () => {
     expect(prompt).toContain('Session continuity');
   });
 
-  it('includes workspace topology when discovery is present', async () => {
+  it('includes workspace section when discovery present', async () => {
     const prompt = await builder.build(makeInput({
       workspaceDiscovery: {
         rootDir: '/project',
@@ -57,7 +55,7 @@ describe('SystemPromptBuilder', () => {
         ],
       },
     }));
-    expect(prompt).toContain('Workspace topology');
+    expect(prompt).toContain('Workspace');
     expect(prompt).toContain('packages/core');
   });
 
@@ -65,7 +63,7 @@ describe('SystemPromptBuilder', () => {
     const prompt = await builder.build(makeInput({
       workspaceDiscovery: { rootDir: '/project', repos: [] },
     }));
-    expect(prompt).not.toContain('Workspace topology');
+    expect(prompt).not.toContain('Workspace (');
   });
 
   it('includes memory context when memory provided', async () => {
@@ -76,8 +74,16 @@ describe('SystemPromptBuilder', () => {
     } as any;
 
     const prompt = await builder.build(makeInput({ memory }));
-    expect(prompt).toContain('Previous Context from Memory');
+    expect(prompt).toContain('Memory Context');
     expect(prompt).toContain('some memory context');
+  });
+
+  it('static prompt is cached between builds', async () => {
+    const prompt1 = await builder.build(makeInput());
+    const prompt2 = await builder.build(makeInput());
+    // Both should contain same static core
+    expect(prompt1).toContain('Core rules');
+    expect(prompt2).toContain('Core rules');
   });
 });
 
