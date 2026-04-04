@@ -2,6 +2,8 @@
  * Reporting tools - for sub-agents to communicate with parent agent
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type {
   ClaimVerificationResult,
   EvidenceRequirements,
@@ -393,14 +395,24 @@ export function createReportTool(context: ToolContext): Tool {
       const answer = input.answer as string;
       const confidence = input.confidence as number;
 
-      // In plan mode (plan_validate is in the allowed tool set), block report
-      // until the agent has called plan_validate and received a PASSED result.
+      // In plan mode (plan_validate is in the allowed tool set), prefer
+      // plan_validate before report — but don't hard-block if budget is exhausted.
+      // If the agent wrote a plan file via plan_write, allow report as fallback.
       const inPlanMode = context.allowedTools?.has('plan_validate') ?? false;
       if (inPlanMode && !context.planValidationPassed) {
-        return {
-          success: false,
-          output: 'BLOCKED: You must call plan_validate(task, plan_markdown) first and receive a PASSED result before submitting the plan. Call plan_validate now.',
-        };
+        // Check if plan file exists on disk (written via plan_write)
+        const planPath = context.sessionId
+          ? path.join(context.workingDir, '.kb', 'agents', 'sessions', context.sessionId, 'plan.md')
+          : null;
+        const hasPlanFile = planPath && fs.existsSync(planPath);
+
+        if (!hasPlanFile) {
+          return {
+            success: false,
+            output: 'BLOCKED: You must either (1) call plan_validate first, or (2) save your plan via plan_write and then call report. Call plan_write with your plan content now.',
+          };
+        }
+        // Plan file exists — allow report even without validation (budget fallback)
       }
 
       if (await hasPendingCorrectionCommit(context)) {

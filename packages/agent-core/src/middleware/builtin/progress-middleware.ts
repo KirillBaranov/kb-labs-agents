@@ -29,6 +29,10 @@ export class ProgressMiddleware {
   private _lastIterNudgeSent = false;
   /** Tracks which stuck nudge level was last sent (0 = none) */
   private _stuckNudgeLevel = 0;
+  /** Tool calls since last plan_write (plan mode checkpoint tracking) */
+  private _toolCallsSincePlanWrite = 0;
+  /** Whether plan checkpoint nudge was injected for current LLM call */
+  private _planCheckpointPending = false;
 
   constructor(stuckThreshold = 4, callbacks: ProgressCallbacks = {}) {
     this.stuckThreshold = stuckThreshold;
@@ -154,6 +158,34 @@ export class ProgressMiddleware {
       }
     }
 
+    // ── Plan mode checkpoint nudge ────────────────────────────────────
+    // After 5+ tool calls without plan_write, remind the agent to save progress.
+    // Inspired by Claude Code sparse reminders (every 5 turns).
+    if (this._planCheckpointPending) {
+      this._planCheckpointPending = false;
+      const isPlanMode = ctx.run.meta.get<boolean>('mode', 'isPlanMode')
+        ?? ctx.messages.some(m => typeof m.content === 'string' && m.content.includes('PLAN MODE'));
+      if (isPlanMode) {
+        ctx.run.eventBus.emit('middleware:event', {
+          name: 'progress',
+          event: 'plan_checkpoint_nudge',
+          data: { toolCallsSincePlanWrite: this._toolCallsSincePlanWrite },
+        });
+        return {
+          messages: [
+            ...ctx.messages,
+            {
+              role: 'user' as const,
+              content:
+                `⚠️ PLAN CHECKPOINT: You've made ${this._toolCallsSincePlanWrite} tool calls without updating the plan file. ` +
+                `Call \`plan_write\` NOW to save what you've learned so far. ` +
+                `A partial plan is better than lost research. Write first, then continue exploring.`,
+            },
+          ],
+        };
+      }
+    }
+
     // ── Loop detection nudge ─────────────────────────────────────────
     const loopDetected = ctx.run.meta.get<boolean>('progress', 'loopDetected');
     if (loopDetected) {
@@ -175,6 +207,17 @@ export class ProgressMiddleware {
   }
 
   afterToolExec(ctx: ToolExecCtx, result: ToolOutput): void {
+    // ── Plan mode checkpoint tracking ──
+    if (ctx.toolName === 'plan_write') {
+      this._toolCallsSincePlanWrite = 0;
+    } else if (ctx.toolName !== 'report' && ctx.toolName !== 'plan_validate') {
+      this._toolCallsSincePlanWrite++;
+      // After 5 non-plan tool calls, flag for checkpoint nudge
+      if (this._toolCallsSincePlanWrite >= 5) {
+        this._planCheckpointPending = true;
+      }
+    }
+
     const sig = `${ctx.toolName}:${JSON.stringify(ctx.input)}`;
     this._recentToolCalls.push(sig);
     if (this._recentToolCalls.length > 6) {
@@ -211,5 +254,7 @@ export class ProgressMiddleware {
     this._recentToolCalls = [];
     this._lastIterNudgeSent = false;
     this._stuckNudgeLevel = 0;
+    this._toolCallsSincePlanWrite = 0;
+    this._planCheckpointPending = false;
   }
 }

@@ -431,19 +431,25 @@ User request:
 ${task}
 ${revisionSection}
 
-ITERATION BUDGET: ${budget} iterations total.
-- Iterations 1–${researchBudget}: RESEARCH ONLY (fs_list, fs_read, grep_search, glob_search).
-- Iteration ${researchBudget + 1}: STOP exploring. Write the plan markdown, call plan_validate, then report.
-- Iterations ${researchBudget + 1}–${budget}: SYNTHESIS ONLY (plan_validate, report, ask_user if needed).
-⚠️  If you are still reading files at iteration ${researchBudget}, stop immediately and start writing.
-TOKEN BUDGET: ${remainingText}/${totalText} tokens remaining. Spend tokens carefully and avoid duplicate scans.
+TOKEN BUDGET: ${remainingText}/${totalText} tokens remaining.
 
-PLAN FILE — iterative plan building:
-- Use \`plan_write(content="...")\` to save your plan to disk at any point during exploration.
-- Write early, update often: after each discovery, update the plan with what you learned.
-- The plan file survives context compaction — your work is never lost even in long sessions.
-- Use \`plan_write(append="...")\` to add new sections without rewriting the whole plan.
-- Workflow: explore → plan_write → explore more → plan_write(content=updated_plan) → plan_validate → report
+⚠️ CRITICAL: EXPLORE AND WRITE SIMULTANEOUSLY — never batch all research first.
+
+## Mandatory workflow — repeat this cycle:
+
+1. **Explore** — Read 3-5 files using fs_read, fs_list, grep_search, glob_search
+2. **Update the plan file** — Call \`plan_write\` IMMEDIATELY after each discovery. Do NOT wait until the end.
+   - First time: \`plan_write(content="# Plan\\n\\n## What I found so far\\n...")\`
+   - Later: \`plan_write(content="<full updated plan with all sections>")\`
+3. **Continue or finish** — If more exploration needed, go back to step 1. If plan covers all aspects, call \`plan_validate\` then \`report\`.
+
+## Rules:
+- NEVER make more than 5 tool calls without calling \`plan_write\`. The plan file is your working memory.
+- Scale depth to the task: a vague feature request needs thorough exploration; a focused change needs 2-3 files.
+- A partial plan with 3 concrete sections beats no plan with 30 files read.
+- If you run out of budget, what's in plan_write IS your deliverable — so keep it updated.
+- The plan file survives context compaction — your work is never lost.
+- Hard limit: plan should be 30-50 lines. Delete prose if needed — keep file paths and concrete steps.
 
 RESEARCH QUALITY GATE — before writing the plan, verify:
 1. You found the actual entry point files for the feature (not just files that happen to mention keywords).
