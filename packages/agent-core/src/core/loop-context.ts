@@ -10,6 +10,8 @@
  * LoopContextImpl is intentionally stateless between calls.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { IterationSnapshot, RunEvaluation } from '@kb-labs/agent-contracts';
 import type { LLMMessage } from '@kb-labs/sdk';
 import type {
@@ -164,11 +166,12 @@ export class LoopContextImpl implements LoopContext {
       if (output) {outputs.push(output);}
     }
 
-    // Append tool result messages to history
+    // Append tool result messages to history.
+    // Large outputs are persisted to disk — LLM sees a preview + file path.
     for (const out of outputs) {
       this.messages.push({
         role: 'tool',
-        content: out.output,
+        content: this._maybePersistOutput(out),
         toolCallId: out.toolCallId,
       });
     }
@@ -209,6 +212,48 @@ export class LoopContextImpl implements LoopContext {
     await this.pipeline.afterToolExec(toolCtx, output);
 
     return output;
+  }
+
+  // ── Tool output persistence ──────────────────────────────────────────────
+  // Large tool outputs are saved to disk. LLM sees a preview + file path.
+  // Inspired by Claude Code maxResultSizeChars + disk persistence.
+
+  private static readonly OUTPUT_PERSIST_THRESHOLD = 6_000; // chars
+  private static readonly OUTPUT_PREVIEW_LENGTH = 1_500; // chars shown to LLM
+
+  /**
+   * If output exceeds threshold, persist to disk and return preview + path.
+   * Otherwise return output as-is.
+   */
+  private _maybePersistOutput(out: ToolOutput): string {
+    const output = out.output;
+    if (!output || output.length <= LoopContextImpl.OUTPUT_PERSIST_THRESHOLD) {
+      return output;
+    }
+
+    // Persist to session directory
+    const sessionId = this.run.meta.get<string>('session', 'id') ?? this.run.requestId;
+    const workingDir = this.run.meta.get<string>('session', 'workingDir') ?? process.cwd();
+    const outputDir = path.join(workingDir, '.kb', 'agents', 'sessions', sessionId, 'tool-outputs');
+
+    try {
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+
+      const filename = `${out.toolCallId || Date.now()}.txt`;
+      const filePath = path.join(outputDir, filename);
+      fs.writeFileSync(filePath, output, 'utf-8');
+
+      const preview = output.slice(0, LoopContextImpl.OUTPUT_PREVIEW_LENGTH);
+      const remaining = output.length - LoopContextImpl.OUTPUT_PREVIEW_LENGTH;
+
+      return `${preview}\n\n[OUTPUT PERSISTED: ${remaining} more chars saved to ${filePath} — use fs_read if you need the full content]`;
+    } catch {
+      // Fallback: truncate without persisting (never break execution)
+      return output.slice(0, LoopContextImpl.OUTPUT_PERSIST_THRESHOLD) +
+        `\n\n[TRUNCATED: ${output.length - LoopContextImpl.OUTPUT_PERSIST_THRESHOLD} more chars not shown]`;
+    }
   }
 
   async evaluateRun(snapshot: IterationSnapshot): Promise<RunEvaluation | null> {
