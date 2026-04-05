@@ -443,15 +443,15 @@ function ToolDetails({
   if (hasDiff) { return <DiffView diff={step.metadata!.diff!} token={token} />; }
   if (hasOutput) {
     const isFailed = step.status === 'done' && step.success === false;
-    return (
-      <pre style={{
-        ...codePreStyle,
-        background: isFailed ? token.colorErrorBg : token.colorFillSecondary,
-        color: isFailed ? token.colorError : token.colorText,
-      }}>
-        {formatOutput(step.output)}
-      </pre>
-    );
+    const outputStr = formatOutput(step.output);
+    if (isFailed) {
+      return (
+        <pre style={{ ...codePreStyle, background: token.colorErrorBg, color: token.colorError }}>
+          {outputStr}
+        </pre>
+      );
+    }
+    return <UIMarkdownViewer content={outputStr} style={{ fontSize: 12 }} />;
   }
   return null;
 }
