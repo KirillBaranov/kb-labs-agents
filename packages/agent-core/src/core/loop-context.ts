@@ -218,8 +218,20 @@ export class LoopContextImpl implements LoopContext {
   // Large tool outputs are saved to disk. LLM sees a preview + file path.
   // Inspired by Claude Code maxResultSizeChars + disk persistence.
 
-  private static readonly OUTPUT_PERSIST_THRESHOLD = 6_000; // chars
-  private static readonly OUTPUT_PREVIEW_LENGTH = 1_500; // chars shown to LLM
+  private static readonly OUTPUT_PERSIST_THRESHOLD = 30_000; // chars — only very large outputs
+  private static readonly OUTPUT_PREVIEW_LENGTH = 8_000; // chars shown to LLM
+  /**
+   * Tools whose output is NEVER persisted to disk — agent needs full content.
+   * Inspired by Claude Code: Read tool has maxResultSizeChars=Infinity.
+   * Size control for these tools happens at tool level (trimOutput, maxOutputChars),
+   * not at loop level.
+   */
+  private static readonly PERSIST_EXEMPT_TOOLS = new Set([
+    'fs_read', 'fs_list', 'fs_write', 'fs_patch', 'fs_replace',
+    'plan_write', 'plan_validate', 'report',
+    'memory_get', 'archive_recall',
+    'todo_create', 'todo_update', 'todo_get',
+  ]);
 
   /**
    * If output exceeds threshold, persist to disk and return preview + path.
@@ -228,6 +240,14 @@ export class LoopContextImpl implements LoopContext {
   private _maybePersistOutput(out: ToolOutput): string {
     const output = out.output;
     if (!output || output.length <= LoopContextImpl.OUTPUT_PERSIST_THRESHOLD) {
+      return output;
+    }
+
+    // Some tools need full output in context — never persist them
+    const toolName = (out as { toolName?: string }).toolName
+      ?? out.toolCallId?.split('_')[0]
+      ?? '';
+    if (LoopContextImpl.PERSIST_EXEMPT_TOOLS.has(toolName)) {
       return output;
     }
 
