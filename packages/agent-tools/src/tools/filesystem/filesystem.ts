@@ -246,7 +246,7 @@ export function createFsWriteTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_write',
-        description: `Write content to a file. Creates parent directories if needed. For partial edits, use fs_patch instead.`,
+        description: `Write a new file or completely rewrite an existing one. Creates parent directories if needed. IMPORTANT: Prefer fs_replace for modifying existing files — it only sends the diff. Only use fs_write to create NEW files or for complete rewrites where the entire content changes. If you're modifying an existing file, use fs_replace instead.`,
         parameters: {
           type: 'object',
           properties: {
@@ -350,7 +350,7 @@ export function createFsPatchTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_patch',
-        description: `Replace a range of lines in a file. You must fs_read the file first. Line numbers are 1-indexed and inclusive.`,
+        description: `Replace a range of lines by line numbers. Use fs_replace instead when possible — it's more reliable. Only use fs_patch for large block replacements where fs_replace match text would be too long. You must fs_read the file first. Line numbers are 1-indexed and inclusive.`,
         parameters: {
           type: 'object',
           properties: {
@@ -535,7 +535,7 @@ export function createFsReplaceTool(context: ToolContext): Tool {
       type: 'function',
       function: {
         name: 'fs_replace',
-        description: `Edit a file by finding exact text and replacing it. You must fs_read the file first. The match text must appear exactly once in the file (unless replace_all=true). If it appears multiple times, include more surrounding context to make it unique.`,
+        description: `PREFERRED tool for editing existing files. Finds exact text and replaces it — only sends the diff, not the whole file. You must fs_read the file first. Use the smallest match text that uniquely identifies the target — usually 2-4 lines is enough. The match must appear exactly once (unless replace_all=true). If multiple matches, add more surrounding context to make it unique.`,
         parameters: {
           type: 'object',
           properties: {

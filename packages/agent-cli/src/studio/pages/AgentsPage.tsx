@@ -10,7 +10,7 @@ import { useAgentWebSocket, buildAgentWsUrl } from '../hooks/use-agent-websocket
 import { SessionSelector } from '../components/SessionSelector';
 import { ConversationView } from '../components/ConversationView';
 import type { AgentSessionInfo, Turn, AgentResponseMode } from '@kb-labs/agent-contracts';
-import './agents-page.css';
+
 
 type RunStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped';
 
@@ -61,6 +61,7 @@ function AgentsPage() {
   const [tier, setTier] = useState<'small' | 'medium' | 'large'>('medium');
   const [enableEscalation, setEnableEscalation] = useState(true);
   const [agentMode, setAgentMode] = useState<'execute' | 'plan'>('execute');
+  const [inputFocused, setInputFocused] = useState(false);
 
   const agentId = 'mind-assistant';
 
@@ -303,7 +304,26 @@ function AgentsPage() {
             justifyContent: 'center',
           }}
         >
-          <div className={`agent-input-box agent-input-box--${agentMode}`} style={{ width: '65%', maxWidth: 780 }}>
+          <div
+            onFocus={() => setInputFocused(true)}
+            onBlur={() => setInputFocused(false)}
+            style={{
+              width: '65%',
+              maxWidth: 780,
+              border: `1px solid ${
+                inputFocused
+                  ? (agentMode === 'execute' ? token.colorError : token.colorPrimary)
+                  : (agentMode === 'plan' ? token.colorPrimary : token.colorBorder)
+              }`,
+              borderRadius: token.borderRadiusLG,
+              background: token.colorBgContainer,
+              boxShadow: inputFocused
+                ? `0 0 0 2px ${agentMode === 'execute' ? token.colorErrorBg : token.colorPrimaryBg}`
+                : 'none',
+              transition: 'border-color 0.2s, box-shadow 0.2s',
+              overflow: 'hidden',
+            }}
+          >
             <UIInputTextArea
               value={task}
               onChange={(e) => setTask(e.target.value)}
@@ -312,9 +332,9 @@ function AgentsPage() {
               autoSize={{ minRows: 2, maxRows: 8 }}
               disabled={isRunning}
               variant="borderless"
-              style={{ resize: 'none', padding: '10px 12px 4px' }}
+              style={{ resize: 'none', padding: '10px 12px 4px', border: 'none', boxShadow: 'none', outline: 'none' }}
             />
-            <div className="agent-input-toolbar">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px 8px' }}>
               <UISpace size={6}>
                 <UISelect
                   value={agentMode}

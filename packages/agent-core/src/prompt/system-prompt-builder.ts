@@ -81,7 +81,7 @@ function buildStaticPrompt(): string {
 - NEVER answer from memory as primary evidence. Memory is for continuity; files/tools are evidence.
 - Read files before editing. Understand existing code before modifying.
 - Verify your work. After editing, read the file back to confirm changes applied correctly.
-- Prefer editing existing files over creating new ones.
+- ALWAYS prefer fs_replace for modifying existing files — it sends only the diff, not the whole file. Use the smallest match text that uniquely identifies the target (2-4 lines). Only use fs_write for creating NEW files. Never rewrite an entire existing file with fs_write when you can make targeted fs_replace edits.
 - When stuck, try a different approach. Don't repeat the same failed action.
 - If the task specifies a target directory or working path, use it as the base for ALL file operations.
 - Iteration contract: each iteration must either (a) produce new evidence, (b) make one concrete narrowing step, or (c) report partial/final result.

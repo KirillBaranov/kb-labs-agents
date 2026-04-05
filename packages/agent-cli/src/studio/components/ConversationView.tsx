@@ -669,7 +669,7 @@ function FileChangeRow({ change, sessionId, onDismiss, token }: FileChangeRowPro
     });
   };
 
-  const opTag = change.operation === 'create'
+  const opTag = change.isNew
     ? <UITag color="success">new</UITag>
     : change.operation === 'delete'
     ? <UITag color="error">del</UITag>
@@ -698,7 +698,7 @@ function FileChangeRow({ change, sessionId, onDismiss, token }: FileChangeRowPro
           {change.filePath.includes('/') ? change.filePath.slice(0, change.filePath.lastIndexOf('/')) : ''}
         </span>
         {!change.approved && (
-          <UIFlex gap={4} onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+          <div style={{ display: 'flex', gap: 4 }} onClick={(e: React.MouseEvent) => e.stopPropagation()}>
             <button
               onClick={handleApprove}
               disabled={approve.isLoading}
@@ -711,7 +711,7 @@ function FileChangeRow({ change, sessionId, onDismiss, token }: FileChangeRowPro
               title="Rollback"
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: token.colorError, fontSize: 13, padding: '0 2px' }}
             >✕</button>
-          </UIFlex>
+          </div>
         )}
       </div>
       {open && (

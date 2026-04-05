@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { useData, UISelect, UIButton, UISpace, UITypographyText, UISpin, UITooltip, UIIcon } from '@kb-labs/sdk/studio';
+import { useData, UISelect, UIButton, UISpace, UITypographyText, UISpin, UITooltip, UIIcon, useUITheme } from '@kb-labs/sdk/studio';
 import type { AgentSessionInfo } from '@kb-labs/agent-contracts';
 
 interface SessionSelectorProps {
@@ -32,6 +32,7 @@ export function SessionSelector({
   onSessionChange,
   onNewChat,
 }: SessionSelectorProps) {
+  const { token } = useUITheme();
   const { data: sessionsData, isLoading } = useData<{ sessions: AgentSessionInfo[]; total: number }>(
     '/v1/plugins/agents/sessions?limit=20',
   );
@@ -47,7 +48,7 @@ export function SessionSelector({
 
   return (
     <UISpace size="small" style={{ width: '100%' }}>
-      <UIIcon name="HistoryOutlined" style={{ opacity: 0.5 }} />
+      <UIIcon name="HistoryOutlined" style={{ color: token.colorTextTertiary }} />
 
       <UISelect
         style={{ flex: 1, minWidth: 200 }}
