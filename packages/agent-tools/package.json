@@ -1,7 +1,10 @@
 {
   "name": "@kb-labs/agent-tools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent management tools for planning, coordination, and execution",
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
