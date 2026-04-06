@@ -1,8 +1,7 @@
 {
   "name": "@kb-labs/agent-sdk",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "type": "module",
-  "private": true,
   "description": "Agent SDK — contracts and interfaces for composing agents. No logic, only types.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
