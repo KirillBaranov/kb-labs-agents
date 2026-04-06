@@ -1,8 +1,7 @@
 {
   "name": "@kb-labs/agent-kernel",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "type": "module",
-  "private": true,
   "description": "Kernel state and continuity model for KB Labs Agents.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +12,10 @@
     },
     "./dist/*": "./dist/*"
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "scripts": {
     "clean": "rimraf dist",
