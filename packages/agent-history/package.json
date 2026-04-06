@@ -1,7 +1,10 @@
 {
   "name": "@kb-labs/agent-history",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "File change history, snapshots and conflict resolution for KB Labs Agents",
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
