@@ -1,7 +1,10 @@
 {
   "name": "@kb-labs/agent-tracing",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Tracing infrastructure for KB Labs Agents — NDJSON writer, privacy redaction, trace loading and analysis",
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
