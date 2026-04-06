@@ -1,6 +1,6 @@
 {
   "name": "@kb-labs/agents",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Autonomous AI agents for KB Labs. Execute natural language tasks using filesystem tools, shell commands, and plugin APIs. Agent configs in .kb/agents/",
   "type": "module",
   "author": {
