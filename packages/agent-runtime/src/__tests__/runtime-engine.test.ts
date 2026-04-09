@@ -42,7 +42,7 @@ describe('RuntimeEngine', () => {
     sdk.registerMemoryCapability({
       id: 'seed-decision',
       apply(state) {
-        return recordDecision(state, 'Prefer kernel-backed continuity', 'system');
+        return recordDecision(state, 'Prefer kernel-backed continuity', 'agent');
       },
     });
     sdk.registerPromptProjector({
@@ -138,7 +138,7 @@ describe('RuntimeEngine', () => {
       timestamp: new Date().toISOString(),
       runId: 'run-1',
       data: {
-        status: 'active',
+        status: 'executing',
         message: 'User correction: preserve extensibility and remove stale assumptions',
       },
     } as AgentEvent);
@@ -221,7 +221,7 @@ describe('RuntimeEngine', () => {
       await runtime.loadOrCreateKernel({
         sessionId: 'session-rollup',
         workingDir,
-        mode: 'chat',
+        mode: 'plan',
         task: index === 0 ? 'Investigate runtime continuity' : `Follow-up ${index}`,
       });
       await runtime.recordEvent({
@@ -253,7 +253,7 @@ describe('RuntimeEngine', () => {
       await runtime.completeRun({
         sessionId: 'session-rollup',
         runId: `run-${index}`,
-        mode: 'chat',
+        mode: 'plan',
         summary: `Completed loop ${index}`,
       });
     }
@@ -302,7 +302,7 @@ describe('RuntimeEngine', () => {
     await runtime.loadOrCreateKernel({
       sessionId: 'session-direct-recall',
       workingDir,
-      mode: 'chat',
+      mode: 'plan',
       task: 'Inspect runtime file',
     });
     await runtime.recordEvent({
@@ -335,7 +335,7 @@ describe('RuntimeEngine', () => {
     await runtime.completeRun({
       sessionId: 'session-direct-recall',
       runId: 'run-1',
-      mode: 'chat',
+      mode: 'plan',
       summary: 'Inspected runtime file.',
       filesRead: ['plugins/kb-labs-agents/packages/agent-runtime/src/index.ts'],
     });
@@ -343,7 +343,7 @@ describe('RuntimeEngine', () => {
     await runtime.loadOrCreateKernel({
       sessionId: 'session-direct-recall',
       workingDir,
-      mode: 'chat',
+      mode: 'plan',
       task: 'Which files did you inspect, exactly?',
     });
 
@@ -375,7 +375,7 @@ describe('RuntimeEngine', () => {
     await runtime.loadOrCreateKernel({
       sessionId: 'session-custom-direct-recall',
       workingDir,
-      mode: 'chat',
+      mode: 'plan',
       task: 'Inspect something custom',
     });
 
@@ -444,7 +444,7 @@ describe('RuntimeEngine', () => {
     await runtime.loadOrCreateKernel({
       sessionId: 'session-runtime-profile',
       workingDir,
-      mode: 'chat',
+      mode: 'plan',
       task: 'Profile scoped prompt behavior',
     });
 
@@ -502,14 +502,14 @@ describe('RuntimeEngine', () => {
     await runtime.loadOrCreateKernel({
       sessionId: 'session-runtime-completion',
       workingDir,
-      mode: 'chat',
+      mode: 'plan',
       task: 'Profile completion flow',
     });
 
     const blocked = await runtime.completeRun({
       sessionId: 'session-runtime-completion',
       runId: 'run-blocked',
-      mode: 'chat',
+      mode: 'plan',
       summary: 'Blocked summary',
       metadata: { kind: 'blocked' },
     });
@@ -521,7 +521,7 @@ describe('RuntimeEngine', () => {
     const allowed = await runtime.completeRun({
       sessionId: 'session-runtime-completion',
       runId: 'run-allowed',
-      mode: 'chat',
+      mode: 'plan',
       summary: 'Allowed summary',
       metadata: { kind: 'allowed' },
     });
@@ -547,7 +547,7 @@ describe('RuntimeEngine', () => {
     await runtime.loadOrCreateKernel({
       sessionId: 'session-php',
       workingDir,
-      mode: 'chat',
+      mode: 'plan',
       task: 'Inspect this repository and explain its stack',
     });
 
@@ -579,7 +579,7 @@ describe('RuntimeEngine', () => {
     await runtime.loadOrCreateKernel({
       sessionId: 'session-go',
       workingDir,
-      mode: 'execute',
+      mode: 'plan',
       task: 'Understand the repository diagnostics',
     });
 

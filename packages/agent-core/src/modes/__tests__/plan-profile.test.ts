@@ -144,11 +144,11 @@ describe('createPlanRuntimeProfile', () => {
       complexity: 'medium',
     });
 
-    expect(profile.toolPolicy.allowedToolNames).toContain('plan_validate');
-    expect(profile.toolPolicy.allowedToolNames).toContain('report');
-    expect(profile.toolPolicy.allowedToolNames).not.toContain('task_submit');
-    expect(profile.toolPolicy.allowedToolNames).not.toContain('task_collect');
-    expect(profile.toolPolicy.allowedToolNames).not.toContain('todo_create');
+    expect(profile.toolPolicy!.allowedToolNames).toContain('plan_validate');
+    expect(profile.toolPolicy!.allowedToolNames).toContain('report');
+    expect(profile.toolPolicy!.allowedToolNames).not.toContain('task_submit');
+    expect(profile.toolPolicy!.allowedToolNames).not.toContain('task_collect');
+    expect(profile.toolPolicy!.allowedToolNames).not.toContain('todo_create');
   });
 
   it('keeps delegation tools for broad complex planning tasks', () => {
@@ -157,8 +157,8 @@ describe('createPlanRuntimeProfile', () => {
       complexity: 'complex',
     });
 
-    expect(profile.toolPolicy.allowedToolNames).toContain('task_submit');
-    expect(profile.toolPolicy.allowedToolNames).toContain('task_collect');
+    expect(profile.toolPolicy!.allowedToolNames).toContain('task_submit');
+    expect(profile.toolPolicy!.allowedToolNames).toContain('task_collect');
   });
 });
 

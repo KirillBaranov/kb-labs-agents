@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { LinearExecutionLoop } from '../linear-execution-loop.js';
 import type { LoopContext, LLMCallResult, ToolOutput, LoopResult, ToolCallInput } from '@kb-labs/agent-sdk';
 import type { RunContext, ControlAction } from '@kb-labs/agent-sdk';
+import type { RunEvaluation } from '@kb-labs/agent-contracts';
 
 /** Narrow LoopResult to the 'complete' variant for easy field access in tests. */
 function asComplete(r: LoopResult) {
@@ -154,6 +155,7 @@ describe('LinearExecutionLoop', () => {
           });
         }),
         executeTools,
+        evaluateRun: vi.fn(async () => null),
       };
 
       executeTools.mockImplementationOnce(async (): Promise<ToolOutput[]> => [{
@@ -348,9 +350,9 @@ describe('LinearExecutionLoop', () => {
         evidenceGain: 0.45,
         readinessScore: 0.6,
         repeatedStrategy: false,
-        recommendation: 'continue',
+        recommendation: 'continue' as const,
         rationale: 'Still gaining useful evidence.',
-      }));
+      } satisfies RunEvaluation));
 
       await loop.run(ctx);
 
@@ -382,9 +384,9 @@ describe('LinearExecutionLoop', () => {
           evidenceGain: 0.1,
           readinessScore: 0.82,
           repeatedStrategy: true,
-          recommendation: 'synthesize',
+          recommendation: 'synthesize' as const,
           rationale: 'Enough evidence collected.',
-        })),
+        } satisfies RunEvaluation)),
       };
 
       run.meta.set('files', 'read', ['/tmp/a.ts']);
